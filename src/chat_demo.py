@@ -6,6 +6,7 @@ from typing import Any
 
 from src.agent.conversation_loop import run_turn
 from src.providers.codex import CodexProvider
+from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.registry import tool_schemas
 
 
@@ -49,9 +50,19 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     provider = CodexProvider(args.model)
-    history: list[dict[str, Any]] = []
+    try:
+        store = SQLiteSessionStore()
+        history: list[dict[str, Any]] = store.load_messages()
+    except Exception as exc:
+        print(f"Could not open saved chat history at {DEFAULT_DB_PATH}: {exc}")
+        return
+    saved_count = len(history)
     tools = tool_schemas()
-    print("Chat started. Type /quit to exit.")
+    if history:
+        print(f"Resumed chat with {len(history)} saved messages.")
+    else:
+        print("Starting a new chat.")
+    print("Type /quit to exit.")
 
     while True:
         try:
@@ -63,17 +74,31 @@ def main(argv: list[str] | None = None) -> None:
         if not prompt.strip():
             continue
 
+        turn_start = len(history)
         history.append({"role": "user", "content": prompt})
+        persist_turn = True
         try:
             answer = run_turn(
                 history, provider.complete, tools, PROJECT_ROOT,
                 _confirm_terminal, _confirm_write,
             )
+        except KeyboardInterrupt:
+            del history[turn_start:]
+            persist_turn = False
+            print("\nTurn interrupted; it was not saved. Inspect possible tool effects before retrying.")
+            break
         except Exception as exc:
             print(f"Agent turn failed: {exc}")
-            continue
-        history.append({"role": "assistant", "content": answer})
-        print(f"assistant> {answer}")
+        else:
+            history.append({"role": "assistant", "content": answer})
+            print(f"assistant> {answer}")
+        finally:
+            if persist_turn:
+                try:
+                    store.append_messages(history[saved_count:])
+                    saved_count = len(history)
+                except Exception as exc:
+                    print(f"Could not save this turn to {store.db_path}: {exc}")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,13 @@
 import contextlib
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from src import chat_demo
 from src.providers.types import ModelResponse
+from src.session.sqlite_store import SQLiteSessionStore
 
 
 class ChatDemoTests(unittest.TestCase):
@@ -33,9 +36,11 @@ class ChatDemoTests(unittest.TestCase):
 
         with patch("builtins.input", side_effect=["Hi", "What did I say?", "/quit"]):
             with patch.object(chat_demo, "CodexProvider") as provider:
-                provider.return_value.complete.side_effect = complete
-                with contextlib.redirect_stdout(output):
-                    chat_demo.main([])
+                with patch.object(chat_demo, "SQLiteSessionStore") as store:
+                    store.return_value.load_messages.return_value = []
+                    provider.return_value.complete.side_effect = complete
+                    with contextlib.redirect_stdout(output):
+                        chat_demo.main([])
 
         provider.assert_called_once_with("gpt-5.6-luna")
         self.assertIn("write_file", advertised_tools[0])
@@ -45,7 +50,50 @@ class ChatDemoTests(unittest.TestCase):
             {"role": "assistant", "content": "Hello!"},
             {"role": "user", "content": "What did I say?"},
         ])
+        self.assertEqual(len(store.return_value.append_messages.call_args_list), 2)
         self.assertIn("assistant> You said hi.", output.getvalue())
+
+    def test_chat_resumes_persisted_history_on_next_launch(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as folder:
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            with patch.object(chat_demo, "SQLiteSessionStore", return_value=store):
+                with patch("builtins.input", side_effect=["Hi", "/quit"]):
+                    with patch.object(chat_demo, "CodexProvider") as provider:
+                        provider.return_value.complete.return_value = ModelResponse("Hello")
+                        with contextlib.redirect_stdout(output):
+                            chat_demo.main([])
+
+                captured = []
+                def complete(messages, tools):
+                    captured.append([message.copy() for message in messages])
+                    return ModelResponse("Welcome back")
+
+                with patch("builtins.input", side_effect=["Continue", "/quit"]):
+                    with patch.object(chat_demo, "CodexProvider") as provider:
+                        provider.return_value.complete.side_effect = complete
+                        with contextlib.redirect_stdout(output):
+                            chat_demo.main([])
+
+            self.assertEqual(captured[0], [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello"},
+                {"role": "user", "content": "Continue"},
+            ])
+            self.assertEqual(len(store.load_messages()), 4)
+        self.assertIn("Resumed chat with 2 saved messages", output.getvalue())
+
+    def test_interrupted_turn_is_not_saved_with_an_unanswered_tool_call(self):
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=["Do something", EOFError]):
+            with patch.object(chat_demo, "SQLiteSessionStore") as store:
+                store.return_value.load_messages.return_value = []
+                with patch.object(chat_demo, "CodexProvider") as provider:
+                    provider.return_value.complete.side_effect = KeyboardInterrupt
+                    with contextlib.redirect_stdout(output):
+                        chat_demo.main([])
+        store.return_value.append_messages.assert_not_called()
+        self.assertIn("Inspect possible tool effects before retrying", output.getvalue())
 
 
 if __name__ == "__main__":
