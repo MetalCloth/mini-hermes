@@ -12,6 +12,11 @@ from src.session.sqlite_store import SQLiteSessionStore
 
 
 class ChatDemoTests(unittest.TestCase):
+    def setUp(self):
+        patcher = patch.object(chat_demo, "load_project_instructions", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_write_confirmation_shows_target_and_content_and_eof_denies(self):
         output = io.StringIO()
         with patch("builtins.input", side_effect=EOFError):

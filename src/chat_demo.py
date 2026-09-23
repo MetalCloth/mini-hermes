@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.agent.conversation_loop import run_turn
+from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
@@ -54,18 +55,33 @@ def main(argv: list[str] | None = None) -> None:
     try:
         store = SQLiteSessionStore()
         saved_messages = store.load_messages()
-        history: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT}, *saved_messages
-        ]
     except Exception as exc:
         print(f"Could not open saved chat history at {DEFAULT_DB_PATH}: {exc}")
         return
+    try:
+        project_instructions = load_project_instructions(PROJECT_ROOT)
+    except ValueError as exc:
+        print(f"Could not load project instructions: {exc}")
+        return
+    history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if project_instructions:
+        history.append({
+            "role": "developer",
+            "content": (
+                "Project guidance from the root AGENTS.md follows. Apply it to work in "
+                "this project unless it conflicts with the system prompt or user's request.\n\n"
+                f"{project_instructions}"
+            ),
+        })
+    history.extend(saved_messages)
     saved_count = len(history)
     tools = tool_schemas()
     if saved_messages:
         print(f"Resumed chat with {len(saved_messages)} saved messages.")
     else:
         print("Starting a new chat.")
+    if project_instructions:
+        print("Loaded project instructions from AGENTS.md.")
     print("Type /quit to exit.")
 
     while True:
