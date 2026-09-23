@@ -10,7 +10,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
+
+from src.providers.types import ModelResponse, ToolCall
 
 
 ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -82,8 +84,9 @@ def _read_auth(auth_file: Path) -> dict:
     return auth
 
 
-def _response_text(lines: Iterable[bytes]) -> str:
+def _response_text(lines: Iterable[bytes]) -> ModelResponse:
     text: list[str] = []
+    tool_calls: list[ToolCall] = []
     data: list[str] = []
 
     def consume() -> bool:
@@ -96,13 +99,20 @@ def _response_text(lines: Iterable[bytes]) -> str:
         kind = event.get("type")
         if kind == "response.output_text.delta":
             text.append(event.get("delta", ""))
+        elif kind == "response.output_item.done":
+            item = event.get("item", {})
+            if item.get("type") == "function_call":
+                tool_calls.append(_tool_call(item))
+        elif kind == "response.completed" and not text and not tool_calls:
+            for item in event.get("response", {}).get("output", []):
+                if item.get("type") == "function_call":
+                    tool_calls.append(_tool_call(item))
+                else:
+                    for part in item.get("content", []):
+                        if part.get("type") == "output_text":
+                            text.append(part.get("text", ""))
         elif kind in {"error", "response.failed"}:
             raise RuntimeError(f"Codex request failed: {event.get('error', event)}")
-        elif kind == "response.completed" and not text:
-            for item in event.get("response", {}).get("output", []):
-                for part in item.get("content", []):
-                    if part.get("type") == "output_text":
-                        text.append(part.get("text", ""))
         data.clear()
         return kind == "response.completed"
 
@@ -116,19 +126,31 @@ def _response_text(lines: Iterable[bytes]) -> str:
             data.append(value[1:] if value.startswith(" ") else value)
     if data:
         consume()
-    if not text:
+    if not text and not tool_calls:
         raise RuntimeError("Codex returned no text response")
-    return "".join(text)
+    return ModelResponse("".join(text), tool_calls)
+
+
+def _tool_call(item: dict[str, Any]) -> ToolCall:
+    try:
+        arguments = json.loads(item["arguments"])
+        if not isinstance(arguments, dict):
+            raise ValueError("tool arguments must be an object")
+        return ToolCall(item["call_id"], item["name"], arguments)
+    except (KeyError, TypeError, json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(f"Codex returned an invalid tool call: {item}") from exc
 
 
 class CodexProvider:
-    """Make one text request; Mini-Hermes retains ownership of the agent loop."""
+    """Translate Mini-Hermes messages and tools for the Codex Responses endpoint."""
 
     def __init__(self, model: str, auth_file: Path = AUTH_FILE):
         self.model = model
         self.auth_file = Path(auth_file)
 
-    def complete(self, messages: list[dict[str, str]]) -> str:
+    def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> ModelResponse:
         auth = _read_auth(self.auth_file)
         instructions = "\n\n".join(
             message["content"] for message in messages
@@ -137,6 +159,24 @@ class CodexProvider:
         input_messages = []
         for message in messages:
             role = message["role"]
+            if role == "assistant" and message.get("tool_calls"):
+                if message.get("content"):
+                    input_messages.append({"role": "assistant", "content": message["content"]})
+                for call in message["tool_calls"]:
+                    input_messages.append({
+                        "type": "function_call",
+                        "call_id": call["id"],
+                        "name": call["name"],
+                        "arguments": json.dumps(call["arguments"]),
+                    })
+                continue
+            if role == "tool":
+                input_messages.append({
+                    "type": "function_call_output",
+                    "call_id": message["tool_call_id"],
+                    "output": message["content"],
+                })
+                continue
             if role not in {"user", "assistant"}:
                 if role in {"system", "developer"}:
                     continue
@@ -148,13 +188,17 @@ class CodexProvider:
                     "text": message["content"],
                 }],
             })
-        body = json.dumps({
+        payload = {
             "model": self.model,
             "instructions": instructions,
             "input": input_messages,
             "stream": True,
             "store": False,
-        }).encode()
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        body = json.dumps(payload).encode()
         request = urllib.request.Request(
             ENDPOINT,
             data=body,
@@ -184,7 +228,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model", required=True, help="Codex model slug")
     parser.add_argument("prompt", help="Text prompt to send")
     args = parser.parse_args(argv)
-    print(CodexProvider(args.model).complete([{"role": "user", "content": args.prompt}]))
+    response = CodexProvider(args.model).complete([{"role": "user", "content": args.prompt}])
+    print(response.text)
 
 
 if __name__ == "__main__":
