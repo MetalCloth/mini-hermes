@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from src.agent.context import select_context
 from src.providers.types import ModelResponse
 from src.tools.registry import execute_tool
 
@@ -21,7 +22,7 @@ def run_turn(
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     for _ in range(8):
-        response = complete(messages, tools)
+        response = complete(select_context(messages), tools)
         if not response.tool_calls:
             return response.text
 
