@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src import chat_demo
+from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.types import ModelResponse
 from src.session.sqlite_store import SQLiteSessionStore
 
@@ -44,8 +45,12 @@ class ChatDemoTests(unittest.TestCase):
 
         provider.assert_called_once_with("gpt-5.6-luna")
         self.assertIn("write_file", advertised_tools[0])
-        self.assertEqual(histories[0], [{"role": "user", "content": "Hi"}])
+        self.assertEqual(histories[0], [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": "Hi"},
+        ])
         self.assertEqual(histories[1], [
+            {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": "Hi"},
             {"role": "assistant", "content": "Hello!"},
             {"role": "user", "content": "What did I say?"},
@@ -76,6 +81,7 @@ class ChatDemoTests(unittest.TestCase):
                             chat_demo.main([])
 
             self.assertEqual(captured[0], [
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": "Hi"},
                 {"role": "assistant", "content": "Hello"},
                 {"role": "user", "content": "Continue"},

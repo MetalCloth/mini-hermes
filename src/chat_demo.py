@@ -1,10 +1,11 @@
-"""Tiny terminal chat with in-memory history."""
+"""Persistent terminal chat with a Codex model."""
 
 import argparse
 from pathlib import Path
 from typing import Any
 
 from src.agent.conversation_loop import run_turn
+from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.registry import tool_schemas
@@ -52,14 +53,17 @@ def main(argv: list[str] | None = None) -> None:
     provider = CodexProvider(args.model)
     try:
         store = SQLiteSessionStore()
-        history: list[dict[str, Any]] = store.load_messages()
+        saved_messages = store.load_messages()
+        history: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT}, *saved_messages
+        ]
     except Exception as exc:
         print(f"Could not open saved chat history at {DEFAULT_DB_PATH}: {exc}")
         return
     saved_count = len(history)
     tools = tool_schemas()
-    if history:
-        print(f"Resumed chat with {len(history)} saved messages.")
+    if saved_messages:
+        print(f"Resumed chat with {len(saved_messages)} saved messages.")
     else:
         print("Starting a new chat.")
     print("Type /quit to exit.")
