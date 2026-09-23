@@ -10,6 +10,7 @@ from src.tools.registry import execute_tool
 
 
 Message = dict[str, Any]
+MAX_TOOL_RESULT_CHARS = 20_000
 
 
 def run_turn(
@@ -41,6 +42,9 @@ def run_turn(
                 )
             except Exception as exc:
                 result = f"Tool error: {exc}. Correct the arguments or try another approach."
+            if len(result) > MAX_TOOL_RESULT_CHARS:
+                marker = f"\n[Tool output truncated; original result was {len(result)} characters.]"
+                result = result[:MAX_TOOL_RESULT_CHARS - len(marker)] + marker
             messages.append({
                 "role": "tool", "tool_call_id": call.id,
                 "name": call.name, "content": result,
