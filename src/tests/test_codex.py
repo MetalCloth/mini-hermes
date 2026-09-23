@@ -24,9 +24,9 @@ class CodexDemoTests(unittest.TestCase):
         output = io.StringIO()
         with patch.object(codex, "CodexProvider") as provider, contextlib.redirect_stdout(output):
             provider.return_value.complete.return_value = "Hello!"
-            codex.main(["--model", "gpt-6-luna", "Say hello"])
+            codex.main(["--model", "gpt-5.6-luna", "Say hello"])
 
-        provider.assert_called_once_with("gpt-6-luna")
+        provider.assert_called_once_with("gpt-5.6-luna")
         provider.return_value.complete.assert_called_once_with([
             {"role": "user", "content": "Say hello"}
         ])
