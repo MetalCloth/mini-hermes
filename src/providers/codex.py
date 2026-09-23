@@ -1,5 +1,6 @@
 """Small client for the Codex CLI's ChatGPT-authenticated Responses endpoint."""
 
+import argparse
 import base64
 import json
 import os
@@ -176,3 +177,15 @@ class CodexProvider:
             raise RuntimeError(f"Codex endpoint returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Could not reach Codex endpoint: {exc.reason}") from exc
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Send one prompt to a Codex model.")
+    parser.add_argument("--model", required=True, help="Codex model slug")
+    parser.add_argument("prompt", help="Text prompt to send")
+    args = parser.parse_args(argv)
+    print(CodexProvider(args.model).complete([{"role": "user", "content": args.prompt}]))
+
+
+if __name__ == "__main__":
+    main()
