@@ -29,8 +29,15 @@ class SQLiteSessionStore:
                     )"""
                 )
                 connection.execute(
-                    "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY)"
+                    "CREATE TABLE IF NOT EXISTS sessions "
+                    "(id TEXT PRIMARY KEY, project_root TEXT)"
                 )
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(sessions)")
+                }
+                if "project_root" not in columns:
+                    # Older session databases recorded chat IDs but no project folder.
+                    connection.execute("ALTER TABLE sessions ADD COLUMN project_root TEXT")
                 connection.execute(
                     "INSERT OR IGNORE INTO sessions (id) "
                     "SELECT DISTINCT session_id FROM messages"
@@ -39,12 +46,15 @@ class SQLiteSessionStore:
             connection.close()
         os.chmod(self.db_path, 0o600)
 
-    def create_session(self) -> str:
+    def create_session(self, project_root: Path | None = None) -> str:
         session_id = uuid.uuid4().hex
         connection = sqlite3.connect(self.db_path)
         try:
             with connection:
-                connection.execute("INSERT INTO sessions (id) VALUES (?)", (session_id,))
+                connection.execute(
+                    "INSERT INTO sessions (id, project_root) VALUES (?, ?)",
+                    (session_id, str(project_root) if project_root is not None else None),
+                )
         finally:
             connection.close()
         return session_id
@@ -65,6 +75,39 @@ class SQLiteSessionStore:
             return connection.execute(
                 "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
             ).fetchone() is not None
+        finally:
+            connection.close()
+
+    def session_project_root(self, session_id: str) -> str | None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT project_root FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0] if row else None
+
+    def bind_session_to_project(self, session_id: str, project_root: Path) -> None:
+        root = str(project_root)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                # Fill legacy roots once; never move an existing chat to another project.
+                connection.execute(
+                    "INSERT OR IGNORE INTO sessions (id, project_root) VALUES (?, ?)",
+                    (session_id, root),
+                )
+                connection.execute(
+                    "UPDATE sessions SET project_root = ? "
+                    "WHERE id = ? AND project_root IS NULL",
+                    (root, session_id),
+                )
+                saved_root = connection.execute(
+                    "SELECT project_root FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()[0]
+                if saved_root != root:
+                    raise ValueError(f"Session {session_id} belongs to {saved_root}, not {root}.")
         finally:
             connection.close()
 

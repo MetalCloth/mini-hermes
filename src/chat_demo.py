@@ -10,9 +10,20 @@ from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
 from src.tools.registry import tool_schemas
+from src.tools.terminal_tool import validate_project_root
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+APP_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_project_root(path: Path) -> Path:
+    try:
+        root = path.expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"Could not open project folder {path}: {exc}") from exc
+    if not root.is_dir():
+        raise ValueError(f"Project path is not a folder: {root}")
+    return validate_project_root(root)
 
 
 def _approval_preview(text: str) -> str:
@@ -25,8 +36,8 @@ def _approval_preview(text: str) -> str:
     return "\n".join(f"| {line}" for line in safe.split("\n")) or "| <empty>"
 
 
-def _confirm_terminal(command: str) -> bool:
-    print(f"Mini-Hermes wants to run this command from {PROJECT_ROOT}:")
+def _confirm_terminal(command: str, project_root: Path) -> bool:
+    print(f"Mini-Hermes wants to run this command from {project_root}:")
     print(_approval_preview(command))
     try:
         return input("Allow this command? [y/N] ").strip().lower() in {"y", "yes"}
@@ -49,11 +60,14 @@ def _confirm_write(path: str, content: str, exists: bool) -> bool:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chat with a Codex model.")
     parser.add_argument("--model", default="gpt-5.6-luna", help="Codex model slug")
+    parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
     session_options = parser.add_mutually_exclusive_group()
     session_options.add_argument("--new", action="store_true", help="start a new chat")
     session_options.add_argument("--list", action="store_true", help="list saved chats")
     session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
     args = parser.parse_args(argv)
+    if args.list and args.project is not None:
+        parser.error("--project cannot be used with --list")
 
     try:
         store = SQLiteSessionStore()
@@ -61,27 +75,45 @@ def main(argv: list[str] | None = None) -> None:
             sessions = store.list_sessions()
             print("Saved sessions:" if sessions else "No saved sessions yet.")
             for session_id in sessions:
-                print(session_id)
+                print(f"{session_id}  {store.session_project_root(session_id) or APP_ROOT}")
             return
-        if args.new:
-            session_id = store.create_session()
-        elif args.resume is not None:
+        if args.resume is not None:
             session_id = args.resume
             if not store.session_exists(session_id):
                 parser.error(f"no saved session with ID {session_id}")
+            saved_root = store.session_project_root(session_id)
+            # Old chats always worked in the Mini-Hermes repo.
+            project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
+            if args.project is not None and _resolve_project_root(args.project) != project_root:
+                parser.error(f"session {session_id} belongs to {project_root}")
+            if saved_root is None:
+                store.bind_session_to_project(session_id, project_root)
         else:
-            session_id = SESSION_ID
+            project_root = _resolve_project_root(args.project or Path("."))
+            if args.new or args.project is not None or project_root != APP_ROOT:
+                session_id = store.create_session(project_root)
+            else:
+                # Bare launches from this repo still continue the original main chat.
+                session_id = SESSION_ID
+                store.bind_session_to_project(session_id, project_root)
         saved_messages = store.load_messages(session_id)
+    except ValueError as exc:
+        parser.error(str(exc))
     except Exception as exc:
         print(f"Could not access sessions at {DEFAULT_DB_PATH}: {exc}")
         return
     provider = CodexProvider(args.model)
     try:
-        project_instructions = load_project_instructions(PROJECT_ROOT)
+        project_instructions = load_project_instructions(project_root)
     except ValueError as exc:
         print(f"Could not load project instructions: {exc}")
         return
     history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if project_root != APP_ROOT:
+        history.append({
+            "role": "developer",
+            "content": f"Active project folder: {str(project_root)!r}. Tool paths are relative to it.",
+        })
     if project_instructions:
         history.append({
             "role": "developer",
@@ -95,6 +127,7 @@ def main(argv: list[str] | None = None) -> None:
     saved_count = len(history)
     tools = tool_schemas()
     print(f"Session ID: {session_id}")
+    print(f"Project: {project_root}")
     if saved_messages:
         print(f"Resumed chat with {len(saved_messages)} saved messages.")
     else:
@@ -102,6 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     if project_instructions:
         print("Loaded project instructions from AGENTS.md.")
     print("Type /quit to exit.")
+    confirm_terminal = lambda command: _confirm_terminal(command, project_root)
 
     while True:
         try:
@@ -118,8 +152,8 @@ def main(argv: list[str] | None = None) -> None:
         persist_turn = True
         try:
             answer = run_turn(
-                history, provider.complete, tools, PROJECT_ROOT,
-                _confirm_terminal, _confirm_write,
+                history, provider.complete, tools, project_root,
+                confirm_terminal, _confirm_write,
             )
         except KeyboardInterrupt:
             del history[turn_start:]

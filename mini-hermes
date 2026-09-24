@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app_dir="$(dirname "$(readlink -f -- "$0")")"
+app_python="$app_dir/.venv/bin/python"
+if [[ ! -x "$app_python" ]]; then
+    echo "Mini-Hermes virtual environment is missing at $app_dir/.venv" >&2
+    exit 1
+fi
+
+# Preserve the caller's working directory as the default project.
+export PYTHONPATH="$app_dir${PYTHONPATH:+:$PYTHONPATH}"
+exec "$app_python" -m src.chat_demo "$@"
