@@ -1,0 +1,325 @@
+"""Local browser chat for the existing Mini-Hermes agent loop."""
+
+import argparse
+import json
+import mimetypes
+import re
+import secrets
+import threading
+import webbrowser
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlsplit
+
+from src.agent.conversation_loop import run_turn
+from src.agent.project_context import load_project_instructions
+from src.agent.system_prompt import SYSTEM_PROMPT
+from src.providers.codex import CodexProvider
+from src.providers.types import ToolCall
+from src.session.sqlite_store import SQLiteSessionStore
+from src.tools.registry import tool_schemas
+from src.tools.terminal_tool import validate_project_root
+
+
+APP_ROOT = Path(__file__).resolve().parent.parent
+WEB_ROOT = APP_ROOT / "web" / "dist"
+MODEL = "gpt-5.6-luna"
+SESSION_ID_PATTERN = re.compile(r"(?:[0-9a-f]{32}|main)\Z")
+
+
+@dataclass
+class Approval:
+    decision: bool | None = None
+    ready: threading.Event = field(default_factory=threading.Event)
+
+
+class DashboardServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(
+        self,
+        project_root: Path,
+        port: int = 9119,
+        store: SQLiteSessionStore | None = None,
+        provider_factory: Callable[[str], Any] = CodexProvider,
+    ) -> None:
+        super().__init__(("127.0.0.1", port), DashboardHandler)
+        self.project_root = validate_project_root(project_root.expanduser().resolve(strict=True))
+        self.store = store if store is not None else SQLiteSessionStore()
+        self.provider_factory = provider_factory
+        self.model = MODEL
+        self.token = secrets.token_urlsafe(32)
+        self.state_lock = threading.Lock()
+        self.active_sessions: set[str] = set()
+        self.approvals: dict[str, Approval] = {}
+
+    def owns_session(self, session_id: str) -> bool:
+        if not SESSION_ID_PATTERN.fullmatch(session_id) or not self.store.session_exists(session_id):
+            return False
+        root = self.store.session_project_root(session_id)
+        return root == str(self.project_root) or (root is None and session_id == "main" and self.project_root == APP_ROOT)
+
+    def sessions(self) -> list[dict[str, Any]]:
+        result = []
+        for session_id in self.store.list_sessions():
+            if not self.owns_session(session_id):
+                continue
+            messages = self.store.load_messages(session_id)
+            user_text = [m.get("content", "") for m in messages if m.get("role") == "user"]
+            title = " ".join(str(user_text[0]).split())[:72] if user_text else "New session"
+            result.append({"id": session_id, "title": title, "message_count": len(user_text)})
+        return result
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    server: DashboardServer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        print(f"web> {self.address_string()} {format % args}")
+
+    def _json(self, status: int, data: dict[str, Any]) -> None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _valid_host(self) -> bool:
+        port = self.server.server_address[1]
+        if self.headers.get("Host") not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+            self._json(403, {"error": "Open the dashboard through its local address."})
+            return False
+        return True
+
+    def _valid_mutation(self) -> bool:
+        if not secrets.compare_digest(self.headers.get("X-Mini-Hermes-Token", ""), self.server.token):
+            self._json(403, {"error": "Invalid dashboard token. Reload the page."})
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin != f"http://{self.headers['Host']}":
+            self._json(403, {"error": "Requests must come from this dashboard."})
+            return False
+        return True
+
+    def _body(self) -> dict[str, Any] | None:
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            self._json(415, {"error": "Send a JSON request."})
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+            if not 0 < length <= 60_000:
+                raise ValueError
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError
+        except (ValueError, json.JSONDecodeError):
+            self._json(400, {"error": "Invalid JSON request."})
+            return None
+        return data
+
+    def do_GET(self) -> None:
+        if not self._valid_host():
+            return
+        path = urlsplit(self.path).path
+        if path == "/api/bootstrap":
+            self._json(200, {
+                "token": self.server.token,
+                "project": str(self.server.project_root),
+                "model": self.server.model,
+                "sessions": self.server.sessions(),
+            })
+            return
+        if path.startswith("/api/sessions/"):
+            session_id = path.removeprefix("/api/sessions/")
+            if not self.server.owns_session(session_id):
+                self._json(404, {"error": "Session not found in this project."})
+                return
+            messages = self.server.store.load_messages(session_id)
+            self._json(200, {"id": session_id, "messages": [
+                {"role": m.get("role"), "content": m.get("content", ""), "name": m.get("name")}
+                for m in messages if m.get("role") in {"user", "assistant", "tool"}
+            ]})
+            return
+        if path == "/":
+            asset = WEB_ROOT / "index.html"
+        elif path.startswith(("/assets/", "/fonts/")):
+            asset = (WEB_ROOT / path.lstrip("/")).resolve()
+            if not asset.is_relative_to(WEB_ROOT.resolve()):
+                self._json(404, {"error": "Page not found."})
+                return
+        else:
+            self._json(404, {"error": "Page not found."})
+            return
+        if not asset.is_file():
+            self._json(503 if path == "/" else 404, {"error": "Build the React UI with `cd web && npm ci && npm run build`."})
+            return
+        body = asset.read_bytes()
+        content_type = mimetypes.guess_type(asset.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in {"application/javascript", "image/svg+xml"}:
+            content_type += "; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        if not self._valid_host() or not self._valid_mutation():
+            return
+        data = self._body()
+        if data is None:
+            return
+        if self.path == "/api/sessions":
+            session_id = self.server.store.create_session(self.server.project_root)
+            self._json(201, {"id": session_id})
+        elif self.path == "/api/approvals":
+            approval_id, allow = data.get("id"), data.get("allow")
+            if not isinstance(approval_id, str) or not isinstance(allow, bool):
+                self._json(400, {"error": "Give an approval ID and a true or false decision."})
+                return
+            with self.server.state_lock:
+                approval = self.server.approvals.get(approval_id)
+                if approval is None or approval.ready.is_set():
+                    self._json(404, {"error": "That approval has expired."})
+                    return
+                approval.decision = allow
+                approval.ready.set()
+            self._json(200, {"allowed": allow})
+        elif self.path == "/api/turns":
+            self._turn(data)
+        else:
+            self._json(404, {"error": "Endpoint not found."})
+
+    def _event(self, kind: str, **data: Any) -> None:
+        line = json.dumps({"type": kind, **data}, ensure_ascii=False, separators=(",", ":"))
+        self.wfile.write((line + "\n").encode("utf-8"))
+        self.wfile.flush()
+
+    def _ask(self, action: str, target: str, content: str) -> bool:
+        approval_id = secrets.token_urlsafe(18)
+        approval = Approval()
+        with self.server.state_lock:
+            self.server.approvals[approval_id] = approval
+        try:
+            self._event("approval", id=approval_id, action=action, target=target, content=content)
+            approval.ready.wait(timeout=300)
+            return approval.decision is True
+        finally:
+            with self.server.state_lock:
+                self.server.approvals.pop(approval_id, None)
+
+    def _turn(self, data: dict[str, Any]) -> None:
+        session_id, prompt = data.get("session_id"), data.get("content")
+        if not isinstance(session_id, str) or not self.server.owns_session(session_id):
+            self._json(404, {"error": "Session not found in this project."})
+            return
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 10_000:
+            self._json(400, {"error": "Write a message of 1 to 10,000 characters."})
+            return
+        with self.server.state_lock:
+            if session_id in self.server.active_sessions:
+                self._json(409, {"error": "This session is already answering. Wait for it to finish."})
+                return
+            self.server.active_sessions.add(session_id)
+        streaming = False
+        try:
+            saved = self.server.store.load_messages(session_id)
+            instructions = load_project_instructions(self.server.project_root)
+            history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            if self.server.project_root != APP_ROOT:
+                history.append({
+                    "role": "developer",
+                    "content": f"Active project folder: {str(self.server.project_root)!r}. Tool paths are relative to it.",
+                })
+            if instructions:
+                history.append({
+                    "role": "developer",
+                    "content": "Project guidance from the root AGENTS.md follows. Apply it to work in "
+                               "this project unless it conflicts with the system prompt or user's request.\n\n"
+                               f"{instructions}",
+                })
+            history.extend(saved)
+            start = len(history)
+            history.append({"role": "user", "content": prompt})
+            provider = self.server.provider_factory(self.server.model)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            streaming = True
+
+            def show_tool(phase: str, call: ToolCall, result: str | None) -> None:
+                if phase == "start":
+                    detail = next((str(call.arguments[key]) for key in
+                                   ("path", "ref", "url", "query", "command", "key")
+                                   if key in call.arguments), "")
+                    self._event("tool_start", id=call.id, name=call.name, detail=detail[:160])
+                else:
+                    self._event("tool_result", id=call.id, name=call.name,
+                                result=(result or "")[:2000])
+
+            try:
+                answer = run_turn(
+                    history, provider.complete, tool_schemas(), self.server.project_root,
+                    lambda command: self._ask("terminal", "Project terminal", command),
+                    lambda path, content, exists: self._ask(
+                        "replace" if exists else "create", path, content
+                    ),
+                    on_text_delta=lambda delta: self._event("delta", text=delta),
+                    on_tool_event=show_tool,
+                )
+                history.append({"role": "assistant", "content": answer})
+                outcome = {"type": "done", "answer": answer}
+            except Exception as exc:
+                outcome = {"type": "error", "message": f"Agent turn failed: {exc}"}
+            try:
+                self.server.store.append_messages(history[start:], session_id)
+            except Exception as exc:
+                outcome = {"type": "error", "message": f"Could not save this turn: {exc}"}
+            kind = outcome.pop("type")
+            self._event(kind, **outcome)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            if not self.wfile.closed:
+                try:
+                    if streaming:
+                        self._event("error", message=f"Dashboard error: {exc}")
+                    else:
+                        self._json(500, {"error": str(exc)})
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+        finally:
+            with self.server.state_lock:
+                self.server.active_sessions.discard(session_id)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Local Mini-Hermes browser dashboard.")
+    parser.add_argument("--project", type=Path, default=Path.cwd(), help="Project folder (default: current folder)")
+    parser.add_argument("--port", type=int, default=9119)
+    parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab")
+    args = parser.parse_args(argv)
+    server = DashboardServer(args.project, args.port)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    print(f"Mini-Hermes dashboard: {url}")
+    print(f"Project: {server.project_root}")
+    if not args.no_open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nDashboard stopped.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
