@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from src.tools.file_tools import read_file, write_file
+from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.terminal_tool import run_terminal
-from src.tools.web_tools import web_search
+from src.tools.web_tools import web_extract, web_search
 
 
 def tool_schemas() -> list[dict[str, Any]]:
@@ -40,6 +40,31 @@ def tool_schemas() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "search_files",
+            "description": (
+                "Search text inside the active project folder. Pattern uses ripgrep regex syntax "
+                "unless literal is true. Restrict to a project-relative file or folder with path, "
+                "and filter filenames with include/exclude globs. Empty include/exclude means no "
+                "filter. Hidden and ignored files are normally skipped; private config, "
+                "generated folders, binary files, and files over 2 MiB are skipped. Returns "
+                "project-relative path:line:snippet matches; use read_file for more context. "
+                "Search stops after 10 seconds, 12,000 output characters, or max_results."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "pattern": {"type": "string", "description": "Text or regex to find, e.g. 'append_messages'."},
+                    "path": {"type": "string", "description": "Project-relative file or folder; '.' searches the whole project."},
+                    "include": {"type": "string", "description": "Filename glob such as '*.py'; use '' for all files."},
+                    "exclude": {"type": "string", "description": "Filename glob such as '*_test.py'; use '' for none."},
+                    "literal": {"type": "boolean", "description": "True for exact text; false for regex."},
+                    "case_sensitive": {"type": "boolean", "description": "True to match letter case."},
+                    "max_results": {"type": "integer", "description": "Maximum matching lines, from 1 to 50; use 30 normally."},
+                },
+                "required": ["pattern", "path", "include", "exclude", "literal", "case_sensitive", "max_results"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "write_file",
             "description": (
                 "Create or replace one UTF-8 text file inside the project folder. "
@@ -68,6 +93,21 @@ def tool_schemas() -> list[dict[str, Any]]:
                 }, "required": ["query", "max_results"], "additionalProperties": False,
             },
         },
+        {
+            "name": "web_extract",
+            "description": (
+                "Read one public web page when search snippets are not enough. "
+                "Provide its full http:// or https:// URL. Returns the source URL, "
+                "title, and up to 12,000 characters of page text. Uses Firecrawl "
+                "when configured, otherwise reads HTML directly. If the page cannot "
+                "be read, try another result."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "url": {"type": "string", "description": "Full public page URL, e.g. 'https://example.com/article'."}
+                }, "required": ["url"], "additionalProperties": False,
+            },
+        },
     ]
     return [
         {"type": "function", "name": schema["name"], "description": schema["description"],
@@ -83,10 +123,19 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
         result = run_terminal(arguments["command"], project_root, confirm_terminal)
     elif name == "read_file":
         result = read_file(arguments["path"], project_root)
+    elif name == "search_files":
+        result = search_files(
+            arguments["pattern"], project_root,
+            path=arguments["path"], include=arguments["include"], exclude=arguments["exclude"],
+            literal=arguments["literal"], case_sensitive=arguments["case_sensitive"],
+            max_results=arguments["max_results"],
+        )
     elif name == "write_file":
         result = write_file(arguments["path"], arguments["content"], project_root, confirm_write)
     elif name == "web_search":
         result = web_search(arguments["query"], arguments["max_results"])
+    elif name == "web_extract":
+        result = web_extract(arguments["url"])
     else:
-        return f"Unknown tool '{name}'. Use one of: terminal, read_file, write_file, web_search."
+        return f"Unknown tool '{name}'. Use one of: terminal, read_file, search_files, write_file, web_search, web_extract."
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)

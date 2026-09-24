@@ -1,12 +1,13 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from src.tools.file_tools import read_file, write_file
+from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import run_terminal
-from src.tools.web_tools import web_search
+from src.tools.web_tools import _firecrawl_extract, web_extract, web_search
 
 
 class ToolTests(unittest.TestCase):
@@ -14,6 +15,51 @@ class ToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaisesRegex(ValueError, "inside the project"):
                 read_file("../outside.txt", Path(folder))
+
+    def test_read_file_rejects_firecrawl_key(self):
+        with self.assertRaisesRegex(ValueError, "Firecrawl key file"):
+            read_file(".mini-hermes/firecrawl.env", Path.home())
+
+    def test_search_files_regex_filters_and_case_insensitive_literal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "src").mkdir()
+            (root / "src" / "main.py").write_text("def append_messages():\n    pass\n")
+            (root / "src" / "other.py").write_text("def append_messages():\n")
+            (root / "src" / "other.txt").write_text("def append_messages():\n")
+            args = {
+                "pattern": r"def append_\w+\(", "path": "src", "include": "*.py",
+                "exclude": "other.py", "literal": False, "case_sensitive": True,
+                "max_results": 10,
+            }
+            result = execute_tool("search_files", args, root, Mock(), Mock())
+            self.assertIn("src/main.py:1:def append_messages():", result)
+            self.assertNotIn("other.py", result)
+            self.assertNotIn("other.txt", result)
+
+            args.update(pattern="DEF APPEND_MESSAGES", literal=True, case_sensitive=False)
+            self.assertIn("src/main.py:1:def append_messages():", execute_tool(
+                "search_files", args, root, Mock(), Mock(),
+            ))
+
+    def test_search_files_excludes_private_paths_and_reports_bad_patterns(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "visible.txt").write_text("search_marker\n")
+            (root / ".env").write_text("search_marker\n")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "hidden.txt").write_text("search_marker\n")
+            result = search_files("search_marker", root, include="*", max_results=1)
+            self.assertIn("visible.txt:1:search_marker", result)
+            self.assertIn("Search stopped at 1 matches", result)
+            self.assertNotIn(".env", result)
+            self.assertNotIn("node_modules", result)
+            with self.assertRaisesRegex(ValueError, "inside the project"):
+                search_files("search_marker", root, path="../")
+            with self.assertRaisesRegex(ValueError, "excluded from search"):
+                search_files("search_marker", root, path=".env")
+            with self.assertRaisesRegex(ValueError, "Search failed"):
+                search_files("(", root)
 
     def test_write_file_creates_utf8_text_after_approval(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -103,9 +149,36 @@ class ToolTests(unittest.TestCase):
         self.assertIn("https://example.com/", result)
         self.assertIn("Useful result", result)
 
-    def test_catalog_exposes_four_function_tools(self):
+    def test_web_extract_uses_firecrawl_only_when_key_is_configured(self):
+        with patch("src.tools.web_tools._check_public_url"):
+            with patch("src.tools.web_tools._firecrawl_api_key", return_value="fake-key"):
+                with patch("src.tools.web_tools._firecrawl_extract", return_value="remote") as remote:
+                    self.assertEqual(web_extract("https://example.com"), "remote")
+                    remote.assert_called_once_with("https://example.com", "fake-key")
+            with patch("src.tools.web_tools._firecrawl_api_key", return_value=""):
+                with patch("src.tools.web_tools._local_extract", return_value="local") as local:
+                    self.assertEqual(web_extract("https://example.com"), "local")
+                    local.assert_called_once_with("https://example.com")
+
+    def test_firecrawl_extract_reads_markdown_response(self):
+        payload = {"success": True, "data": {
+            "markdown": "# Example Domain\n\nUseful text",
+            "metadata": {"title": "Example Domain"},
+        }}
+        with patch("src.tools.web_tools.build_opener") as opener:
+            opener.return_value.open.return_value.__enter__.return_value.read.return_value = (
+                json.dumps(payload).encode()
+            )
+            result = _firecrawl_extract("https://example.com", "fake-key")
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.firecrawl.dev/v2/scrape")
+        self.assertEqual(request.get_header("Authorization"), "Bearer fake-key")
+        self.assertEqual(json.loads(request.data)["formats"], ["markdown"])
+        self.assertIn("Title: Example Domain\nContent:\n# Example Domain", result)
+
+    def test_catalog_exposes_six_function_tools(self):
         self.assertEqual([tool["name"] for tool in tool_schemas()], [
-            "terminal", "read_file", "write_file", "web_search"
+            "terminal", "read_file", "search_files", "write_file", "web_search", "web_extract"
         ])
 
     def test_registry_dispatches_write_file(self):
