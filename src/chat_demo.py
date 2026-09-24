@@ -8,7 +8,7 @@ from src.agent.conversation_loop import run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
-from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
+from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
 from src.tools.registry import tool_schemas
 
 
@@ -49,15 +49,33 @@ def _confirm_write(path: str, content: str, exists: bool) -> bool:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chat with a Codex model.")
     parser.add_argument("--model", default="gpt-5.6-luna", help="Codex model slug")
+    session_options = parser.add_mutually_exclusive_group()
+    session_options.add_argument("--new", action="store_true", help="start a new chat")
+    session_options.add_argument("--list", action="store_true", help="list saved chats")
+    session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
     args = parser.parse_args(argv)
 
-    provider = CodexProvider(args.model)
     try:
         store = SQLiteSessionStore()
-        saved_messages = store.load_messages()
+        if args.list:
+            sessions = store.list_sessions()
+            print("Saved sessions:" if sessions else "No saved sessions yet.")
+            for session_id in sessions:
+                print(session_id)
+            return
+        if args.new:
+            session_id = store.create_session()
+        elif args.resume is not None:
+            session_id = args.resume
+            if not store.session_exists(session_id):
+                parser.error(f"no saved session with ID {session_id}")
+        else:
+            session_id = SESSION_ID
+        saved_messages = store.load_messages(session_id)
     except Exception as exc:
-        print(f"Could not open saved chat history at {DEFAULT_DB_PATH}: {exc}")
+        print(f"Could not access sessions at {DEFAULT_DB_PATH}: {exc}")
         return
+    provider = CodexProvider(args.model)
     try:
         project_instructions = load_project_instructions(PROJECT_ROOT)
     except ValueError as exc:
@@ -76,6 +94,7 @@ def main(argv: list[str] | None = None) -> None:
     history.extend(saved_messages)
     saved_count = len(history)
     tools = tool_schemas()
+    print(f"Session ID: {session_id}")
     if saved_messages:
         print(f"Resumed chat with {len(saved_messages)} saved messages.")
     else:
@@ -115,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
         finally:
             if persist_turn:
                 try:
-                    store.append_messages(history[saved_count:])
+                    store.append_messages(history[saved_count:], session_id)
                     saved_count = len(history)
                 except Exception as exc:
                     print(f"Could not save this turn to {store.db_path}: {exc}")
