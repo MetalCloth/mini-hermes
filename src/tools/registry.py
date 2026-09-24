@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
+from src.tools.browser_tools import BrowserSession
 from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.terminal_tool import run_terminal
 from src.tools.web_tools import web_extract, web_search
@@ -100,13 +101,116 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "Provide its full http:// or https:// URL. Returns the source URL, "
                 "title, and up to 12,000 characters of page text. Uses Firecrawl "
                 "when configured, otherwise reads HTML directly. If the page cannot "
-                "be read, try another result."
+                "be read, try another result. Use browser_open for pages needing clicks or forms."
             ),
             "parameters": {
                 "type": "object", "properties": {
                     "url": {"type": "string", "description": "Full public page URL, e.g. 'https://example.com/article'."}
                 }, "required": ["url"], "additionalProperties": False,
             },
+        },
+        {
+            "name": "browser_open",
+            "description": (
+                "Open a public web page in a short-lived Firecrawl cloud browser when you need "
+                "to click, fill a field, or inspect changing page content. Returns the current "
+                "URL and an accessibility snapshot with element refs such as '@e2'. "
+                "The browser stays open for this agent turn only and closes after the final answer. "
+                "Use web_extract for a simple one-page read. Requires FIRECRAWL_API_KEY."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "url": {"type": "string", "description": "Full public http:// or https:// URL to open."}
+                }, "required": ["url"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_snapshot",
+            "description": (
+                "Refresh the current Firecrawl browser page's URL and accessibility snapshot. "
+                "Use after browser_open if the page changes without a click or needs another look. "
+                "Returns page text and current element refs."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+        {
+            "name": "browser_click",
+            "description": (
+                "Click an element in the current Firecrawl browser using a ref from the latest "
+                "snapshot, such as '@e2'. Returns the updated URL and page snapshot. "
+                "Open a page first; only click controls needed for the user's request."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "ref": {"type": "string", "description": "Element ref from the latest snapshot, e.g. '@e2'."}
+                }, "required": ["ref"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_fill",
+            "description": (
+                "Clear and type text into an input in the current Firecrawl browser using a "
+                "ref from the latest snapshot. Returns the updated page snapshot. "
+                "This does not submit the form; use browser_click on its submit control if needed. "
+                "The page runs in Firecrawl's cloud browser; do not enter passwords or secrets."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "ref": {"type": "string", "description": "Input ref from the latest snapshot, e.g. '@e1'."},
+                    "text": {"type": "string", "description": "Text to enter, up to 1,000 characters."},
+                }, "required": ["ref", "text"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_press",
+            "description": (
+                "Press a key on the current Firecrawl page after browser_open. Use Enter to submit "
+                "a filled form, or Tab/Escape/arrow keys to operate a control. This can trigger "
+                "page actions. Returns the updated URL and text snapshot."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "key": {"type": "string", "description": "Key such as Enter, Tab, Escape, ArrowDown, or PageDown."}
+                }, "required": ["key"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_scroll",
+            "description": (
+                "Scroll the current Firecrawl page after browser_open to reveal content below, "
+                "above, or to a side. Returns the updated URL and text snapshot."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                    "pixels": {"type": "integer", "description": "Distance from 1 to 2,000 pixels, e.g. 500."},
+                }, "required": ["direction", "pixels"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_wait",
+            "description": (
+                "Wait up to 10 seconds for the current Firecrawl page to show a known element, "
+                "text, URL pattern, or load state after an action. Returns the updated URL and "
+                "text snapshot. Prefer text or a known element over networkidle on busy pages."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "mode": {"type": "string", "enum": ["ref", "text", "url", "load"]},
+                    "value": {"type": "string", "description": (
+                        "For ref: @e2; text: visible words; url: **/results; "
+                        "load: load, domcontentloaded, or networkidle."
+                    )},
+                }, "required": ["mode", "value"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "browser_back",
+            "description": (
+                "Go back one page in the current Firecrawl browser history after browser_open. "
+                "Returns the previous URL and text snapshot."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
     ]
     return [
@@ -118,7 +222,10 @@ def tool_schemas() -> list[dict[str, Any]]:
 
 def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
                  confirm_terminal: Callable[[str], bool],
-                 confirm_write: Callable[[str, str, bool], bool]) -> str:
+                 confirm_write: Callable[[str, str, bool], bool],
+                 browser: BrowserSession | None = None) -> str:
+    if name.startswith("browser_") and browser is None:
+        raise RuntimeError("Browser actions need an active agent turn. Open a page in the chat first.")
     if name == "terminal":
         result = run_terminal(arguments["command"], project_root, confirm_terminal)
     elif name == "read_file":
@@ -136,6 +243,22 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
         result = web_search(arguments["query"], arguments["max_results"])
     elif name == "web_extract":
         result = web_extract(arguments["url"])
+    elif name == "browser_open":
+        result = browser.open(arguments["url"])
+    elif name == "browser_snapshot":
+        result = browser.snapshot()
+    elif name == "browser_click":
+        result = browser.click(arguments["ref"])
+    elif name == "browser_fill":
+        result = browser.fill(arguments["ref"], arguments["text"])
+    elif name == "browser_press":
+        result = browser.press(arguments["key"])
+    elif name == "browser_scroll":
+        result = browser.scroll(arguments["direction"], arguments["pixels"])
+    elif name == "browser_wait":
+        result = browser.wait(arguments["mode"], arguments["value"])
+    elif name == "browser_back":
+        result = browser.back()
     else:
-        return f"Unknown tool '{name}'. Use one of: terminal, read_file, search_files, write_file, web_search, web_extract."
+        return f"Unknown tool '{name}'. Use one of: {', '.join(tool['name'] for tool in tool_schemas())}."
     return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)

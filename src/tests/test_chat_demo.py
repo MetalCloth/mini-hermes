@@ -35,7 +35,7 @@ class ChatDemoTests(unittest.TestCase):
         advertised_tools = []
         responses = ["Hello!", "You said hi."]
 
-        def complete(messages, tools):
+        def complete(messages, tools, on_text_delta=None):
             histories.append([message.copy() for message in messages])
             advertised_tools.append({tool["name"] for tool in tools})
             return ModelResponse(responses[len(histories) - 1])
@@ -75,7 +75,7 @@ class ChatDemoTests(unittest.TestCase):
                             chat_demo.main([])
 
                 captured = []
-                def complete(messages, tools):
+                def complete(messages, tools, on_text_delta=None):
                     captured.append([message.copy() for message in messages])
                     return ModelResponse("Welcome back")
 
@@ -105,6 +105,19 @@ class ChatDemoTests(unittest.TestCase):
                         chat_demo.main([])
         store.return_value.append_messages.assert_not_called()
         self.assertIn("Inspect possible tool effects before retrying", output.getvalue())
+
+    def test_search_cli_shows_matching_saved_chat(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as folder:
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            session_id = store.create_session(Path(folder))
+            store.append_messages([{"role": "user", "content": "Find the needle here"}], session_id)
+            with patch.object(chat_demo, "SQLiteSessionStore", return_value=store):
+                with contextlib.redirect_stdout(output):
+                    chat_demo.main(["--search", "needle"])
+        self.assertIn(session_id, output.getvalue())
+        self.assertIn("Find the needle here", output.getvalue())
+        self.assertIn("--resume ID", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -38,6 +38,27 @@ class SQLiteSessionStoreTests(unittest.TestCase):
             store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
             self.assertEqual(store.load_messages(), [])
 
+    def test_searches_saved_chat_text_across_sessions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            first = store.create_session(Path(folder) / "first")
+            second = store.create_session(Path(folder) / "second")
+            store.append_messages([
+                {"role": "user", "content": "HELLO from first"},
+                {"role": "tool", "content": "hello tool output"},
+            ], first)
+            store.append_messages([
+                {"role": "user", "content": "Where is hello?"},
+                {"role": "assistant", "content": "Hello again."},
+            ], second)
+            matches = store.search_messages("hello")
+            self.assertEqual([(item[0], item[2]) for item in matches], [
+                (second, "assistant"), (second, "user"), (first, "user"),
+            ])
+            self.assertEqual(len(store.search_messages("hello", limit=2)), 2)
+            with self.assertRaises(ValueError):
+                store.search_messages(" ")
+
 
 if __name__ == "__main__":
     unittest.main()

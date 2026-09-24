@@ -18,7 +18,9 @@ class CodexStreamTests(unittest.TestCase):
             b'data: {"type":"response.output_text.delta","delta":" world"}\n\n'
             b'data: {"type":"response.completed","response":{}}\n\n'
         )
-        self.assertEqual(_response_text(stream), ModelResponse("Hello world"))
+        deltas = []
+        self.assertEqual(_response_text(stream, deltas.append), ModelResponse("Hello world"))
+        self.assertEqual(deltas, ["Hello", " world"])
 
     def test_parses_function_call_from_stream(self):
         stream = io.BytesIO(

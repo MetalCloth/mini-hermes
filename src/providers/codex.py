@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from src.providers.types import ModelResponse, ToolCall
 
@@ -84,7 +84,9 @@ def _read_auth(auth_file: Path) -> dict:
     return auth
 
 
-def _response_text(lines: Iterable[bytes]) -> ModelResponse:
+def _response_text(
+    lines: Iterable[bytes], on_text_delta: Callable[[str], None] | None = None
+) -> ModelResponse:
     text: list[str] = []
     tool_calls: list[ToolCall] = []
     data: list[str] = []
@@ -98,19 +100,34 @@ def _response_text(lines: Iterable[bytes]) -> ModelResponse:
         event = json.loads("\n".join(data))
         kind = event.get("type")
         if kind == "response.output_text.delta":
-            text.append(event.get("delta", ""))
+            delta = event.get("delta", "")
+            if not isinstance(delta, str):
+                raise RuntimeError("Codex returned an invalid text delta")
+            if delta:
+                text.append(delta)
+                if on_text_delta:
+                    on_text_delta(delta)
         elif kind == "response.output_item.done":
             item = event.get("item", {})
             if item.get("type") == "function_call":
                 tool_calls.append(_tool_call(item))
-        elif kind == "response.completed" and not text and not tool_calls:
-            for item in event.get("response", {}).get("output", []):
-                if item.get("type") == "function_call":
-                    tool_calls.append(_tool_call(item))
-                else:
+        elif kind == "response.completed":
+            output = event.get("response", {}).get("output", [])
+            if not text:
+                for item in output:
                     for part in item.get("content", []):
                         if part.get("type") == "output_text":
-                            text.append(part.get("text", ""))
+                            delta = part.get("text", "")
+                            if not isinstance(delta, str):
+                                raise RuntimeError("Codex returned invalid output text")
+                            if delta:
+                                text.append(delta)
+                                if on_text_delta:
+                                    on_text_delta(delta)
+            if not tool_calls:
+                tool_calls.extend(
+                    _tool_call(item) for item in output if item.get("type") == "function_call"
+                )
         elif kind in {"error", "response.failed"}:
             raise RuntimeError(f"Codex request failed: {event.get('error', event)}")
         data.clear()
@@ -149,7 +166,8 @@ class CodexProvider:
         self.auth_file = Path(auth_file)
 
     def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> ModelResponse:
         auth = _read_auth(self.auth_file)
         instructions = "\n\n".join(
@@ -215,7 +233,7 @@ class CodexProvider:
         )
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                return _response_text(response)
+                return _response_text(response, on_text_delta)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Codex endpoint returned HTTP {exc.code}: {detail}") from exc

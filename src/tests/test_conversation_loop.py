@@ -17,9 +17,15 @@ class ConversationLoopTests(unittest.TestCase):
         tools = [{"type": "function", "name": "read_file"}]
         confirm = Mock(return_value=False)
         confirm_write = Mock(return_value=False)
+        streamed = []
+        events = []
         with tempfile.TemporaryDirectory() as folder:
             with patch("src.agent.conversation_loop.execute_tool", return_value="# Mini-Hermes") as execute:
-                answer = run_turn(history, complete, tools, Path(folder), confirm, confirm_write)
+                answer = run_turn(
+                    history, complete, tools, Path(folder), confirm, confirm_write,
+                    on_text_delta=streamed.append,
+                    on_tool_event=lambda phase, call, result: events.append((phase, call.name, result)),
+                )
 
         self.assertEqual(answer, "The project is Mini-Hermes.")
         self.assertEqual(complete.call_count, 2)
@@ -30,6 +36,11 @@ class ConversationLoopTests(unittest.TestCase):
         self.assertEqual(history[1]["tool_calls"][0]["id"], "call_1")
         self.assertEqual(history[2]["content"], "# Mini-Hermes")
         self.assertEqual(history[2]["tool_call_id"], "call_1")
+        self.assertEqual(streamed, ["The project is Mini-Hermes."])
+        self.assertEqual(events, [
+            ("start", "read_file", None),
+            ("result", "read_file", "# Mini-Hermes"),
+        ])
 
     def test_truncates_oversized_tool_result_before_adding_it_to_history(self):
         history = [{"role": "user", "content": "Read a large file"}]

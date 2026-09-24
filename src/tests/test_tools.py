@@ -1,9 +1,12 @@
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.error import HTTPError
 
+from src.tools.browser_tools import BrowserSession, _request
 from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import run_terminal
@@ -176,10 +179,89 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(json.loads(request.data)["formats"], ["markdown"])
         self.assertIn("Title: Example Domain\nContent:\n# Example Domain", result)
 
-    def test_catalog_exposes_six_function_tools(self):
+    def test_catalog_exposes_browser_navigation_tools(self):
         self.assertEqual([tool["name"] for tool in tool_schemas()], [
-            "terminal", "read_file", "search_files", "write_file", "web_search", "web_extract"
+            "terminal", "read_file", "search_files", "write_file", "web_search", "web_extract",
+            "browser_open", "browser_snapshot", "browser_click", "browser_fill",
+            "browser_press", "browser_scroll", "browser_wait", "browser_back",
         ])
+
+    def test_browser_keeps_one_session_across_open_and_click_then_closes(self):
+        scrape_id = "550e8400-e29b-41d4-a716-446655440000"
+        replies = [
+            {"success": True, "data": {"metadata": {"scrapeId": scrape_id}}},
+            {"success": True, "stdout": "https://example.com/\n- link [ref=e2]"},
+            {"success": True, "stdout": "https://www.iana.org/\n- heading IANA"},
+            {"success": True},
+        ]
+        with patch("src.tools.browser_tools._check_public_url"):
+            with patch("src.tools.browser_tools._firecrawl_api_key", return_value="fake-key"):
+                with patch("src.tools.browser_tools._request", side_effect=replies) as request:
+                    browser = BrowserSession()
+                    self.assertIn("ref=e2", browser.open("https://example.com"))
+                    self.assertIn("IANA", browser.click("@e2"))
+                    browser.close()
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(request.call_args_list[2].kwargs["body"]["code"],
+                         "agent-browser click @e2 && agent-browser get url && agent-browser snapshot")
+        self.assertEqual(request.call_args_list[3].kwargs["method"], "DELETE")
+        self.assertTrue(request.call_args_list[3].kwargs["retry_safe"])
+
+    def test_browser_navigation_commands_validate_inputs(self):
+        browser = BrowserSession()
+        with patch.object(browser, "_run", return_value="snapshot") as run:
+            browser.press("Enter")
+            browser.scroll("down", 500)
+            browser.wait("text", "Ready; echo nope")
+            browser.back()
+            self.assertEqual([item.args[0] for item in run.call_args_list], [
+                "agent-browser press Enter",
+                "agent-browser scroll down 500",
+                "agent-browser wait --text 'Ready; echo nope' --timeout 10000",
+                "agent-browser back",
+            ])
+            with self.assertRaises(ValueError):
+                browser.press("Control+O")
+            with self.assertRaises(ValueError):
+                browser.scroll("down", 0)
+            with self.assertRaises(ValueError):
+                browser.wait("ref", "not-a-ref")
+
+    def test_browser_retries_snapshots_but_not_actions(self):
+        failure = HTTPError("https://api.firecrawl.dev", 502, "Bad Gateway", None, None)
+        self.addCleanup(failure.close)
+        with patch("src.tools.browser_tools.time.sleep"):
+            with patch("src.tools.browser_tools.build_opener") as opener:
+                opener.return_value.open.side_effect = [
+                    failure, io.BytesIO(b'{"success": true, "stdout": "snapshot"}'),
+                ]
+                self.assertEqual(_request("/scrape/id/interact", "fake", retry_safe=True)["stdout"],
+                                 "snapshot")
+                self.assertEqual(opener.return_value.open.call_count, 2)
+            with patch("src.tools.browser_tools.build_opener") as opener:
+                opener.return_value.open.side_effect = failure
+                with self.assertRaisesRegex(RuntimeError, "may have run"):
+                    _request("/scrape/id/interact", "fake")
+                self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_browser_close_retries_transient_error_and_preserves_failed_session_id(self):
+        scrape_id = "550e8400-e29b-41d4-a716-446655440000"
+        browser = BrowserSession()
+        browser.scrape_id, browser.key = scrape_id, "fake-key"
+        with patch("src.tools.browser_tools._request", side_effect=RuntimeError("HTTP 502")):
+            with self.assertRaisesRegex(RuntimeError, scrape_id):
+                browser.close()
+        self.assertEqual(browser.scrape_id, scrape_id)
+        failure = HTTPError("https://api.firecrawl.dev", 502, "Bad Gateway", None, None)
+        self.addCleanup(failure.close)
+        with patch("src.tools.browser_tools.time.sleep"):
+            with patch("src.tools.browser_tools.build_opener") as opener:
+                opener.return_value.open.side_effect = [
+                    failure, io.BytesIO(b'{"success": true}'),
+                ]
+                browser.close()
+                self.assertEqual(opener.return_value.open.call_count, 2)
+        self.assertIsNone(browser.scrape_id)
 
     def test_registry_dispatches_write_file(self):
         with tempfile.TemporaryDirectory() as folder:

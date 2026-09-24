@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -68,6 +69,43 @@ class SQLiteSessionStore:
         finally:
             connection.close()
         return [row[0] for row in rows]
+
+    def search_messages(self, query: str, limit: int = 20) -> list[tuple[str, str | None, str, str]]:
+        """Find recent user/assistant text across saved sessions."""
+        query = query.strip()
+        if not query or len(query) > 200:
+            raise ValueError("Search query must be 1 to 200 characters.")
+        if not 1 <= limit <= 100:
+            raise ValueError("Search limit must be between 1 and 100.")
+        pattern = re.compile(re.escape(query), re.IGNORECASE)
+        matches = []
+        connection = sqlite3.connect(self.db_path)
+        try:
+            # ponytail: scan local transcripts; add SQLite FTS only if this becomes slow.
+            rows = connection.execute(
+                "SELECT m.session_id, s.project_root, m.message_json "
+                "FROM messages AS m LEFT JOIN sessions AS s ON s.id = m.session_id "
+                "ORDER BY m.id DESC"
+            )
+            for session_id, project_root, raw in rows:
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(f"Saved chat history is invalid JSON in {self.db_path}.") from exc
+                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                    continue
+                content = message.get("content")
+                if not isinstance(content, str) or not (found := pattern.search(content)):
+                    continue
+                start, end = max(0, found.start() - 60), min(len(content), found.end() + 100)
+                snippet = " ".join(content[start:end].split())
+                snippet = ("…" if start else "") + snippet + ("…" if end < len(content) else "")
+                matches.append((session_id, project_root, message["role"], snippet))
+                if len(matches) == limit:
+                    break
+        finally:
+            connection.close()
+        return matches
 
     def session_exists(self, session_id: str) -> bool:
         connection = sqlite3.connect(self.db_path)
