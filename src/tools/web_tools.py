@@ -5,90 +5,78 @@ import socket
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 MAX_PAGE_BYTES = 1_000_000
 MAX_PAGE_TEXT_CHARS = 12_000
 MAX_API_BYTES = 2_000_000
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/117.0.0.0 Safari/537.36"
 )
 
 
-class _Results(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.items = []
-        self._field = None
-        self._field_tag = None
-        self._current = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        classes = attrs.get("class", "").split()
-        
-        # 1. DuckDuckGo results now use 'result-link' or 'result__url' classes on anchors
-        if tag == "a" and ("result-link" in classes or "result__url" in classes or "result__a" in classes):
-            href = attrs.get("href", "")
-            # Filter out internal DuckDuckGo settings/navigation links
-            if href and not href.startswith(("/", "?")):
-                self._current = {"title": "", "url": _result_url(href), "snippet": ""}
-                self._field = "title"
-                self._field_tag = tag
-                
-        # 2. Snippets are nested under divs or anchors matching snippet identifiers
-        elif self._current and ("result__snippet" in classes or "result-snippet" in classes):
-            self._field = "snippet"
-            self._field_tag = tag
-
-    def handle_data(self, data):
-        if self._current and self._field:
-            self._current[self._field] += data
-
-    def handle_endtag(self, tag):
-        if tag == self._field_tag:
-            # Once we finish collecting data inside the anchor tag, push it to items
-            if self._field == "title" and self._current:
-                # Deduplicate or skip if URL is already processed
-                if not any(item["url"] == self._current["url"] for item in self.items):
-                    self.items.append(self._current)
-            self._field = None
-            self._field_tag = None
-
-
-def _result_url(href: str) -> str:
-    parsed = urlparse(href)
-    if "uddg" in parse_qs(parsed.query):
-        return unquote(parse_qs(parsed.query)["uddg"][0])
-    return href
-
-
 def web_search(query: str, max_results: int = 5) -> str:
-    if not query.strip():
+    """Return short, source-linked Tavily results for a public web query."""
+    if not isinstance(query, str) or not query.strip():
         raise ValueError("Search query is empty. Provide a focused topic or question.")
-    if not 1 <= max_results <= 5:
+    if type(max_results) is not int or not 1 <= max_results <= 5:
         raise ValueError("max_results must be between 1 and 5.")
+    key = _tavily_api_key()
+    if not key:
+        raise RuntimeError("Tavily API key missing. Add TAVILY_API_KEY to ~/.mini-hermes/tavily.env.")
     request = Request(
-        f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
-        headers={"User-Agent": USER_AGENT},
+        TAVILY_SEARCH_URL,
+        data=json.dumps({
+            "query": query.strip(), "max_results": max_results,
+            "search_depth": "basic", "include_answer": False,
+            "include_raw_content": False,
+        }).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
     )
     try:
-        with urlopen(request, timeout=15) as response:
-            page = response.read().decode("utf-8", errors="replace")
-    except (URLError, TimeoutError) as exc:
-        raise RuntimeError(f"Web search failed: {exc}. Try again later.") from exc
-    parser = _Results()
-    parser.feed(page)
-    if not parser.items:
-        return "No web results found. Try a shorter or more specific query."
-    return "\n\n".join(
-        f"{index}. {item['title'].strip()}\n{item['url']}\n{item['snippet'].strip()}"
-        for index, item in enumerate(parser.items[:max_results], 1)
-    )
+        with build_opener(_NoRedirect()).open(request, timeout=20) as response:
+            raw = response.read(MAX_API_BYTES + 1)
+    except HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise RuntimeError("Tavily rejected the API key. Check ~/.mini-hermes/tavily.env.") from exc
+        if exc.code in {429, 432, 433}:
+            raise RuntimeError("Tavily search is rate limited or out of credits. Check your Tavily account.") from exc
+        raise RuntimeError(f"Tavily search returned HTTP {exc.code}. Try again later.") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("Tavily search could not be reached or timed out. Try again later.") from exc
+    if len(raw) > MAX_API_BYTES:
+        raise RuntimeError("Tavily returned too much data for one search. Try a narrower query.")
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Tavily returned invalid JSON. Try again later.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise RuntimeError("Tavily returned an invalid search response. Try again later.")
+    if not payload["results"]:
+        return "No web results found. Try a more specific query."
+
+    formatted = []
+    for item in payload["results"][:max_results]:
+        if not isinstance(item, dict) or not all(isinstance(item.get(field), str) for field in ("title", "url", "content")):
+            raise RuntimeError("Tavily returned an invalid search result. Try again later.")
+        url = item["url"]
+        try:
+            parsed = urlsplit(url)
+            valid_url = len(url) <= 2048 and parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise RuntimeError("Tavily returned an invalid result URL. Try again later.")
+        title = " ".join(item["title"].split())[:200] or "Untitled page"
+        snippet = " ".join(item["content"].split())[:1200]
+        formatted.append(f"{len(formatted) + 1}. {title}\n{url}\n{snippet}")
+    return "\n\n".join(formatted)
 
 
 def _check_public_url(url: str) -> None:
@@ -172,23 +160,31 @@ def _format_page(url: str, title: str, body: str, note: str = "") -> str:
     return f"Source: {url}\nTitle: {title}\nContent:\n{body}{suffix}"
 
 
-def _firecrawl_api_key() -> str:
-    key = os.environ.get("FIRECRAWL_API_KEY")
+def _api_key(name: str, filename: str) -> str:
+    key = os.environ.get(name)
     if key and key.strip():
         return key.strip()
-    env_file = Path.home() / ".mini-hermes" / "firecrawl.env"
+    env_file = Path.home() / ".mini-hermes" / filename
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         return ""
     for line in lines:
-        name, separator, value = line.partition("=")
-        if separator and name.strip() == "FIRECRAWL_API_KEY":
+        entry_name, separator, value = line.partition("=")
+        if separator and entry_name.strip() == name:
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
             return value
     return ""
+
+
+def _tavily_api_key() -> str:
+    return _api_key("TAVILY_API_KEY", "tavily.env")
+
+
+def _firecrawl_api_key() -> str:
+    return _api_key("FIRECRAWL_API_KEY", "firecrawl.env")
 
 
 def _firecrawl_extract(url: str, key: str) -> str:

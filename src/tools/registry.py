@@ -84,8 +84,8 @@ def tool_schemas() -> list[dict[str, Any]]:
         {
             "name": "web_search",
             "description": (
-                "Search the public web when the user needs current or external information. "
-                "Returns a short list of result titles, URLs, and snippets."
+                "Search the public web with Tavily when the user needs current or external information. "
+                "Returns up to five source titles, URLs, and short snippets. Requires a Tavily API key."
             ),
             "parameters": {
                 "type": "object", "properties": {

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from src.tools.browser_tools import BrowserSession, _request
 from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import run_terminal
-from src.tools.web_tools import _firecrawl_extract, web_extract, web_search
+from src.tools.web_tools import _firecrawl_extract, _tavily_api_key, web_extract, web_search
 
 
 class ToolTests(unittest.TestCase):
@@ -27,8 +28,9 @@ class ToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / ".env").write_text("secret")
+            (root / "tavily.env").write_text("TAVILY_API_KEY=fake-secret")
             (root / "alias").symlink_to(root / ".env")
-            for path in (".env", "alias"):
+            for path in (".env", "alias", "tavily.env"):
                 with self.subTest(path=path), self.assertRaisesRegex(ValueError, "excluded from reading"):
                     read_file(path, root)
 
@@ -59,6 +61,7 @@ class ToolTests(unittest.TestCase):
             root = Path(folder)
             (root / "visible.txt").write_text("search_marker\n")
             (root / ".env").write_text("search_marker\n")
+            (root / "tavily.env").write_text("search_marker\n")
             (root / "node_modules").mkdir()
             (root / "node_modules" / "hidden.txt").write_text("search_marker\n")
             result = search_files("search_marker", root, include="*", max_results=1)
@@ -70,6 +73,8 @@ class ToolTests(unittest.TestCase):
                 search_files("search_marker", root, path="../")
             with self.assertRaisesRegex(ValueError, "excluded from search"):
                 search_files("search_marker", root, path=".env")
+            with self.assertRaisesRegex(ValueError, "excluded from search"):
+                search_files("search_marker", root, path="tavily.env")
             with self.assertRaisesRegex(ValueError, "Search failed"):
                 search_files("(", root)
 
@@ -151,15 +156,64 @@ class ToolTests(unittest.TestCase):
         self.assertIn("--bind", command)
         self.assertEqual(command[-3:], ["/bin/bash", "-lc", "echo ok"])
 
-    def test_web_search_parses_result_title_url_and_snippet(self):
-        page = b'''<a class="result__a" href="https://example.com/">Example</a>
-                   <a class="result__snippet">Useful result</a>'''
-        with patch("src.tools.web_tools.urlopen") as open_url:
-            open_url.return_value.__enter__.return_value.read.return_value = page
-            result = web_search("example", 1)
-        self.assertIn("Example", result)
-        self.assertIn("https://example.com/", result)
-        self.assertIn("Useful result", result)
+    def test_web_search_uses_tavily_and_formats_sources(self):
+        payload = {"results": [
+            {"title": " Example  Page ", "url": "https://example.com/", "content": "Useful\n result"},
+            {"title": "Other", "url": "https://other.example/", "content": "More text"},
+        ]}
+        with patch("src.tools.web_tools._tavily_api_key", return_value="fake-key"):
+            with patch("src.tools.web_tools.build_opener") as opener:
+                opener.return_value.open.return_value.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+                result = execute_tool(
+                    "web_search", {"query": " example ", "max_results": 1},
+                    Path.cwd(), Mock(), Mock(),
+                )
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.tavily.com/search")
+        self.assertEqual(request.get_header("Authorization"), "Bearer fake-key")
+        self.assertEqual(json.loads(request.data), {
+            "query": "example", "max_results": 1, "search_depth": "basic",
+            "include_answer": False, "include_raw_content": False,
+        })
+        self.assertEqual(result, "1. Example Page\nhttps://example.com/\nUseful result")
+
+    def test_web_search_reports_configuration_and_api_failures(self):
+        with patch("src.tools.web_tools._tavily_api_key", return_value=""):
+            with self.assertRaisesRegex(RuntimeError, "Tavily API key missing"):
+                web_search("example")
+        with patch("src.tools.web_tools._tavily_api_key", return_value="fake-key"):
+            with patch("src.tools.web_tools.build_opener") as opener:
+                unauthorized = HTTPError("https://api.tavily.com/search", 401, "Unauthorized", None, None)
+                rate_limited = HTTPError("https://api.tavily.com/search", 429, "Rate Limited", None, None)
+                opener.return_value.open.side_effect = unauthorized
+                with self.assertRaisesRegex(RuntimeError, "rejected the API key"):
+                    web_search("example")
+                opener.return_value.open.side_effect = rate_limited
+                with self.assertRaisesRegex(RuntimeError, "rate limited"):
+                    web_search("example")
+                unauthorized.close()
+                rate_limited.close()
+
+    def test_web_search_distinguishes_empty_results_from_invalid_data(self):
+        with patch("src.tools.web_tools._tavily_api_key", return_value="fake-key"):
+            with patch("src.tools.web_tools.build_opener") as opener:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.read.return_value = b'{"results": []}'
+                self.assertIn("No web results found", web_search("example"))
+                response.read.return_value = b'{"results": [{"title": "Bad", "url": "javascript:alert(1)", "content": "x"}]}'
+                with self.assertRaisesRegex(RuntimeError, "invalid result URL"):
+                    web_search("example")
+
+    def test_tavily_key_reads_private_file_and_environment_override(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / ".mini-hermes"
+            config.mkdir()
+            (config / "tavily.env").write_text("TAVILY_API_KEY='file-key'\n")
+            with patch("src.tools.web_tools.Path.home", return_value=Path(folder)):
+                with patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
+                    self.assertEqual(_tavily_api_key(), "file-key")
+                with patch.dict(os.environ, {"TAVILY_API_KEY": "env-key"}):
+                    self.assertEqual(_tavily_api_key(), "env-key")
 
     def test_web_extract_uses_firecrawl_only_when_key_is_configured(self):
         with patch("src.tools.web_tools._check_public_url"):

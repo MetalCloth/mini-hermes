@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 
-_PRIVATE_PARTS = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env")
+_PRIVATE_PARTS = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env", "tavily.env")
 
 
 def _is_private_path(target: Path, root: Path) -> bool:
