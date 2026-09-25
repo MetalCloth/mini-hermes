@@ -56,6 +56,64 @@ class ConversationLoopTests(unittest.TestCase):
         self.assertLessEqual(len(result), 20_000)
         self.assertIn("original result was 20001 characters", result)
 
+    def test_executes_multiple_tool_calls_and_keeps_each_result_with_its_call(self):
+        history = [{"role": "user", "content": "Read two files"}]
+        first = ToolCall("call_1", "read_file", {"path": "one.txt"})
+        second = ToolCall("call_2", "read_file", {"path": "two.txt"})
+        complete = Mock(side_effect=[
+            ModelResponse(tool_calls=[first, second]),
+            ModelResponse("Both files are read."),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.agent.conversation_loop.execute_tool", side_effect=["one", "two"]) as execute:
+                answer = run_turn(history, complete, [], Path(folder), Mock(), Mock())
+
+        self.assertEqual(answer, "Both files are read.")
+        self.assertEqual([call.args[1] for call in execute.call_args_list], [first.arguments, second.arguments])
+        self.assertEqual([call["id"] for call in history[1]["tool_calls"]], ["call_1", "call_2"])
+        self.assertEqual([message["content"] for message in history[2:4]], ["one", "two"])
+        self.assertEqual([message["tool_call_id"] for message in history[2:4]], ["call_1", "call_2"])
+
+    def test_tool_exception_is_returned_to_model_as_a_tool_result(self):
+        history = [{"role": "user", "content": "Read a missing file"}]
+        complete = Mock(side_effect=[
+            ModelResponse(tool_calls=[ToolCall("call_1", "read_file", {"path": "missing.txt"})]),
+            ModelResponse("That file does not exist."),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.agent.conversation_loop.execute_tool", side_effect=FileNotFoundError("missing.txt")):
+                answer = run_turn(history, complete, [], Path(folder), Mock(), Mock())
+
+        self.assertEqual(answer, "That file does not exist.")
+        self.assertEqual(history[2]["tool_call_id"], "call_1")
+        self.assertIn("Tool error: missing.txt", history[2]["content"])
+
+    def test_cancellation_between_tools_keeps_only_completed_call_pairs(self):
+        from threading import Event
+        from src.agent.conversation_loop import TurnCancelled
+
+        history = [{"role": "user", "content": "Read two files"}]
+        calls = [
+            ToolCall("call_1", "read_file", {"path": "one.txt"}),
+            ToolCall("call_2", "read_file", {"path": "two.txt"}),
+        ]
+        complete = Mock(return_value=ModelResponse(tool_calls=calls))
+        cancel = Event()
+
+        def event(phase, call, result):
+            if phase == "result":
+                cancel.set()
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.agent.conversation_loop.execute_tool", return_value="one") as execute:
+                with self.assertRaises(TurnCancelled):
+                    run_turn(history, complete, [], Path(folder), Mock(), Mock(),
+                             on_tool_event=event, cancel_event=cancel)
+
+        execute.assert_called_once()
+        self.assertEqual([call["id"] for call in history[1]["tool_calls"]], ["call_1"])
+        self.assertEqual(history[2]["tool_call_id"], "call_1")
+
     def test_failed_tool_event_does_not_leave_an_unanswered_call(self):
         history = [{"role": "user", "content": "Search"}]
         complete = Mock(return_value=ModelResponse(tool_calls=[

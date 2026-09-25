@@ -9,6 +9,7 @@ export type SavedMessage = {
   role: "user" | "assistant" | "tool";
   content: string;
   name?: string;
+  turn_status?: "cancelled" | "failed";
 };
 
 export type Bootstrap = {

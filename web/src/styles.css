@@ -133,6 +133,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .message.user { display: flex; justify-content: flex-end; margin: 0 0 36px; }
 .message.user .message-body { max-width: min(78%, 600px); padding: 12px 18px; border: 1px solid #dfe7f6; border-radius: 20px 20px 6px 20px; background: #eaf0fb; }
 .message-role { margin: 1px 0 10px; color: #496080; font-size: 13px; font-weight: 700; letter-spacing: -.015em; }
+.message-turn-status { width: fit-content; margin: -4px 0 8px; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.message-turn-status.cancelled { color: #76591d; background: #fbf2d8; }
+.message-turn-status.failed { color: #943d45; background: #fae8e9; }
 .message-content { min-width: 0; color: #2d3645; font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; }
 .message.user .message-content { color: #344052; white-space: pre-wrap; }
 .message.assistant .message-content { font-size: 15.5px; }
@@ -178,13 +181,36 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .tool-card summary > span { color: #3f4d64; font-size: 12px; font-weight: 650; }
 .tool-card small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #929cad; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .tool-card pre, .approval-card pre { max-height: 260px; margin: 0; padding: 14px; overflow: auto; border-top: 1px solid #e4e9f3; color: #505c70; background: #f7f9fd; font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.approval-card { padding: 17px; border-color: #e8d5a3; background: #fffdf6; }
-.approval-label { color: #9f6c1e; font: 700 10px ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }
-.approval-card h2 { margin: 9px 0 5px; color: #3f4550; font-size: 15px; }
-.approval-card p { margin: 0 0 12px; color: #717b88; font-size: 12px; }
-.approval-card pre { border: 1px solid #eadfbe; border-radius: var(--radius-sm); background: #fffefa; }
-.approval-card .approval-error { margin-top: 12px; color: #b94848; }
-.approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.approval-card { overflow: hidden; border-color: #d3deef; background: #fff; }
+.approval-heading { padding: 17px 18px 13px; }
+.approval-label { display: flex; align-items: center; gap: 8px; color: #687893; font: 700 10px ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.approval-label::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #d5a34d; box-shadow: 0 0 0 3px #faf3e5; }
+.approval-label.is-approved::before { background: #26945e; box-shadow: 0 0 0 3px #e8f5ed; }
+.approval-label.is-denied::before { background: #cc5a5a; box-shadow: 0 0 0 3px #fbecec; }
+.approval-card h2 { margin: 9px 0 5px; color: #354158; font-size: 15px; line-height: 1.45; }
+.approval-card p { margin: 0; color: #778398; font-size: 12px; }
+.approval-card > pre { max-height: 260px; margin: 0 14px 14px; border: 1px solid #dfe6f1; border-radius: 13px; background: #f7f9fd; }
+.approval-diff { margin: 0 14px 14px; overflow: hidden; border: 1px solid #dbe3ef; border-radius: 13px; background: #f8faff; }
+.approval-diff-header { display: flex; align-items: center; gap: 14px; min-height: 42px; padding: 0 13px; border-bottom: 1px solid #e2e8f2; background: #f1f5fb; }
+.approval-diff-file { display: flex; align-items: center; gap: 8px; min-width: 0; color: #73819a; }
+.approval-diff-file code { min-width: 0; overflow: hidden; color: #43516a; font: 600 12px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.approval-diff-counts { display: flex; flex: none; gap: 9px; margin-left: auto; font: 700 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.approval-diff-counts span:first-child { color: #198754; }
+.approval-diff-counts span:last-child { color: #c65050; }
+.approval-diff-scroll { max-height: 280px; overflow: auto; overscroll-behavior: contain; }
+.approval-diff-lines { min-width: 100%; padding: 5px 0; color: #4f5b70; font: 12px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.approval-diff-line { display: grid; grid-template-columns: 38px 38px 24px minmax(0, 1fr); min-height: 22px; padding-right: 14px; }
+.approval-diff-line.added { background: #eaf6ef; box-shadow: inset 3px 0 #39a66a; }
+.approval-diff-line.removed { background: #fff0ef; box-shadow: inset 3px 0 #d96363; }
+.approval-diff-number { padding-right: 8px; border-right: 1px solid rgba(128,145,170,.12); color: #9aa5b7; background: rgba(238,242,249,.58); text-align: right; user-select: none; }
+.approval-diff-marker { color: #a0a9b8; text-align: center; user-select: none; }
+.approval-diff-line.added .approval-diff-marker { color: #16834c; font-weight: 700; }
+.approval-diff-line.removed .approval-diff-marker { color: #c34c4c; font-weight: 700; }
+.approval-diff-code { min-width: 0; padding-left: 5px; color: #48546a; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-diff-line.added .approval-diff-code { color: #276644; }
+.approval-diff-line.removed .approval-diff-code { color: #994848; }
+.approval-card .approval-error { margin: 0; padding: 12px 18px; border-top: 1px solid #fae2e2; color: #b94848; }
+.approval-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 0; padding: 12px 14px 14px; border-top: 1px solid #edf0f6; }
 .approval-actions button { min-width: 85px; padding: 9px 13px; border: 1px solid #cad5e8; border-radius: var(--radius-sm); background: white; color: #526079; font-size: 12px; font-weight: 650; transition: border-color .18s ease, background .18s ease, transform .18s ease; }
 .approval-actions button:hover:not(:disabled) { border-color: var(--blue); transform: translateY(-1px); }
 .approval-actions .allow-button { border-color: var(--blue); color: white; background: var(--blue); }
@@ -252,6 +278,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
   .message { grid-template-columns: 28px minmax(0,1fr); gap: 10px; }
   .message-avatar { width: 27px; height: 27px; }
   .tool-card, .approval-card { margin-left: 38px; }
+  .approval-diff-line { grid-template-columns: 31px 31px 20px minmax(0, 1fr); }
   .activity { grid-template-columns: 28px minmax(0,1fr); gap: 10px; }
   .composer-area { padding: 0 12px 12px; }
   .prompt-box-hint { display: none; }

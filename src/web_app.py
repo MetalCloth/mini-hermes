@@ -19,6 +19,7 @@ from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
+from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import validate_project_root
 
@@ -55,6 +56,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.state_lock = threading.Lock()
         self.active_turns: dict[str, threading.Event] = {}
         self.approvals: dict[str, Approval] = {}
+        self.file_change_history: dict[str, list[FileChange]] = {}
 
     def session_root(self, session_id: str) -> Path | None:
         if not SESSION_ID_PATTERN.fullmatch(session_id) or not self.store.session_exists(session_id):
@@ -162,7 +164,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             messages = self.server.store.load_messages(session_id)
             self._json(200, {"id": session_id, "messages": [
-                {"role": m.get("role"), "content": m.get("content", ""), "name": m.get("name")}
+                {
+                    "role": m.get("role"),
+                    "content": m.get("content", ""),
+                    "name": m.get("name"),
+                    **({"turn_status": m["turn_status"]} if m.get("turn_status") else {}),
+                }
                 for m in messages if m.get("role") in {"user", "assistant", "tool"}
             ]})
             return
@@ -279,6 +286,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif not self.server.store.delete_session(session_id):
                 result = "missing"
             else:
+                self.server.file_change_history.pop(session_id, None)
                 result = "deleted"
         if result == "missing":
             self._json(404, {"error": "Session not found."})
@@ -326,6 +334,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             cancel_event = threading.Event()
             self.server.active_turns[session_id] = cancel_event
+            undo_history = self.server.file_change_history.setdefault(session_id, [])
         streaming = False
         partial_text: list[str] = []
         try:
@@ -357,7 +366,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             def show_tool(phase: str, call: ToolCall, result: str | None) -> None:
                 if phase == "start":
-                    partial_text.clear()
                     detail = next((str(call.arguments[key]) for key in
                                    ("path", "ref", "url", "query", "command", "key")
                                    if key in call.arguments), "")
@@ -365,10 +373,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 else:
                     self._event("tool_result", id=call.id, name=call.name,
                                 result=(result or "")[:2000])
+                    partial_text.clear()
 
             def show_text(delta: str) -> None:
                 partial_text.append(delta)
                 self._event("delta", text=delta)
+
+            def mark_interrupted_reply(turn_status: str) -> None:
+                for message in history[start:]:
+                    if message.get("role") == "assistant" and (message.get("content") or message.get("tool_calls")):
+                        message["turn_status"] = turn_status
+                if partial_text:
+                    history.append({
+                        "role": "assistant",
+                        "content": "".join(partial_text),
+                        "turn_status": turn_status,
+                    })
 
             try:
                 answer = run_turn(
@@ -382,16 +402,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     on_text_delta=show_text,
                     on_tool_event=show_tool,
                     cancel_event=cancel_event,
+                    confirm_edit=lambda path, diff: self._ask(
+                        session_id, cancel_event, "edit", path, diff
+                    ),
+                    confirm_undo=lambda path, diff, removes_created_file: self._ask(
+                        session_id,
+                        cancel_event,
+                        "undo_created" if removes_created_file else "undo",
+                        path,
+                        diff,
+                    ),
+                    undo_history=undo_history,
                 )
                 if cancel_event.is_set():
                     raise TurnCancelled
                 history.append({"role": "assistant", "content": answer})
                 outcome = {"type": "done", "answer": answer}
             except TurnCancelled:
-                if partial_text:
-                    history.append({"role": "assistant", "content": "".join(partial_text)})
+                mark_interrupted_reply("cancelled")
                 outcome = {"type": "cancelled"}
             except Exception as exc:
+                mark_interrupted_reply("failed")
                 outcome = {"type": "error", "message": f"Agent turn failed: {exc}"}
             try:
                 self.server.store.append_messages(history[start:], session_id)

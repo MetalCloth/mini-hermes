@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
-import { Bot, ChevronDown, Folder, Menu, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Trash2, Wrench, X } from "lucide-react";
+import { Bot, ChevronDown, FileCode2, Folder, Menu, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Trash2, Wrench, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -11,7 +11,7 @@ import { PromptInputBox, type ShortcutId } from "@/components/ui/ai-prompt-box";
 import { normalizeLatexDelimiters } from "./markdown";
 
 export type TimelineItem =
-  | { key: string; kind: "message"; role: "user" | "assistant"; content: string }
+  | { key: string; kind: "message"; role: "user" | "assistant"; content: string; turnStatus?: "cancelled" | "failed" }
   | { key: string; kind: "tool"; name: string; detail: string; result: string }
   | { key: string; kind: "approval"; id: string; action: string; target: string; content: string; decision?: boolean };
 
@@ -225,19 +225,87 @@ function ApprovalCard({ item, onDecide }: { item: Extract<TimelineItem, { kind: 
     finally { setSubmitting(false); }
   }
 
-  const title = item.action === "terminal" ? "Run a terminal command?" : `${item.action === "create" ? "Create" : "Replace"} ${item.target}?`;
+  const title = item.action === "terminal" ? "Run a terminal command?"
+    : item.action === "edit" ? `Apply proposed edit to ${item.target}?`
+    : item.action === "undo" ? `Restore previous contents of ${item.target}?`
+    : item.action === "undo_created" ? `Delete ${item.target} to undo Oryn's creation?`
+    : `${item.action === "create" ? "Create" : "Replace"} ${item.target}?`;
+  const diff = ["edit", "undo", "undo_created"].includes(item.action) ? parseApprovalDiff(item.content) : null;
+  const allowLabel = item.action === "edit" ? "Apply edit"
+    : item.action === "undo" ? "Restore file"
+    : item.action === "undo_created" ? "Delete file"
+    : "Allow once";
   return (
     <section className="approval-card" aria-label="Tool approval requested">
-      <div className="approval-label">APPROVAL REQUIRED</div>
-      <h2>{title}</h2>
-      <p>{item.decision === undefined ? "Review this action before Oryn continues." : item.decision ? "Approved. Oryn is continuing." : "Denied. Oryn is continuing without this action."}</p>
-      <pre>{item.content}</pre>
+      <div className="approval-heading">
+        <div className={`approval-label${item.decision === undefined ? "" : item.decision ? " is-approved" : " is-denied"}`}>
+          {item.decision === undefined ? "Approval required" : item.decision ? "Approved" : "Denied"}
+        </div>
+        <h2>{title}</h2>
+        <p>{item.decision === undefined ? "Review this action before Oryn continues." : item.decision ? "Approved. Oryn is continuing." : "Denied. Oryn is continuing without this action."}</p>
+      </div>
+      {diff ? <ApprovalDiff target={item.target} lines={diff.lines} added={diff.added} removed={diff.removed} /> : <pre>{item.content}</pre>}
       {error && <p className="approval-error" role="alert">{error}</p>}
       {item.decision === undefined && <div className="approval-actions">
         <button ref={denyRef} type="button" disabled={submitting} onClick={() => decide(false)}>Deny</button>
-        <button className="allow-button" type="button" disabled={submitting} onClick={() => decide(true)}>Allow once</button>
+        <button className="allow-button" type="button" disabled={submitting} onClick={() => decide(true)}>{allowLabel}</button>
       </div>}
     </section>
+  );
+}
+
+type ApprovalDiffLine = { kind: "context" | "added" | "removed"; oldNumber: number | null; newNumber: number | null; text: string };
+
+function parseApprovalDiff(source: string): { lines: ApprovalDiffLine[]; added: number; removed: number } | null {
+  const lines: ApprovalDiffLine[] = [];
+  let oldNumber: number | null = null;
+  let newNumber: number | null = null;
+  for (const line of source.split(/\r?\n/)) {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      oldNumber = Number(hunk[1]);
+      newNumber = Number(hunk[2]);
+      continue;
+    }
+    if (oldNumber === null || newNumber === null || line === "" || line.startsWith("\\")) continue;
+    const marker = line[0];
+    if (marker === " ") {
+      lines.push({ kind: "context", oldNumber: oldNumber++, newNumber: newNumber++, text: line.slice(1) });
+    } else if (marker === "-") {
+      lines.push({ kind: "removed", oldNumber: oldNumber++, newNumber: null, text: line.slice(1) });
+    } else if (marker === "+") {
+      lines.push({ kind: "added", oldNumber: null, newNumber: newNumber++, text: line.slice(1) });
+    }
+  }
+  if (!lines.length) return null;
+  return {
+    lines,
+    added: lines.filter((line) => line.kind === "added").length,
+    removed: lines.filter((line) => line.kind === "removed").length,
+  };
+}
+
+function ApprovalDiff({ target, lines, added, removed }: { target: string; lines: ApprovalDiffLine[]; added: number; removed: number }) {
+  return (
+    <div className="approval-diff" role="group" aria-label={`Proposed changes to ${target}`}>
+      <div className="approval-diff-header">
+        <div className="approval-diff-file"><FileCode2 size={15} aria-hidden="true" /><code title={target}>{target}</code></div>
+        <div className="approval-diff-counts" role="group" aria-label={`${added} lines added, ${removed} removed`}><span>+{added}</span><span>−{removed}</span></div>
+      </div>
+      <div className="approval-diff-scroll">
+        <div className="approval-diff-lines" role="list" aria-label="Changed lines">
+          {lines.map((line, index) => (
+            <div className={`approval-diff-line ${line.kind}`} key={`${line.kind}-${line.oldNumber}-${line.newNumber}-${index}`} role="listitem">
+              <span className="approval-diff-number" aria-hidden="true">{line.oldNumber ?? ""}</span>
+              <span className="approval-diff-number" aria-hidden="true">{line.newNumber ?? ""}</span>
+              <span className="approval-diff-marker" aria-hidden="true">{line.kind === "added" ? "+" : line.kind === "removed" ? "−" : ""}</span>
+              <span className="sr-only">{line.kind === "added" ? "Added: " : line.kind === "removed" ? "Removed: " : "Context: "}</span>
+              <span className="approval-diff-code">{line.text || " "}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -253,6 +321,9 @@ export function Timeline({ items, status, onDecide }: { items: TimelineItem[]; s
             {item.role === "assistant" && <div className="message-avatar" aria-hidden="true"><Mascot size={27} /></div>}
             <div className="message-body">
               {item.role === "assistant" && <div className="message-role">Oryn</div>}
+              {item.role === "assistant" && item.turnStatus && <div className={`message-turn-status ${item.turnStatus}`} role="status">
+                {item.turnStatus === "cancelled" ? "Stopped before finishing" : "Couldn't finish this reply"}
+              </div>}
               {item.role === "assistant"
                 ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { throwOnError: false }]]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}>{normalizeLatexDelimiters(item.content)}</ReactMarkdown></div>
                 : <div className="message-content">{item.content}</div>}

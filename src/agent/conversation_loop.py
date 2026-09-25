@@ -9,6 +9,7 @@ from typing import Any
 from src.agent.context import select_context
 from src.providers.types import ModelResponse, ToolCall
 from src.tools.browser_tools import BrowserSession
+from src.tools.file_tools import FileChange
 from src.tools.registry import execute_tool
 
 
@@ -30,6 +31,9 @@ def run_turn(
     on_text_delta: Callable[[str], None] | None = None,
     on_tool_event: Callable[[str, ToolCall, str | None], None] | None = None,
     cancel_event: Event | None = None,
+    confirm_edit: Callable[[str, str], bool] | None = None,
+    confirm_undo: Callable[[str, str, bool], bool] | None = None,
+    undo_history: list[FileChange] | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -95,7 +99,20 @@ def run_turn(
                     break
                 try:
                     args = (call.name, call.arguments, project_root, confirm_terminal, confirm_write)
-                    result = execute_tool(*args, browser=browser) if call.name.startswith("browser_") else execute_tool(*args)
+                    if call.name == "write_file":
+                        result = execute_tool(*args, undo_history=undo_history)
+                    elif call.name == "edit_file":
+                        result = execute_tool(
+                            *args, confirm_edit=confirm_edit, undo_history=undo_history,
+                        )
+                    elif call.name == "undo_file_change":
+                        result = execute_tool(
+                            *args, confirm_undo=confirm_undo, undo_history=undo_history,
+                        )
+                    elif call.name.startswith("browser_"):
+                        result = execute_tool(*args, browser=browser)
+                    else:
+                        result = execute_tool(*args)
                 except Exception as exc:
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
                 if len(result) > MAX_TOOL_RESULT_CHARS:

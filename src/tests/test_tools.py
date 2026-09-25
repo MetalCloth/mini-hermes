@@ -244,7 +244,8 @@ class ToolTests(unittest.TestCase):
 
     def test_catalog_exposes_browser_navigation_tools(self):
         self.assertEqual([tool["name"] for tool in tool_schemas()], [
-            "terminal", "read_file", "search_files", "write_file", "web_search", "web_extract",
+            "terminal", "read_file", "search_files", "write_file", "edit_file", "undo_file_change",
+            "web_search", "web_extract",
             "browser_open", "browser_snapshot", "browser_click", "browser_fill",
             "browser_press", "browser_scroll", "browser_wait", "browser_back",
         ])

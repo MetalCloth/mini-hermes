@@ -5,7 +5,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from src.tools.browser_tools import BrowserSession
-from src.tools.file_tools import read_file, search_files, write_file
+from src.tools.file_tools import (
+    FileChange,
+    edit_file,
+    read_file,
+    search_files,
+    undo_file_change,
+    write_file,
+)
 from src.tools.terminal_tool import run_terminal
 from src.tools.web_tools import web_extract, web_search
 
@@ -80,6 +87,33 @@ def tool_schemas() -> list[dict[str, Any]]:
                     "content": {"type": "string", "description": "Complete UTF-8 text to write; up to 100,000 characters."},
                 }, "required": ["path", "content"], "additionalProperties": False,
             },
+        },
+        {
+            "name": "edit_file",
+            "description": (
+                "Make one focused replacement in an existing UTF-8 project file. "
+                "Read the file first, then provide exact old_text that occurs once and new_text. "
+                "Oryn shows the unified diff and must get user approval before applying it. "
+                "Paths stay inside the project; use write_file to create a file or replace its full contents."
+            ),
+            "parameters": {
+                "type": "object", "properties": {
+                    "path": {"type": "string", "description": "Project-relative path to an existing file."},
+                    "old_text": {"type": "string", "description": "Exact, unique text from the current file; include context if needed."},
+                    "new_text": {"type": "string", "description": "Replacement text; an empty string deletes the matched text."},
+                }, "required": ["path", "old_text", "new_text"], "additionalProperties": False,
+            },
+        },
+        {
+            "name": "undo_file_change",
+            "description": (
+                "Undo the most recent approved write_file or edit_file change made by Oryn in this chat session. "
+                "Restores previous bytes and permissions, or deletes a file Oryn created. "
+                "The user must approve the undo. It refuses if the file changed afterward. "
+                "The 20 most recent changes are kept in memory until this Oryn process exits. "
+                "Changes to existing files over 1 MB are refused so Oryn can keep a safe snapshot."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
         {
             "name": "web_search",
@@ -224,7 +258,10 @@ def tool_schemas() -> list[dict[str, Any]]:
 def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
                  confirm_terminal: Callable[[str], bool],
                  confirm_write: Callable[[str, str, bool], bool],
-                 browser: BrowserSession | None = None) -> str:
+                 browser: BrowserSession | None = None,
+                 confirm_edit: Callable[[str, str], bool] | None = None,
+                 confirm_undo: Callable[[str, str, bool], bool] | None = None,
+                 undo_history: list[FileChange] | None = None) -> str:
     if name.startswith("browser_") and browser is None:
         raise RuntimeError("Browser actions need an active agent turn. Open a page in the chat first.")
     if name == "terminal":
@@ -239,7 +276,20 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
             max_results=arguments["max_results"],
         )
     elif name == "write_file":
-        result = write_file(arguments["path"], arguments["content"], project_root, confirm_write)
+        result = write_file(
+            arguments["path"], arguments["content"], project_root, confirm_write, undo_history,
+        )
+    elif name == "edit_file":
+        if confirm_edit is None:
+            raise RuntimeError("edit_file needs a user-approval handler; no changes were made.")
+        result = edit_file(
+            arguments["path"], arguments["old_text"], arguments["new_text"],
+            project_root, confirm_edit, undo_history,
+        )
+    elif name == "undo_file_change":
+        if confirm_undo is None or undo_history is None:
+            raise RuntimeError("Undo is unavailable in this chat session; no changes were made.")
+        result = undo_file_change(project_root, undo_history, confirm_undo)
     elif name == "web_search":
         result = web_search(arguments["query"], arguments["max_results"])
     elif name == "web_extract":

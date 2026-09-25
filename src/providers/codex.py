@@ -92,6 +92,7 @@ def _response_text(
     text: list[str] = []
     tool_calls: list[ToolCall] = []
     data: list[str] = []
+    finished = False
 
     def consume() -> bool:
         if not data:
@@ -100,6 +101,8 @@ def _response_text(
             data.clear()
             return True
         event = json.loads("\n".join(data))
+        if not isinstance(event, dict):
+            raise RuntimeError("Codex returned an invalid stream event")
         kind = event.get("type")
         if kind == "response.output_text.delta":
             delta = event.get("delta", "")
@@ -139,12 +142,15 @@ def _response_text(
         line = raw.decode("utf-8").rstrip("\r\n")
         if not line:
             if consume():
+                finished = True
                 break
         elif line.startswith("data:"):
             value = line[5:]
             data.append(value[1:] if value.startswith(" ") else value)
     if data:
-        consume()
+        finished = consume()
+    if not finished:
+        raise RuntimeError("Codex stream ended before completion")
     if not text and not tool_calls:
         raise RuntimeError("Codex returned no text response")
     return ModelResponse("".join(text), tool_calls)
@@ -281,8 +287,12 @@ class CodexProvider:
                         watcher.join(timeout=0.2)
         except urllib.error.HTTPError as exc:
             if cancel_event and cancel_event.is_set():
+                exc.close()
                 raise InterruptedError("Codex request cancelled") from exc
-            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
             raise RuntimeError(f"Codex endpoint returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             if cancel_event and cancel_event.is_set():

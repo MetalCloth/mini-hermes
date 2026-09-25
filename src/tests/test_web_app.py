@@ -37,6 +37,38 @@ class WriteProvider:
         })])
 
 
+class ApprovalAwareWriteProvider(WriteProvider):
+    def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
+        if any(message["role"] == "tool" for message in messages):
+            answer = "No file was changed." if "cancelled" in messages[-1]["content"] else "The file is ready."
+            if on_text_delta:
+                on_text_delta(answer)
+            return ModelResponse(text=answer)
+        return super().complete(messages, tools, on_text_delta, cancel_event)
+
+
+class PartialFailureProvider:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
+        if on_text_delta:
+            on_text_delta("Partial answer before a 502.")
+        raise RuntimeError("Codex endpoint returned HTTP 502: temporary error")
+
+
+class BlockingProvider:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
+        if on_text_delta:
+            on_text_delta("Text before stop.")
+        while cancel_event and not cancel_event.wait(0.01):
+            pass
+        raise InterruptedError("Codex request cancelled")
+
+
 class DashboardTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -132,6 +164,87 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([m["role"] for m in data["messages"]],
                          ["user", "assistant", "tool", "assistant"])
         self.assertEqual([m["content"] for m in data["messages"] if m["role"] == "user"], ["Create a note"])
+
+    def test_denied_write_is_recorded_and_never_changes_the_file(self):
+        self.server.provider_factory = ApprovalAwareWriteProvider
+        session_id = self.create_session()
+        conn, response = self.stream(session_id, "Create a note")
+        self.assertEqual(json.loads(response.readline())["type"], "tool_start")
+        approval = json.loads(response.readline())
+        status, decision = self.request("POST", "/api/approvals", {
+            "id": approval["id"], "allow": False,
+        })
+        self.assertEqual(status, 200)
+        self.assertFalse(decision["allowed"])
+        events = [json.loads(line) for line in response]
+        conn.close()
+
+        target = Path(self.temp.name) / "note.txt"
+        self.assertFalse(target.exists())
+        self.assertIn("cancelled", next(event["result"] for event in events if event["type"] == "tool_result"))
+        self.assertEqual(events[-1], {"type": "done", "answer": "No file was changed."})
+        status, data = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertEqual(status, 200)
+        self.assertIn("cancelled", next(message["content"] for message in data["messages"]
+                                         if message["role"] == "tool"))
+
+    def test_stopping_during_write_approval_denies_the_write(self):
+        self.server.provider_factory = WriteProvider
+        session_id = self.create_session()
+        conn, response = self.stream(session_id, "Create a note")
+        self.assertEqual(json.loads(response.readline())["type"], "tool_start")
+        approval = json.loads(response.readline())
+        self.assertEqual(approval["type"], "approval")
+        status, result = self.request("POST", "/api/turns/cancel", {"session_id": session_id})
+        self.assertEqual(status, 200)
+        self.assertTrue(result["cancelled"])
+        events = [json.loads(line) for line in response]
+        conn.close()
+
+        self.assertFalse((Path(self.temp.name) / "note.txt").exists())
+        self.assertIn("cancelled", next(event["result"] for event in events if event["type"] == "tool_result"))
+        self.assertEqual(events[-1], {"type": "cancelled"})
+        status, data = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertEqual(status, 200)
+        assistant_call = next(message for message in data["messages"]
+                              if message["role"] == "assistant" and message.get("turn_status"))
+        self.assertEqual(assistant_call["turn_status"], "cancelled")
+
+    def test_stop_during_stream_saves_partial_reply_with_cancelled_status(self):
+        self.server.provider_factory = BlockingProvider
+        session_id = self.create_session()
+        conn, response = self.stream(session_id, "Tell me something")
+        first = json.loads(response.readline())
+        self.assertEqual(first, {"type": "delta", "text": "Text before stop."})
+
+        status, result = self.request("POST", "/api/turns/cancel", {"session_id": session_id})
+        self.assertEqual(status, 200)
+        self.assertTrue(result["cancelled"])
+        events = [json.loads(line) for line in response]
+        conn.close()
+        self.assertEqual(events[-1], {"type": "cancelled"})
+
+        status, data = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertEqual(status, 200)
+        partial = data["messages"][-1]
+        self.assertEqual(partial["content"], "Text before stop.")
+        self.assertEqual(partial["turn_status"], "cancelled")
+
+    def test_provider_failure_saves_streamed_partial_text_as_failed(self):
+        self.server.provider_factory = PartialFailureProvider
+        session_id = self.create_session()
+        conn, response = self.stream(session_id, "Answer this")
+        events = [json.loads(line) for line in response]
+        conn.close()
+        self.assertEqual(events[0], {"type": "delta", "text": "Partial answer before a 502."})
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("HTTP 502", events[-1]["message"])
+
+        status, data = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertEqual(status, 200)
+        partial = data["messages"][-1]
+        self.assertEqual(partial["content"], "Partial answer before a 502.")
+        self.assertEqual(partial["turn_status"], "failed")
 
 
 if __name__ == "__main__":

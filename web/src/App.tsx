@@ -7,7 +7,7 @@ function savedItems(messages: SavedMessage[]): TimelineItem[] {
   return messages.flatMap<TimelineItem>((message, index) => {
     if (message.role === "tool") return [{ key: `saved-${index}`, kind: "tool" as const, name: message.name || "Tool", detail: "", result: message.content }];
     if ((message.role === "user" || message.role === "assistant") && message.content) {
-      return [{ key: `saved-${index}`, kind: "message" as const, role: message.role, content: message.content }];
+      return [{ key: `saved-${index}`, kind: "message" as const, role: message.role, content: message.content, turnStatus: message.turn_status }];
     }
     return [];
   });
@@ -228,6 +228,14 @@ export default function App() {
     if (!text || !token || creating.current || (selected && active.current.has(selected))) return;
     let sessionId = selected;
     const userKey = crypto.randomUUID();
+    const streamedAssistantKeys = new Set<string>();
+    function markPartialReply(id: string, turnStatus: "cancelled" | "failed") {
+      updateItems(id, (current) => current.map((item) =>
+        item.kind === "message" && streamedAssistantKeys.has(item.key)
+          ? { ...item, turnStatus }
+          : item,
+      ));
+    }
     const root = project;
     const version = loadVersion.current;
     if (!sessionId) {
@@ -262,6 +270,7 @@ export default function App() {
           if (!currentTextKey) {
             const key = crypto.randomUUID();
             currentTextKey = key;
+            streamedAssistantKeys.add(key);
             updateItems(turnId, (current) => [...current, { key, kind: "message", role: "assistant", content: event.text }]);
           } else {
             const key = currentTextKey;
@@ -288,10 +297,12 @@ export default function App() {
           stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: ready }));
         } else if (event.type === "cancelled") {
+          markPartialReply(turnId, "cancelled");
           finished = true;
           stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: { kind: "ready", message: "Stopped" } }));
         } else if (event.type === "error") {
+          markPartialReply(turnId, "failed");
           finished = true;
           stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: { kind: "error", message: event.message } }));
@@ -306,6 +317,7 @@ export default function App() {
       const message = cause instanceof Error ? cause.message : String(cause);
       const failedId = sessionId;
       if (failedId) {
+        markPartialReply(failedId, stopping.current.has(failedId) ? "cancelled" : "failed");
         if (cause instanceof TurnRejected) {
           updateItems(failedId, (current) => current.filter((item) => item.key !== userKey));
           setDrafts((current) => ({ ...current, [failedId]: current[failedId] ? `${text}\n${current[failedId]}` : text }));

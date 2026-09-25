@@ -3,7 +3,10 @@ import io
 import json
 import subprocess
 import sys
+import threading
+from types import SimpleNamespace
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from src.providers import codex
@@ -21,6 +24,25 @@ class CodexStreamTests(unittest.TestCase):
         deltas = []
         self.assertEqual(_response_text(stream, deltas.append), ModelResponse("Hello world"))
         self.assertEqual(deltas, ["Hello", " world"])
+
+    def test_rejects_a_stream_that_ends_after_partial_text(self):
+        stream = io.BytesIO(b'data: {"type":"response.output_text.delta","delta":"half an answer"}\n\n')
+        deltas = []
+        with self.assertRaisesRegex(RuntimeError, "ended before completion"):
+            _response_text(stream, deltas.append)
+        self.assertEqual(deltas, ["half an answer"])
+
+    def test_accepts_done_sentinel_without_a_trailing_blank_line(self):
+        stream = io.BytesIO(
+            b'data: {"type":"response.output_text.delta","delta":"Ready"}\n\n'
+            b'data: [DONE]'
+        )
+        self.assertEqual(_response_text(stream), ModelResponse("Ready"))
+
+    def test_rejects_non_object_stream_event(self):
+        stream = io.BytesIO(b'data: ["unexpected"]\n\n')
+        with self.assertRaisesRegex(RuntimeError, "invalid stream event"):
+            _response_text(stream)
 
     def test_parses_function_call_from_stream(self):
         stream = io.BytesIO(
@@ -97,6 +119,77 @@ class CodexDemoTests(unittest.TestCase):
             check=True,
         )
         self.assertIn("Send one prompt to a Codex model", result.stdout)
+
+
+class CodexFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.auth = patch.object(codex, "_read_auth", return_value={
+            "tokens": {"access_token": "a", "account_id": "b"},
+        })
+        self.auth.start()
+        self.addCleanup(self.auth.stop)
+
+    def test_http_error_includes_status_and_body(self):
+        error = urllib.error.HTTPError(
+            codex.ENDPOINT, 502, "Bad Gateway", {}, io.BytesIO(b"upstream unavailable"),
+        )
+        with patch.object(codex.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 502: upstream unavailable"):
+                codex.CodexProvider("gpt-5.6-luna").complete([{"role": "user", "content": "Hi"}])
+
+    def test_network_error_is_reported_as_endpoint_unavailable(self):
+        with patch.object(codex.urllib.request, "urlopen", side_effect=urllib.error.URLError("DNS blocked")):
+            with self.assertRaisesRegex(RuntimeError, "Could not reach Codex endpoint: DNS blocked"):
+                codex.CodexProvider("gpt-5.6-luna").complete([{"role": "user", "content": "Hi"}])
+
+    def test_cancelled_request_never_contacts_endpoint(self):
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(codex.urllib.request, "urlopen") as urlopen:
+            with self.assertRaisesRegex(InterruptedError, "request cancelled"):
+                codex.CodexProvider("gpt-5.6-luna").complete(
+                    [{"role": "user", "content": "Hi"}], cancel_event=cancel,
+                )
+        urlopen.assert_not_called()
+
+    def test_cancellation_interrupts_a_blocked_codex_stream(self):
+        released = threading.Event()
+        cancel = threading.Event()
+
+        class FakeSocket:
+            def shutdown(self, _how):
+                released.set()
+
+        class StalledResponse:
+            fp = SimpleNamespace(raw=SimpleNamespace(_sock=FakeSocket()))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                yield b'data: {"type":"response.output_text.delta","delta":"partial"}\n'
+                yield b"\n"
+                if not released.wait(2):
+                    raise AssertionError("cancel watcher did not interrupt the stream")
+                raise OSError("socket shut down")
+
+        deltas = []
+
+        def collect_and_cancel(delta):
+            deltas.append(delta)
+            cancel.set()
+
+        with patch.object(codex.urllib.request, "urlopen", return_value=StalledResponse()):
+            with self.assertRaisesRegex(InterruptedError, "request cancelled"):
+                codex.CodexProvider("gpt-5.6-luna").complete(
+                    [{"role": "user", "content": "Hi"}],
+                    on_text_delta=collect_and_cancel,
+                    cancel_event=cancel,
+                )
+        self.assertEqual(deltas, ["partial"])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
+from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import validate_project_root
 
@@ -58,6 +59,25 @@ def _confirm_write(path: str, content: str, exists: bool) -> bool:
     print("----- end proposed content -----")
     try:
         return input(f"Allow this {action}? [y/N] ").strip().lower() in {"y", "yes"}
+    except EOFError:
+        return False
+
+
+def _confirm_edit(path: str, diff: str) -> bool:
+    print(f"Oryn proposes this edit to {path}:")
+    print(_approval_preview(diff))
+    try:
+        return input("Apply this edit? [y/N] ").strip().lower() in {"y", "yes"}
+    except EOFError:
+        return False
+
+
+def _confirm_undo(path: str, diff: str, removes_created_file: bool) -> bool:
+    action = "delete this Oryn-created file" if removes_created_file else "restore its previous contents"
+    print(f"Oryn wants to {action} for {path}:")
+    print(_approval_preview(diff))
+    try:
+        return input("Allow this undo? [y/N] ").strip().lower() in {"y", "yes"}
     except EOFError:
         return False
 
@@ -151,6 +171,7 @@ def main(argv: list[str] | None = None) -> None:
     if project_instructions:
         print("Loaded project instructions from AGENTS.md.")
     print("Type /quit to exit.")
+    undo_history: list[FileChange] = []
     confirm_terminal = lambda command: _confirm_terminal(command, project_root)
     text_open = False
     text_ends_newline = False
@@ -203,6 +224,9 @@ def main(argv: list[str] | None = None) -> None:
                 history, provider.complete, tools, project_root,
                 confirm_terminal, _confirm_write,
                 on_text_delta=show_text, on_tool_event=show_tool,
+                confirm_edit=_confirm_edit,
+                confirm_undo=_confirm_undo,
+                undo_history=undo_history,
             )
         except KeyboardInterrupt:
             finish_text()
