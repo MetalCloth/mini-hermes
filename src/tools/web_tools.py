@@ -13,6 +13,10 @@ MAX_PAGE_BYTES = 1_000_000
 MAX_PAGE_TEXT_CHARS = 12_000
 MAX_API_BYTES = 2_000_000
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/117.0.0.0 Safari/537.36"
+)
 
 
 class _Results(HTMLParser):
@@ -26,11 +30,18 @@ class _Results(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
-        if tag == "a" and "result__a" in classes:
-            self._current = {"title": "", "url": _result_url(attrs.get("href", "")), "snippet": ""}
-            self._field = "title"
-            self._field_tag = tag
-        elif self._current and "result__snippet" in classes:
+        
+        # 1. DuckDuckGo results now use 'result-link' or 'result__url' classes on anchors
+        if tag == "a" and ("result-link" in classes or "result__url" in classes or "result__a" in classes):
+            href = attrs.get("href", "")
+            # Filter out internal DuckDuckGo settings/navigation links
+            if href and not href.startswith(("/", "?")):
+                self._current = {"title": "", "url": _result_url(href), "snippet": ""}
+                self._field = "title"
+                self._field_tag = tag
+                
+        # 2. Snippets are nested under divs or anchors matching snippet identifiers
+        elif self._current and ("result__snippet" in classes or "result-snippet" in classes):
             self._field = "snippet"
             self._field_tag = tag
 
@@ -40,8 +51,11 @@ class _Results(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag == self._field_tag:
+            # Once we finish collecting data inside the anchor tag, push it to items
             if self._field == "title" and self._current:
-                self.items.append(self._current)
+                # Deduplicate or skip if URL is already processed
+                if not any(item["url"] == self._current["url"] for item in self.items):
+                    self.items.append(self._current)
             self._field = None
             self._field_tag = None
 
@@ -60,7 +74,7 @@ def web_search(query: str, max_results: int = 5) -> str:
         raise ValueError("max_results must be between 1 and 5.")
     request = Request(
         f"https://html.duckduckgo.com/html/?q={quote_plus(query)}",
-        headers={"User-Agent": "Mozilla/5.0 Mini-Hermes/1.0"},
+        headers={"User-Agent": USER_AGENT},
     )
     try:
         with urlopen(request, timeout=15) as response:
@@ -214,7 +228,7 @@ def _firecrawl_extract(url: str, key: str) -> str:
 def _local_extract(url: str) -> str:
     """Read HTML directly when no Firecrawl key is configured."""
     request = Request(url, headers={
-        "User-Agent": "Mozilla/5.0 Mini-Hermes/1.0",
+        "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Encoding": "identity",
     })
@@ -250,3 +264,11 @@ def web_extract(url: str) -> str:
     _check_public_url(url)
     key = _firecrawl_api_key()
     return _firecrawl_extract(url, key) if key else _local_extract(url)
+
+
+if __name__ == "__main__":
+    try:
+        result = web_search("What is love and where to find it?", max_results=3)
+        print(result)
+    except Exception as e:
+        print(f"Error: {e}")

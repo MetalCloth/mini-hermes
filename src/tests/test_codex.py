@@ -54,6 +54,27 @@ class CodexStreamTests(unittest.TestCase):
         self.assertEqual(payload["input"][2]["type"], "function_call_output")
         self.assertEqual(payload["input"][2]["output"], "# Mini-Hermes")
 
+    def test_provider_skips_saved_tool_call_without_output(self):
+        response = io.BytesIO(b'data: {"type":"response.output_text.delta","delta":"Ready"}\n\ndata: {"type":"response.completed","response":{}}\n\n')
+        messages = [
+            {"role": "user", "content": "Find it"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "name": "web_search", "arguments": {"query": "example"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "One result"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_2", "name": "web_search", "arguments": {"query": "again"}}
+            ]},
+            {"role": "user", "content": "Continue"},
+        ]
+        with patch.object(codex, "_read_auth", return_value={"tokens": {"access_token": "a", "account_id": "b"}}):
+            with patch.object(codex.urllib.request, "urlopen", return_value=response) as urlopen:
+                codex.CodexProvider("gpt-5.6-luna").complete(messages)
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual([item.get("call_id") for item in payload["input"] if "call_id" in item],
+                         ["call_1", "call_1"])
+        self.assertEqual(payload["input"][-1]["content"][0]["text"], "Continue")
+
 
 class CodexDemoTests(unittest.TestCase):
     def test_demo_sends_model_and_prompt_to_provider(self):

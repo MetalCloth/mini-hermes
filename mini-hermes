@@ -1,25 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-app_dir="$(dirname "$(readlink -f -- "$0")")"
-app_python="$app_dir/.venv/bin/python"
-if [[ ! -x "$app_python" ]]; then
-    echo "Mini-Hermes virtual environment is missing at $app_dir/.venv" >&2
-    exit 1
-fi
-
-# Preserve the caller's working directory as the default project.
-export PYTHONPATH="$app_dir${PYTHONPATH:+:$PYTHONPATH}"
-if [[ "${1:-}" == "dashboard" ]]; then
-    shift
-    if ! command -v npm >/dev/null 2>&1; then
-        echo "Mini-Hermes dashboard needs Node.js and npm to build its React UI." >&2
-        exit 1
-    fi
-    if [[ ! -d "$app_dir/web/node_modules" ]]; then
-        npm --prefix "$app_dir/web" ci --no-audit --no-fund
-    fi
-    npm --prefix "$app_dir/web" run build
-    exec "$app_python" -m src.web_app "$@"
-fi
-exec "$app_python" -m src.chat_demo "$@"
+exec "$(dirname "$(readlink -f -- "$0")")/oryn" "$@"

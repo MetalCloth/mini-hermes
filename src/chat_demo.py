@@ -42,7 +42,7 @@ def _approval_preview(text: str) -> str:
 
 
 def _confirm_terminal(command: str, project_root: Path) -> bool:
-    print(f"Mini-Hermes wants to run this command from {project_root}:")
+    print(f"Oryn wants to run this command from {project_root}:")
     print(_approval_preview(command))
     try:
         return input("Allow this command? [y/N] ").strip().lower() in {"y", "yes"}
@@ -52,7 +52,7 @@ def _confirm_terminal(command: str, project_root: Path) -> bool:
 
 def _confirm_write(path: str, content: str, exists: bool) -> bool:
     action = "replace" if exists else "create"
-    print(f"Mini-Hermes wants to {action} {path} ({len(content)} characters):")
+    print(f"Oryn wants to {action} {path} ({len(content)} characters):")
     print("----- proposed file content (each line starts with |) -----")
     print(_approval_preview(content))
     print("----- end proposed content -----")
@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> None:
             if not store.session_exists(session_id):
                 parser.error(f"no saved session with ID {session_id}")
             saved_root = store.session_project_root(session_id)
-            # Old chats always worked in the Mini-Hermes repo.
+            # Older chats without a project path belong to this repo.
             project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
             if args.project is not None and _resolve_project_root(args.project) != project_root:
                 parser.error(f"session {session_id} belongs to {project_root}")

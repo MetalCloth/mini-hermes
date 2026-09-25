@@ -159,7 +159,7 @@ def _tool_call(item: dict[str, Any]) -> ToolCall:
 
 
 class CodexProvider:
-    """Translate Mini-Hermes messages and tools for the Codex Responses endpoint."""
+    """Translate Oryn messages and tools for the Codex Responses endpoint."""
 
     def __init__(self, model: str, auth_file: Path = AUTH_FILE):
         self.model = model
@@ -174,21 +174,37 @@ class CodexProvider:
             message["content"] for message in messages
             if message["role"] in {"system", "developer"}
         )
+        completed_calls = set()
+        for index, message in enumerate(messages):
+            if message["role"] != "assistant" or not message.get("tool_calls"):
+                continue
+            outputs = set()
+            next_index = index + 1
+            while next_index < len(messages) and messages[next_index]["role"] == "tool":
+                outputs.add(messages[next_index].get("tool_call_id"))
+                next_index += 1
+            completed_calls.update(call["id"] for call in message["tool_calls"] if call["id"] in outputs)
         input_messages = []
+        sent_calls = set()
         for message in messages:
             role = message["role"]
             if role == "assistant" and message.get("tool_calls"):
                 if message.get("content"):
                     input_messages.append({"role": "assistant", "content": message["content"]})
                 for call in message["tool_calls"]:
+                    if call["id"] not in completed_calls:
+                        continue
                     input_messages.append({
                         "type": "function_call",
                         "call_id": call["id"],
                         "name": call["name"],
                         "arguments": json.dumps(call["arguments"]),
                     })
+                    sent_calls.add(call["id"])
                 continue
             if role == "tool":
+                if message["tool_call_id"] not in sent_calls:
+                    continue
                 input_messages.append({
                     "type": "function_call_output",
                     "call_id": message["tool_call_id"],

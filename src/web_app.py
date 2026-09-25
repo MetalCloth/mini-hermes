@@ -1,4 +1,4 @@
-"""Local browser chat for the existing Mini-Hermes agent loop."""
+"""Local browser chat for the existing Oryn agent loop."""
 
 import argparse
 import json
@@ -55,21 +55,38 @@ class DashboardServer(ThreadingHTTPServer):
         self.active_sessions: set[str] = set()
         self.approvals: dict[str, Approval] = {}
 
-    def owns_session(self, session_id: str) -> bool:
+    def session_root(self, session_id: str) -> Path | None:
         if not SESSION_ID_PATTERN.fullmatch(session_id) or not self.store.session_exists(session_id):
-            return False
+            return None
         root = self.store.session_project_root(session_id)
-        return root == str(self.project_root) or (root is None and session_id == "main" and self.project_root == APP_ROOT)
+        if root is None:
+            root = str(APP_ROOT) if session_id == "main" else None
+        if root is None:
+            return None
+        try:
+            path = validate_project_root(Path(root).resolve(strict=True))
+        except (OSError, ValueError):
+            return None
+        return path if path.is_dir() and str(path) == root else None
+
+    def projects(self) -> list[str]:
+        roots = [str(self.project_root)]
+        for session_id in self.store.list_sessions():
+            root = self.session_root(session_id)
+            if root is not None and str(root) not in roots:
+                roots.append(str(root))
+        return roots
 
     def sessions(self) -> list[dict[str, Any]]:
         result = []
         for session_id in self.store.list_sessions():
-            if not self.owns_session(session_id):
+            root = self.session_root(session_id)
+            if root is None:
                 continue
             messages = self.store.load_messages(session_id)
             user_text = [m.get("content", "") for m in messages if m.get("role") == "user"]
             title = " ".join(str(user_text[0]).split())[:72] if user_text else "New session"
-            result.append({"id": session_id, "title": title, "message_count": len(user_text)})
+            result.append({"id": session_id, "title": title, "message_count": len(user_text), "project_root": str(root)})
         return result
 
 
@@ -130,14 +147,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(200, {
                 "token": self.server.token,
                 "project": str(self.server.project_root),
+                "projects": self.server.projects(),
                 "model": self.server.model,
                 "sessions": self.server.sessions(),
             })
             return
         if path.startswith("/api/sessions/"):
             session_id = path.removeprefix("/api/sessions/")
-            if not self.server.owns_session(session_id):
-                self._json(404, {"error": "Session not found in this project."})
+            if self.server.session_root(session_id) is None:
+                self._json(404, {"error": "Session not found."})
                 return
             messages = self.server.store.load_messages(session_id)
             self._json(200, {"id": session_id, "messages": [
@@ -147,7 +165,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/":
             asset = WEB_ROOT / "index.html"
-        elif path.startswith(("/assets/", "/fonts/")):
+        elif path.startswith("/assets/"):
             asset = (WEB_ROOT / path.lstrip("/")).resolve()
             if not asset.is_relative_to(WEB_ROOT.resolve()):
                 self._json(404, {"error": "Page not found."})
@@ -176,7 +194,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if data is None:
             return
         if self.path == "/api/sessions":
-            session_id = self.server.store.create_session(self.server.project_root)
+            requested_root = data.get("project_root", str(self.server.project_root))
+            if not isinstance(requested_root, str) or requested_root not in self.server.projects():
+                self._json(400, {"error": "Choose a known project folder."})
+                return
+            session_id = self.server.store.create_session(Path(requested_root))
             self._json(201, {"id": session_id})
         elif self.path == "/api/approvals":
             approval_id, allow = data.get("id"), data.get("allow")
@@ -216,8 +238,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _turn(self, data: dict[str, Any]) -> None:
         session_id, prompt = data.get("session_id"), data.get("content")
-        if not isinstance(session_id, str) or not self.server.owns_session(session_id):
-            self._json(404, {"error": "Session not found in this project."})
+        root = self.server.session_root(session_id) if isinstance(session_id, str) else None
+        if root is None:
+            self._json(404, {"error": "Session not found."})
             return
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 10_000:
             self._json(400, {"error": "Write a message of 1 to 10,000 characters."})
@@ -230,12 +253,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         streaming = False
         try:
             saved = self.server.store.load_messages(session_id)
-            instructions = load_project_instructions(self.server.project_root)
+            instructions = load_project_instructions(root)
             history: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-            if self.server.project_root != APP_ROOT:
+            if root != APP_ROOT:
                 history.append({
                     "role": "developer",
-                    "content": f"Active project folder: {str(self.server.project_root)!r}. Tool paths are relative to it.",
+                    "content": f"Active project folder: {str(root)!r}. Tool paths are relative to it.",
                 })
             if instructions:
                 history.append({
@@ -267,7 +290,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             try:
                 answer = run_turn(
-                    history, provider.complete, tool_schemas(), self.server.project_root,
+                    history, provider.complete, tool_schemas(), root,
                     lambda command: self._ask("terminal", "Project terminal", command),
                     lambda path, content, exists: self._ask(
                         "replace" if exists else "create", path, content
@@ -302,14 +325,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Local Mini-Hermes browser dashboard.")
+    parser = argparse.ArgumentParser(description="Local Oryn browser dashboard.")
     parser.add_argument("--project", type=Path, default=Path.cwd(), help="Project folder (default: current folder)")
     parser.add_argument("--port", type=int, default=9119)
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab")
     args = parser.parse_args(argv)
     server = DashboardServer(args.project, args.port)
     url = f"http://127.0.0.1:{server.server_address[1]}"
-    print(f"Mini-Hermes dashboard: {url}")
+    print(f"Oryn dashboard: {url}")
     print(f"Project: {server.project_root}")
     if not args.no_open:
         webbrowser.open(url)

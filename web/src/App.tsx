@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { createSession, decideApproval, getBootstrap, getSession, streamTurn, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
+import { createSession, decideApproval, getBootstrap, getSession, streamTurn, TurnRejected, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
 import { Composer, EmptyState, Header, Sidebar, Timeline, type Status, type TimelineItem } from "./components";
+import type { ShortcutId } from "@/components/ui/ai-prompt-box";
 
 function savedItems(messages: SavedMessage[]): TimelineItem[] {
   return messages.flatMap<TimelineItem>((message, index) => {
@@ -12,38 +13,68 @@ function savedItems(messages: SavedMessage[]): TimelineItem[] {
   });
 }
 
+const ready: Status = { kind: "ready", message: "" };
+
 export default function App() {
   const [token, setToken] = useState("");
   const [project, setProject] = useState("");
+  const [projects, setProjects] = useState<string[]>([]);
   const [model, setModel] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [items, setItems] = useState<TimelineItem[]>([]);
-  const [prompt, setPrompt] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [chats, setChats] = useState<Record<string, TimelineItem[]>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [running, setRunning] = useState<string[]>([]);
+  const [starting, setStarting] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [status, setStatus] = useState<Status>({ kind: "ready", message: "" });
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [statuses, setStatuses] = useState<Record<string, Status>>({});
+  const [appStatus, setAppStatus] = useState<Status>(ready);
   const loadVersion = useRef(0);
+  const creating = useRef(false);
+  const active = useRef(new Set<string>());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const draftKey = selected ?? `project:${project}`;
+  const prompt = drafts[draftKey] ?? "";
+  const items = selected ? chats[selected] ?? [] : [];
+  const busy = selected ? running.includes(selected) : starting;
+  const status = appStatus.kind === "error" ? appStatus : selected ? statuses[selected] ?? ready : appStatus;
+
+  function updateItems(id: string, change: (current: TimelineItem[]) => TimelineItem[]) {
+    setChats((current) => ({ ...current, [id]: change(current[id] ?? []) }));
+  }
+
+  function setPrompt(value: string) {
+    setDrafts((current) => ({ ...current, [draftKey]: value }));
+  }
+
+  function setRunningSession(id: string, isRunning: boolean) {
+    if (isRunning) active.current.add(id);
+    else active.current.delete(id);
+    setRunning([...active.current]);
+  }
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
+        const version = ++loadVersion.current;
         const data = await getBootstrap();
         if (cancelled) return;
         setToken(data.token);
         setProject(data.project);
+        setProjects(data.projects);
         setModel(data.model);
         setSessions(data.sessions);
         if (data.sessions[0]) {
           const history = await getSession(data.sessions[0].id);
-          if (cancelled) return;
+          if (cancelled || version !== loadVersion.current) return;
           setSelected(data.sessions[0].id);
-          setItems(savedItems(history));
+          setProject(data.sessions[0].project_root);
+          setChats((current) => ({ ...current, [data.sessions[0].id]: savedItems(history) }));
         }
       } catch (cause) {
-        if (!cancelled) setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+        if (!cancelled) setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
       }
     })();
     return () => { cancelled = true; };
@@ -51,11 +82,11 @@ export default function App() {
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [items]);
+  }, [items, selected]);
 
   useEffect(() => {
     const title = sessions.find((session) => session.id === selected)?.title || "New session";
-    document.title = `${title} · Mini-Hermes`;
+    document.title = `${title} · Oryn`;
   }, [sessions, selected]);
 
   useEffect(() => {
@@ -67,119 +98,188 @@ export default function App() {
   async function refreshSessions() {
     const data = await getBootstrap();
     setSessions(data.sessions);
+    setProjects(data.projects);
   }
 
   async function openSession(id: string) {
-    if (busy) return;
     const version = ++loadVersion.current;
     try {
-      const history = await getSession(id);
+      if (!(id in chats)) {
+        const history = await getSession(id);
+        setChats((current) => id in current ? current : { ...current, [id]: savedItems(history) });
+      }
       if (version !== loadVersion.current) return;
       setSelected(id);
-      setItems(savedItems(history));
+      setProject(sessions.find((session) => session.id === id)?.project_root || project);
       setSidebarOpen(false);
-      setStatus({ kind: "ready", message: "" });
+      setAppStatus(ready);
     } catch (cause) {
-      setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+      setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
     }
   }
 
   async function newSession(): Promise<string | null> {
-    if (busy || !token) return null;
+    if (!token || creating.current) return null;
+    creating.current = true;
+    const version = ++loadVersion.current;
+    const root = project;
     try {
-      const id = await createSession(token);
-      ++loadVersion.current;
+      const id = await createSession(token, root);
+      if (version !== loadVersion.current) {
+        await refreshSessions();
+        return null;
+      }
       setSelected(id);
-      setItems([]);
-      setSessions((current) => [{ id, title: "New session", message_count: 0 }, ...current]);
-      setStatus({ kind: "ready", message: "" });
+      setChats((current) => ({ ...current, [id]: [] }));
+      setSessions((current) => [{ id, title: "New session", message_count: 0, project_root: root }, ...current]);
+      setAppStatus(ready);
       setSidebarOpen(false);
       requestAnimationFrame(() => document.getElementById("prompt")?.focus());
       return id;
     } catch (cause) {
-      setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+      setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
       return null;
+    } finally {
+      creating.current = false;
     }
   }
 
-  async function approve(id: string, allow: boolean) {
+  function selectProject(root: string) {
+    ++loadVersion.current;
+    setProject(root);
+    setSelected(null);
+    setAppStatus(ready);
+    setSidebarOpen(false);
+    requestAnimationFrame(() => document.getElementById("prompt")?.focus());
+  }
+
+  function runShortcut(command: ShortcutId) {
+    setPrompt("");
+    if (command === "new") void newSession();
+    if (command === "find" || command === "projects") {
+      setSidebarExpanded(true);
+      setSidebarOpen(true);
+      requestAnimationFrame(() => document.getElementById(command === "find" ? "session-search" : "first-project")?.focus());
+    }
+    if (command === "sidebar") {
+      if (window.innerWidth <= 700) setSidebarOpen((open) => !open);
+      else setSidebarExpanded((expanded) => !expanded);
+    }
+  }
+
+  async function approve(sessionId: string, id: string, allow: boolean) {
     await decideApproval(token, id, allow);
-    setItems((current) => current.map((item) => item.kind === "approval" && item.id === id ? { ...item, decision: allow } : item));
-    setStatus((current) => current.kind === "busy" && current.message === "Waiting for your decision"
-      ? { kind: "busy", message: "Mini-Hermes is continuing…" } : current);
+    updateItems(sessionId, (current) => current.map((item) => item.kind === "approval" && item.id === id ? { ...item, decision: allow } : item));
+    setStatuses((current) => ({ ...current, [sessionId]: current[sessionId]?.message === "Waiting for your decision"
+      ? { kind: "busy", message: "Oryn is continuing…" } : current[sessionId] ?? ready }));
   }
 
   async function send() {
     const text = prompt.trim();
-    if (!text || busy || !token) return;
+    if (!text || !token || creating.current || (selected && active.current.has(selected))) return;
     let sessionId = selected;
-    if (!sessionId) sessionId = await newSession();
-    if (!sessionId) return;
-    setPrompt("");
-    setItems((current) => [...current, { key: crypto.randomUUID(), kind: "message", role: "user", content: text }]);
-    setBusy(true);
-    setStatus({ kind: "busy", message: "Mini-Hermes is thinking…" });
-    let currentTextKey: string | null = null;
-    let finished = false;
-    const toolKeys = new Map<string, string>();
-
-    function onEvent(event: TurnEvent) {
-      if (event.type === "delta") {
-        if (!currentTextKey) {
-          currentTextKey = crypto.randomUUID();
-          setItems((current) => [...current, { key: currentTextKey!, kind: "message", role: "assistant", content: event.text }]);
-        } else {
-          const key = currentTextKey;
-          setItems((current) => current.map((item) => item.key === key && item.kind === "message" ? { ...item, content: item.content + event.text } : item));
-        }
-      } else if (event.type === "tool_start") {
-        currentTextKey = null;
-        const key = crypto.randomUUID();
-        toolKeys.set(event.id, key);
-        setItems((current) => [...current, { key, kind: "tool", name: event.name, detail: event.detail, result: "" }]);
-        setStatus({ kind: "busy", message: `Using ${event.name.replaceAll("_", " ")}…` });
-      } else if (event.type === "tool_result") {
-        const key = toolKeys.get(event.id);
-        setItems((current) => current.map((item) => item.key === key && item.kind === "tool" ? { ...item, result: event.result || "No output" } : item));
-        setStatus({ kind: "busy", message: "Mini-Hermes is working…" });
-      } else if (event.type === "approval") {
-        setItems((current) => [...current, { key: crypto.randomUUID(), kind: "approval", id: event.id, action: event.action, target: event.target, content: event.content }]);
-        setStatus({ kind: "busy", message: "Waiting for your decision" });
-      } else if (event.type === "done") {
-        if (!currentTextKey && event.answer) {
-          setItems((current) => [...current, { key: crypto.randomUUID(), kind: "message", role: "assistant", content: event.answer }]);
-        }
-        finished = true;
-        setStatus({ kind: "ready", message: "" });
-      } else if (event.type === "error") {
-        finished = true;
-        setStatus({ kind: "error", message: event.message });
-      }
+    const userKey = crypto.randomUUID();
+    const root = project;
+    const version = loadVersion.current;
+    if (!sessionId) {
+      creating.current = true;
+      setStarting(true);
     }
-
+    setAppStatus(ready);
+    setPrompt("");
     try {
+      if (!sessionId) {
+        const id = await createSession(token, root);
+        sessionId = id;
+        setSessions((current) => [{ id, title: "New session", message_count: 0, project_root: root }, ...current]);
+        creating.current = false;
+        setStarting(false);
+        if (version === loadVersion.current) {
+          setSelected(id);
+          setDrafts((current) => ({ ...current, [id]: current[draftKey] ?? "", [draftKey]: "" }));
+        }
+      }
+      const turnId = sessionId;
+      setRunningSession(turnId, true);
+      setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Oryn is thinking…" } }));
+      updateItems(turnId, (current) => [...current, { key: userKey, kind: "message", role: "user", content: text }]);
+      let currentTextKey: string | null = null;
+      let finished = false;
+      const toolKeys = new Map<string, string>();
+
+      function onEvent(event: TurnEvent) {
+        if (event.type === "delta") {
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Oryn is replying…" } }));
+          if (!currentTextKey) {
+            const key = crypto.randomUUID();
+            currentTextKey = key;
+            updateItems(turnId, (current) => [...current, { key, kind: "message", role: "assistant", content: event.text }]);
+          } else {
+            const key = currentTextKey;
+            updateItems(turnId, (current) => current.map((item) => item.key === key && item.kind === "message" ? { ...item, content: item.content + event.text } : item));
+          }
+        } else if (event.type === "tool_start") {
+          currentTextKey = null;
+          const key = crypto.randomUUID();
+          toolKeys.set(event.id, key);
+          updateItems(turnId, (current) => [...current, { key, kind: "tool", name: event.name, detail: event.detail, result: "" }]);
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: `Using ${event.name.replaceAll("_", " ")}…` } }));
+        } else if (event.type === "tool_result") {
+          const key = toolKeys.get(event.id);
+          updateItems(turnId, (current) => current.map((item) => item.key === key && item.kind === "tool" ? { ...item, result: event.result || "No output" } : item));
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Oryn is working…" } }));
+        } else if (event.type === "approval") {
+          updateItems(turnId, (current) => [...current, { key: crypto.randomUUID(), kind: "approval", id: event.id, action: event.action, target: event.target, content: event.content }]);
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Waiting for your decision" } }));
+        } else if (event.type === "done") {
+          if (!currentTextKey && event.answer) {
+            updateItems(turnId, (current) => [...current, { key: crypto.randomUUID(), kind: "message", role: "assistant", content: event.answer }]);
+          }
+          finished = true;
+          setStatuses((current) => ({ ...current, [turnId]: ready }));
+        } else if (event.type === "error") {
+          finished = true;
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "error", message: event.message } }));
+        }
+      }
+
       await streamTurn(token, sessionId, text, onEvent);
       if (!finished) throw new Error("The connection ended early. Reopen the session to inspect what was saved.");
     } catch (cause) {
-      setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const failedId = sessionId;
+      if (failedId) {
+        if (cause instanceof TurnRejected) {
+          updateItems(failedId, (current) => current.filter((item) => item.key !== userKey));
+          setDrafts((current) => ({ ...current, [failedId]: current[failedId] ? `${text}\n${current[failedId]}` : text }));
+        }
+        setStatuses((current) => ({ ...current, [failedId]: { kind: "error", message } }));
+      }
+      else {
+        setDrafts((current) => ({ ...current, [draftKey]: current[draftKey] ? `${text}\n${current[draftKey]}` : text }));
+        setAppStatus({ kind: "error", message });
+      }
     } finally {
-      setBusy(false);
+      if (sessionId) setRunningSession(sessionId, false);
+      else {
+        creating.current = false;
+        setStarting(false);
+      }
       try { await refreshSessions(); }
-      catch (cause) { setStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) }); }
-      requestAnimationFrame(() => document.getElementById("prompt")?.focus());
+      catch (cause) { setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) }); }
     }
   }
 
   const title = sessions.find((session) => session.id === selected)?.title || "New session";
   return (
     <div className="app-shell">
-      <Sidebar project={project} model={model} sessions={sessions} selected={selected} busy={busy} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNew={() => void newSession()} onSelect={(id) => void openSession(id)} />
+      <Sidebar project={project} projects={projects} model={model} sessions={sessions} selected={selected} running={running} open={sidebarOpen} expanded={sidebarExpanded} onClose={() => setSidebarOpen(false)} onExpand={() => setSidebarExpanded(true)} onNew={() => void newSession()} onSelect={(id) => void openSession(id)} onProject={selectProject} />
       <main className="workspace">
-        <Header title={title} model={model} status={status} sidebarOpen={sidebarOpen} onMenu={() => setSidebarOpen((open) => !open)} />
+        <Header title={title} model={model} status={status} sidebarOpen={sidebarOpen} sidebarExpanded={sidebarExpanded} onMenu={() => setSidebarOpen((open) => !open)} onCollapse={() => setSidebarExpanded((expanded) => !expanded)} />
         <div id="chat-scroll" className="chat-scroll" ref={scrollRef}>
-          {items.length === 0 ? <EmptyState /> : <Timeline items={items} onDecide={approve} />}
+          {items.length === 0 ? <EmptyState /> : <Timeline items={items} status={status} onDecide={(id, allow) => approve(selected!, id, allow)} />}
         </div>
-        <Composer prompt={prompt} project={project} busy={busy || !token} status={status} onPrompt={setPrompt} onSend={() => void send()} />
+        <Composer prompt={prompt} project={project} busy={busy} disabled={!token} status={status} onPrompt={setPrompt} onSend={() => void send()} onShortcut={runShortcut} />
       </main>
     </div>
   );

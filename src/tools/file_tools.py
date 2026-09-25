@@ -9,6 +9,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+_PRIVATE_PARTS = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env")
+
+
+def _is_private_path(target: Path, root: Path) -> bool:
+    return any(
+        part in _PRIVATE_PARTS or part == ".env" or part.startswith(".env.")
+        for part in target.relative_to(root).parts
+    )
+
+
 def search_files(
     pattern: str,
     project_root: Path,
@@ -39,11 +49,7 @@ def search_files(
         raise ValueError("Search path must stay inside the project folder.")
     if target == (Path.home() / ".mini-hermes" / "firecrawl.env").resolve():
         raise ValueError("The Firecrawl key file cannot be searched through the agent.")
-    excluded = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env")
-    if any(
-        part in excluded or part == ".env" or part.startswith(".env.")
-        for part in target.relative_to(root).parts
-    ):
+    if _is_private_path(target, root):
         raise ValueError("That project path is excluded from search.")
     if not target.is_file() and not target.is_dir():
         raise ValueError(f"No project file or folder found at '{path}'.")
@@ -64,7 +70,7 @@ def search_files(
     if exclude:
         command.extend(["--glob", f"!{exclude}"])
     # Keep these paths out even if an include glob overrides ignore rules.
-    for ignored in (*excluded, ".env", ".env.*"):
+    for ignored in (*_PRIVATE_PARTS, ".env", ".env.*"):
         command.extend(["--glob", f"!{ignored}"])
     command.extend(["--", pattern, target.relative_to(root).as_posix() or "."])
 
@@ -129,6 +135,8 @@ def read_file(path: str, project_root: Path) -> str:
         raise ValueError("File path must stay inside the project folder.")
     if target == (Path.home() / ".mini-hermes" / "firecrawl.env").resolve():
         raise ValueError("The Firecrawl key file cannot be read through the agent.")
+    if _is_private_path(target, root):
+        raise ValueError("That project path is excluded from reading.")
     if not target.is_file():
         raise ValueError(f"No file found at '{path}'. Give a path to a project file.")
     try:

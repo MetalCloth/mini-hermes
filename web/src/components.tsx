@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { ArrowUp, Bot, ChevronDown, FileText, Menu, MessageSquare, Plus, Search, Sparkles, Wrench, X } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
+import { Bot, ChevronDown, Folder, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Search, Wrench, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { SessionSummary } from "./api";
+import mascotUrl from "./assets/mascot.png";
+import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
+import { PromptInputBox, type ShortcutId } from "@/components/ui/ai-prompt-box";
 
 export type TimelineItem =
   | { key: string; kind: "message"; role: "user" | "assistant"; content: string }
@@ -9,57 +14,141 @@ export type TimelineItem =
 
 export type Status = { kind: "ready" | "busy" | "error"; message: string };
 
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 420;
+
+function maxSidebarWidth() {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, window.innerWidth - 320));
+}
+
+function Mascot({ size = 30 }: { size?: number }) {
+  return <span className="mascot" style={{ width: size, height: size }} role="img" aria-label="Oryn mascot"><img src={mascotUrl} alt="" /></span>;
+}
+
 type SidebarProps = {
   project: string;
+  projects: string[];
   model: string;
   sessions: SessionSummary[];
   selected: string | null;
-  busy: boolean;
+  running: string[];
   open: boolean;
+  expanded: boolean;
   onClose: () => void;
+  onExpand: () => void;
   onNew: () => void;
   onSelect: (id: string) => void;
+  onProject: (root: string) => void;
 };
 
-export function Sidebar({ project, model, sessions, selected, busy, open, onClose, onNew, onSelect }: SidebarProps) {
+export function Sidebar({ project, projects, model, sessions, selected, running, open, expanded, onClose, onExpand, onNew, onSelect, onProject }: SidebarProps) {
   const [query, setQuery] = useState("");
+  const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
+  const [width, setWidth] = useState(() => window.innerWidth <= 980 ? 280 : Math.round(Math.min(352, Math.max(270, window.innerWidth * .254))));
+  const [resizing, setResizing] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
-  const matches = sessions.filter((session) => session.title.toLowerCase().includes(query.toLowerCase()));
+  const term = query.trim().toLowerCase();
+  const matches = projects.map((root) => {
+    const name = root.split("/").filter(Boolean).pop() || root;
+    const folderMatches = name.toLowerCase().includes(term) || root.toLowerCase().includes(term);
+    const chats = sessions.filter((session) => session.project_root === root && (!term || folderMatches || session.title.toLowerCase().includes(term)));
+    return { root, name, chats, folderMatches };
+  }).filter((group) => !term || group.folderMatches || group.chats.length > 0);
+
+  useEffect(() => {
+    function fitSidebar() {
+      if (window.innerWidth > 700) setWidth((current) => Math.min(current, maxSidebarWidth()));
+    }
+    window.addEventListener("resize", fitSidebar);
+    return () => window.removeEventListener("resize", fitSidebar);
+  }, []);
+
+  function resizeAt(clientX: number) {
+    setWidth(Math.max(MIN_SIDEBAR_WIDTH, Math.min(maxSidebarWidth(), Math.round(clientX))));
+  }
+
+  function startResize(event: PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizing(true);
+    resizeAt(event.clientX);
+  }
+
+  function moveResize(event: PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeAt(event.clientX);
+  }
+
+  function stopResize(event: PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setResizing(false);
+  }
+
+  function resizeWithKeyboard(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      setWidth((current) => Math.max(MIN_SIDEBAR_WIDTH, Math.min(maxSidebarWidth(), current + (event.key === "ArrowLeft" ? -16 : 16))));
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      setWidth(event.key === "Home" ? MIN_SIDEBAR_WIDTH : maxSidebarWidth());
+    }
+  }
+
+  function focusSearch() {
+    onExpand();
+    requestAnimationFrame(() => searchRef.current?.focus());
+  }
 
   return (
-    <aside id="sidebar" className={`sidebar${open ? " is-open" : ""}`} aria-label="Sessions">
+    <aside id="sidebar" className={`sidebar${open ? " is-open" : ""}${expanded ? "" : " is-collapsed"}${resizing ? " is-resizing" : ""}`} style={{ "--sidebar-width": `${width}px` } as CSSProperties} aria-label="Projects and chats">
       <div className="window-row">
-        <div className="window-brand" aria-label="Mini-Hermes">mini<span>hermes</span><b>.</b></div>
-        <button className="chrome-button search-button" type="button" aria-label="Find a session" onClick={() => searchRef.current?.focus()}><Search size={20} /></button>
+        <div className="window-brand"><Mascot /><span className="brand-name">oryn<b>.</b></span></div>
+        <button className="chrome-button search-button" type="button" aria-label="Find a session" onClick={focusSearch}><Search size={20} /></button>
         <button className="chrome-button sidebar-close" type="button" aria-label="Close sessions" onClick={onClose}><X size={20} /></button>
       </div>
 
       <div className="sidebar-scroll">
         <nav className="sidebar-nav" aria-label="Workspace navigation">
-          <button id="new-session" className="nav-row" type="button" disabled={busy} onClick={onNew}>
+          <button id="new-session" className="nav-row" type="button" aria-label="New session" title="New session" onClick={onNew}>
             <Bot size={20} strokeWidth={1.7} /><span>New session</span><Plus className="nav-end" size={16} />
           </button>
-          <button className="nav-row" type="button" onClick={() => searchRef.current?.focus()}>
-            <MessageSquare size={20} strokeWidth={1.7} /><span>Sessions</span><span className="nav-count">{sessions.length}</span>
+          <button className="nav-row" type="button" aria-label="Find a session" title="Find a session" onClick={focusSearch}>
+            <MessageSquare size={20} strokeWidth={1.7} /><span>Find chats</span><span className="nav-count">{sessions.length}</span>
           </button>
         </nav>
 
-        <section className="session-section" aria-label="Saved sessions">
-          <div className="section-heading">RECENT SESSIONS</div>
+        <section className="session-section" aria-label="Projects and saved chats">
+          <div className="section-heading">PROJECTS</div>
           <label className="search-wrap">
-            <span className="sr-only">Search saved sessions</span>
+            <span className="sr-only">Search projects and chats</span>
             <Search size={16} aria-hidden="true" />
-            <input ref={searchRef} id="session-search" type="search" placeholder="Search sessions" value={query} onChange={(event) => setQuery(event.target.value)} />
+            <input ref={searchRef} id="session-search" type="search" placeholder="Search projects and chats" value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
-          <nav className="session-list" aria-label="Saved sessions">
-            {matches.map((session) => (
-              <button key={session.id} className="session-item" type="button" disabled={busy} aria-current={selected === session.id ? "page" : undefined} onClick={() => onSelect(session.id)}>
-                <MessageSquare size={16} strokeWidth={1.7} aria-hidden="true" />
-                <span className="session-copy"><span className="session-title">{session.title}</span><small>{session.message_count} {session.message_count === 1 ? "message" : "messages"}</small></span>
-              </button>
-            ))}
+          <nav className="project-list" aria-label="Projects and chats">
+            {matches.map(({ root, name, chats }, index) => {
+              const isExpanded = Boolean(term) || !collapsedProjects.includes(root);
+              return <div className="project-group" key={root}>
+                <div className={`project-row${project === root ? " is-active" : ""}`}>
+                  <button id={index === 0 ? "first-project" : undefined} className="project-select" type="button" title={root} aria-current={project === root ? "location" : undefined} onClick={() => { setCollapsedProjects((current) => current.filter((item) => item !== root)); onProject(root); }}>
+                    <Folder size={17} strokeWidth={1.7} aria-hidden="true" /><span>{name}</span>
+                  </button>
+                  <button className="project-expand" type="button" disabled={Boolean(term)} aria-label={`${isExpanded ? "Collapse" : "Expand"} ${name} chats`} aria-expanded={isExpanded} aria-controls={`project-chats-${index}`} onClick={() => setCollapsedProjects((current) => current.includes(root) ? current.filter((item) => item !== root) : [...current, root])}>
+                    <ChevronDown size={15} aria-hidden="true" />
+                  </button>
+                </div>
+                <div id={`project-chats-${index}`} className="session-list" hidden={!isExpanded}>
+                  {chats.map((session) => (
+                    <button key={session.id} className="session-item" type="button" title={session.title} aria-current={selected === session.id ? "page" : undefined} onClick={() => onSelect(session.id)}>
+                      <span className="session-copy"><span className="session-title">{session.title}</span><small>{session.message_count} {session.message_count === 1 ? "message" : "messages"}</small></span>
+                      {running.includes(session.id) && <span className="session-running" title="Oryn is working"><span className="sr-only">Oryn is working</span></span>}
+                    </button>
+                  ))}
+                  {chats.length === 0 && !term && <p className="project-empty">No chats yet</p>}
+                </div>
+              </div>;
+            })}
           </nav>
-          {query && matches.length === 0 && <p className="sidebar-empty">No sessions match your search.</p>}
+          {term && matches.length === 0 && <p className="sidebar-empty">No projects or chats match your search.</p>}
         </section>
       </div>
 
@@ -67,6 +156,7 @@ export function Sidebar({ project, model, sessions, selected, busy, open, onClos
         <div className="footer-project"><span className="local-dot" aria-hidden="true" /> <span title={project}>{project.split("/").filter(Boolean).pop() || project || "Local project"}</span></div>
         <div className="footer-model"><span>LOCAL WORKSPACE</span><span>{model}</span></div>
       </div>
+      <div className="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" aria-controls="sidebar" aria-valuemin={MIN_SIDEBAR_WIDTH} aria-valuemax={maxSidebarWidth()} aria-valuenow={Math.min(width, maxSidebarWidth())} tabIndex={0} onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize} onPointerCancel={stopResize} onLostPointerCapture={() => setResizing(false)} onKeyDown={resizeWithKeyboard} />
     </aside>
   );
 }
@@ -76,14 +166,17 @@ type HeaderProps = {
   model: string;
   status: Status;
   sidebarOpen: boolean;
+  sidebarExpanded: boolean;
   onMenu: () => void;
+  onCollapse: () => void;
 };
 
-export function Header({ title, model, status, sidebarOpen, onMenu }: HeaderProps) {
+export function Header({ title, model, status, sidebarOpen, sidebarExpanded, onMenu, onCollapse }: HeaderProps) {
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <button id="sidebar-toggle" className="chrome-button menu-button" type="button" aria-label="Open sessions" aria-controls="sidebar" aria-expanded={sidebarOpen} onClick={onMenu}><Menu size={20} /></button>
+        <button className="chrome-button desktop-sidebar-toggle" type="button" aria-label={sidebarExpanded ? "Collapse sidebar" : "Expand sidebar"} aria-controls="sidebar" aria-expanded={sidebarExpanded} onClick={onCollapse}>{sidebarExpanded ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}</button>
+        <button id="sidebar-toggle" className="chrome-button menu-button" type="button" aria-label={sidebarOpen ? "Close sessions" : "Open sessions"} aria-controls="sidebar" aria-expanded={sidebarOpen} onClick={onMenu}><Menu size={20} /></button>
         <span className="topbar-title">{title}</span><ChevronDown className="title-chevron" size={17} aria-hidden="true" />
       </div>
       <div className="topbar-right">
@@ -97,7 +190,8 @@ export function Header({ title, model, status, sidebarOpen, onMenu }: HeaderProp
 export function EmptyState() {
   return (
     <section className="empty-state" aria-label="Start a conversation">
-      <h1 className="hero-wordmark"><span>MINI</span> HERMES</h1>
+      <Mascot size={128} />
+      <h1 className="hero-wordmark">ORYN</h1>
       <p>Describe the task in your own words. I’ll read the project, use the right tools, and check with you before changing files or running commands.</p>
     </section>
   );
@@ -122,7 +216,7 @@ function ApprovalCard({ item, onDecide }: { item: Extract<TimelineItem, { kind: 
     <section className="approval-card" aria-label="Tool approval requested">
       <div className="approval-label">APPROVAL REQUIRED</div>
       <h2>{title}</h2>
-      <p>{item.decision === undefined ? "Review this action before Mini-Hermes continues." : item.decision ? "Approved. Mini-Hermes is continuing." : "Denied. Mini-Hermes is continuing without this action."}</p>
+      <p>{item.decision === undefined ? "Review this action before Oryn continues." : item.decision ? "Approved. Oryn is continuing." : "Denied. Oryn is continuing without this action."}</p>
       <pre>{item.content}</pre>
       {error && <p className="approval-error" role="alert">{error}</p>}
       {item.decision === undefined && <div className="approval-actions">
@@ -133,14 +227,22 @@ function ApprovalCard({ item, onDecide }: { item: Extract<TimelineItem, { kind: 
   );
 }
 
-export function Timeline({ items, onDecide }: { items: TimelineItem[]; onDecide: (id: string, allow: boolean) => Promise<void> }) {
+export function Timeline({ items, status, onDecide }: { items: TimelineItem[]; status: Status; onDecide: (id: string, allow: boolean) => Promise<void> }) {
+  const replying = status.kind === "busy" && status.message === "Oryn is replying…";
+  const lastItem = items.at(-1);
+  const orbState: OrbState = status.message === "Oryn is thinking…" ? "solving" : status.message.toLowerCase().includes("search") ? "searching" : "working";
   return (
     <div id="messages" className="messages" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text">
       {items.map((item) => {
         if (item.kind === "message") return (
-          <article key={item.key} className={`message ${item.role}`}>
-            <div className="message-avatar" aria-hidden="true">{item.role === "user" ? "YOU" : <Sparkles size={17} />}</div>
-            <div className="message-body"><div className="message-role">{item.role === "user" ? "YOU" : "MINI-HERMES"}</div><div className="message-content">{item.content}</div></div>
+          <article key={item.key} className={`message ${item.role}${replying && item === lastItem && item.role === "assistant" ? " is-streaming" : ""}`}>
+            {item.role === "assistant" && <div className="message-avatar" aria-hidden="true"><Mascot size={27} /></div>}
+            <div className="message-body">
+              {item.role === "assistant" && <div className="message-role">Oryn</div>}
+              {item.role === "assistant"
+                ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}>{item.content}</ReactMarkdown></div>
+                : <div className="message-content">{item.content}</div>}
+            </div>
           </article>
         );
         if (item.kind === "tool") return (
@@ -151,6 +253,11 @@ export function Timeline({ items, onDecide }: { items: TimelineItem[]; onDecide:
         );
         return <ApprovalCard key={item.key} item={item} onDecide={onDecide} />;
       })}
+      {status.kind === "busy" && !replying && status.message !== "Waiting for your decision" &&
+        <div className="activity" role="status">
+          <ThinkingOrb state={orbState} size={20} theme="light" aria-hidden="true" />
+          <span>{status.message}</span>
+        </div>}
     </div>
   );
 }
@@ -159,36 +266,19 @@ type ComposerProps = {
   prompt: string;
   project: string;
   busy: boolean;
+  disabled: boolean;
   status: Status;
   onPrompt: (value: string) => void;
   onSend: () => void;
+  onShortcut: (command: ShortcutId) => void;
 };
 
-export function Composer({ prompt, project, busy, status, onPrompt, onSend }: ComposerProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => {
-    const area = textareaRef.current;
-    if (area) { area.style.height = "auto"; area.style.height = `${Math.min(area.scrollHeight, 150)}px`; }
-  }, [prompt]);
-  function submit(event: FormEvent) { event.preventDefault(); if (!busy && prompt.trim()) onSend(); }
-  function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      event.currentTarget.form?.requestSubmit();
-    }
-  }
+export function Composer({ prompt, project, busy, disabled, status, onPrompt, onSend, onShortcut }: ComposerProps) {
   return (
     <div className="composer-area">
-      <p className={`status-message ${status.kind}`} role="status" aria-live="polite">{status.message}</p>
-      <form className="composer" onSubmit={submit}>
-        <label htmlFor="prompt" className="sr-only">Message Mini-Hermes</label>
-        <textarea ref={textareaRef} id="prompt" rows={1} placeholder="Send a message…" maxLength={10000} required disabled={busy} value={prompt} onChange={(event) => onPrompt(event.target.value)} onKeyDown={keyDown} />
-        <div className="composer-bottom">
-          <span className="composer-note"><FileText size={14} aria-hidden="true" /> Working in <strong>{project.split("/").filter(Boolean).pop() || project || "your project"}</strong></span>
-          <span className="composer-actions"><span className="keyboard-hint">Enter to send · Shift+Enter for a new line</span><button id="send-button" className="send-button" type="submit" aria-label="Send message" disabled={busy || !prompt.trim()}><ArrowUp size={18} strokeWidth={2.5} /></button></span>
-        </div>
-      </form>
-      <div className="composer-footnote">Mini-Hermes asks before writing files or running commands.</div>
+      {status.kind === "error" && <p className="status-message error" role="alert">{status.message}</p>}
+      <PromptInputBox value={prompt} onValueChange={onPrompt} onSubmit={onSend} onShortcut={onShortcut} project={project} isLoading={busy} disabled={disabled} />
+      <div className="composer-footnote">Oryn asks before writing files or running commands.</div>
     </div>
   );
 }

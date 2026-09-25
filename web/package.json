@@ -1,5 +1,5 @@
 {
-  "name": "mini-hermes-web",
+  "name": "oryn-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -9,9 +9,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "lucide-react": "1.48.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwindcss": "^4.3.3",
+    "thinking-orbs": "^0.3.2"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

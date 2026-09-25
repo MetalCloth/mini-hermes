@@ -117,6 +117,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(approval["type"], "approval")
         self.assertEqual(approval["content"], "hello\n")
         self.assertFalse((Path(self.temp.name) / "note.txt").exists())
+        status, rejected = self.request("POST", "/api/turns", {"session_id": session_id, "content": "Another prompt"})
+        self.assertEqual(status, 409)
+        self.assertIn("already answering", rejected["error"])
 
         status, data = self.request("POST", "/api/approvals", {"id": approval["id"], "allow": True})
         self.assertEqual(status, 200)
@@ -128,6 +131,7 @@ class DashboardTests(unittest.TestCase):
         status, data = self.request("GET", f"/api/sessions/{session_id}")
         self.assertEqual([m["role"] for m in data["messages"]],
                          ["user", "assistant", "tool", "assistant"])
+        self.assertEqual([m["content"] for m in data["messages"] if m["role"] == "user"], ["Create a note"])
 
 
 if __name__ == "__main__":

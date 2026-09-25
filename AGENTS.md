@@ -1,6 +1,6 @@
-# Mini-Hermes project guide
+# Oryn project guide
 
-Mini-Hermes is an educational, Hermes-inspired local coding assistant. The main goal is to understand how an agent harness works, so keep changes small and explain important design decisions.
+Oryn is an educational, Hermes-inspired local coding assistant. The main goal is to understand how an agent harness works, so keep changes small and explain important design decisions.
 
 - The user owns the architecture. Explain a proposed new subsystem and get approval before implementing it.
 - Keep the Codex provider, conversation loop, context handling, session storage, and tools as separate responsibilities.

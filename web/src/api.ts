@@ -2,6 +2,7 @@ export type SessionSummary = {
   id: string;
   title: string;
   message_count: number;
+  project_root: string;
 };
 
 export type SavedMessage = {
@@ -13,6 +14,7 @@ export type SavedMessage = {
 export type Bootstrap = {
   token: string;
   project: string;
+  projects: string[];
   model: string;
   sessions: SessionSummary[];
 };
@@ -24,6 +26,8 @@ export type TurnEvent =
   | { type: "approval"; id: string; action: string; target: string; content: string }
   | { type: "done"; answer: string }
   | { type: "error"; message: string };
+
+export class TurnRejected extends Error {}
 
 export async function getBootstrap(): Promise<Bootstrap> {
   const response = await fetch("/api/bootstrap");
@@ -42,8 +46,8 @@ async function requestJson<T>(path: string, token: string, body: object): Promis
   return result;
 }
 
-export async function createSession(token: string): Promise<string> {
-  const result = await requestJson<{ id: string }>("/api/sessions", token, {});
+export async function createSession(token: string, projectRoot: string): Promise<string> {
+  const result = await requestJson<{ id: string }>("/api/sessions", token, { project_root: projectRoot });
   return result.id;
 }
 
@@ -71,7 +75,7 @@ export async function streamTurn(
   });
   if (!response.ok) {
     const failure = await response.json() as { error?: string };
-    throw new Error(failure.error || `Could not start the turn (${response.status}).`);
+    throw new TurnRejected(failure.error || `Could not start the turn (${response.status}).`);
   }
   if (!response.body) throw new Error("This browser cannot stream responses.");
 

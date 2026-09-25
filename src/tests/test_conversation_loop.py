@@ -56,6 +56,21 @@ class ConversationLoopTests(unittest.TestCase):
         self.assertLessEqual(len(result), 20_000)
         self.assertIn("original result was 20001 characters", result)
 
+    def test_failed_tool_event_does_not_leave_an_unanswered_call(self):
+        history = [{"role": "user", "content": "Search"}]
+        complete = Mock(return_value=ModelResponse(tool_calls=[
+            ToolCall("call_1", "web_search", {"query": "example", "max_results": 1})
+        ]))
+        def show_tool(phase, call, result):
+            if phase == "result":
+                raise ConnectionResetError("Browser closed")
+
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.agent.conversation_loop.execute_tool", return_value="A result"):
+                with self.assertRaises(ConnectionResetError):
+                    run_turn(history, complete, [], Path(folder), Mock(), Mock(), on_tool_event=show_tool)
+        self.assertEqual(history, [{"role": "user", "content": "Search"}])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,14 +47,15 @@ def run_turn(
             if not response.tool_calls:
                 return response.text
 
-            messages.append({
+            call_message = {
                 "role": "assistant",
                 "content": response.text,
                 "tool_calls": [
                     {"id": call.id, "name": call.name, "arguments": call.arguments}
                     for call in response.tool_calls
                 ],
-            })
+            }
+            tool_messages = []
             for call in response.tool_calls:
                 if on_tool_event:
                     on_tool_event("start", call, None)
@@ -68,10 +69,12 @@ def run_turn(
                     result = result[:MAX_TOOL_RESULT_CHARS - len(marker)] + marker
                 if on_tool_event:
                     on_tool_event("result", call, result)
-                messages.append({
+                tool_messages.append({
                     "role": "tool", "tool_call_id": call.id,
                     "name": call.name, "content": result,
                 })
+            # Store the call and every output together so a failed turn cannot save an orphan call.
+            messages.extend([call_message, *tool_messages])
         raise RuntimeError("The model requested tools in 8 consecutive rounds. Please narrow the request.")
     finally:
         try:

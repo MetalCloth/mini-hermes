@@ -23,6 +23,15 @@ class ToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Firecrawl key file"):
             read_file(".mini-hermes/firecrawl.env", Path.home())
 
+    def test_read_file_rejects_private_paths_and_aliases(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / ".env").write_text("secret")
+            (root / "alias").symlink_to(root / ".env")
+            for path in (".env", "alias"):
+                with self.subTest(path=path), self.assertRaisesRegex(ValueError, "excluded from reading"):
+                    read_file(path, root)
+
     def test_search_files_regex_filters_and_case_insensitive_literal(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
