@@ -1,5 +1,6 @@
 """Run a model turn, executing requested tools until the model returns text."""
 
+import json
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +35,8 @@ def run_turn(
     confirm_edit: Callable[[str, str], bool] | None = None,
     confirm_undo: Callable[[str, str, bool], bool] | None = None,
     undo_history: list[FileChange] | None = None,
+    mcp_client: Any | None = None,
+    confirm_mcp: Callable[[str, str], bool] | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -98,21 +101,42 @@ def run_turn(
                 if cancel_event and cancel_event.is_set():
                     break
                 try:
-                    args = (call.name, call.arguments, project_root, confirm_terminal, confirm_write)
-                    if call.name == "write_file":
-                        result = execute_tool(*args, undo_history=undo_history)
-                    elif call.name == "edit_file":
-                        result = execute_tool(
-                            *args, confirm_edit=confirm_edit, undo_history=undo_history,
-                        )
-                    elif call.name == "undo_file_change":
-                        result = execute_tool(
-                            *args, confirm_undo=confirm_undo, undo_history=undo_history,
-                        )
-                    elif call.name.startswith("browser_"):
-                        result = execute_tool(*args, browser=browser)
+                    if call.name.startswith("mcp__"):
+                        if mcp_client is None:
+                            raise RuntimeError("MCP tool was requested without an active MCP client.")
+                        if mcp_client.requires_approval(call.name, call.arguments):
+                            if confirm_mcp is None:
+                                raise RuntimeError("This MCP action needs user approval; no approval handler is available.")
+                            preview = json.dumps(call.arguments, ensure_ascii=False, indent=2)
+                            if len(preview) > 12_000:
+                                raise ValueError("MCP action arguments are too large to review safely.")
+                            if not confirm_mcp(call.name, preview):
+                                result = "The user denied this MCP action; it was not run."
+                            else:
+                                check_cancelled()
+                                result = mcp_client.call_tool(
+                                    call.name, call.arguments, cancel_event=cancel_event
+                                )
+                        else:
+                            result = mcp_client.call_tool(
+                                call.name, call.arguments, cancel_event=cancel_event
+                            )
                     else:
-                        result = execute_tool(*args)
+                        args = (call.name, call.arguments, project_root, confirm_terminal, confirm_write)
+                        if call.name == "write_file":
+                            result = execute_tool(*args, undo_history=undo_history)
+                        elif call.name == "edit_file":
+                            result = execute_tool(
+                                *args, confirm_edit=confirm_edit, undo_history=undo_history,
+                            )
+                        elif call.name == "undo_file_change":
+                            result = execute_tool(
+                                *args, confirm_undo=confirm_undo, undo_history=undo_history,
+                            )
+                        elif call.name.startswith("browser_"):
+                            result = execute_tool(*args, browser=browser)
+                        else:
+                            result = execute_tool(*args)
                 except Exception as exc:
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
                 if len(result) > MAX_TOOL_RESULT_CHARS:

@@ -1,12 +1,12 @@
 import ipaddress
 import json
-import os
 import socket
 from html.parser import HTMLParser
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from src.security.secrets import local_secret
 
 
 MAX_PAGE_BYTES = 1_000_000
@@ -161,22 +161,7 @@ def _format_page(url: str, title: str, body: str, note: str = "") -> str:
 
 
 def _api_key(name: str, filename: str) -> str:
-    key = os.environ.get(name)
-    if key and key.strip():
-        return key.strip()
-    env_file = Path.home() / ".mini-hermes" / filename
-    try:
-        lines = env_file.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return ""
-    for line in lines:
-        entry_name, separator, value = line.partition("=")
-        if separator and entry_name.strip() == name:
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            return value
-    return ""
+    return local_secret(name, filename)
 
 
 def _tavily_api_key() -> str:

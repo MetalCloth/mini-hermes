@@ -9,6 +9,7 @@ Requirements: Python 3.10+, Node.js/npm, and the Codex CLI.
 ```fish
 python3 -m venv .venv
 source .venv/bin/activate.fish
+python -m pip install -r requirements.txt
 codex login
 ./oryn dashboard
 ```
@@ -43,6 +44,21 @@ Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenA
 - `~/.mini-hermes/firecrawl.env` for page extraction and browser interaction
 
 For a simple page read, Oryn uses `web_extract`. Browser interaction opens a short-lived Firecrawl session for pages that need clicks or form input, then closes it when the agent turn ends. Firecrawl bills browser sessions by duration.
+
+## MCP tools
+
+Oryn connects to three local MCP servers: Context7 for library documentation, GitHub for repository/issues/pull-request reading, and Playwright for browser interaction. The official MCP Python SDK is installed with `pip install -r requirements.txt`; Node.js 20+ is needed for Context7 and Playwright, and Docker is needed for GitHub.
+
+On first startup, Oryn may download the Context7 and Playwright npm packages and the GitHub Docker image. Put credentials in `~/.mini-hermes/mcp.env` (never in the repository):
+
+```env
+CONTEXT7_API_KEY=your_context7_key
+GITHUB_PERSONAL_ACCESS_TOKEN=your_read_only_github_token
+```
+
+Context7 works without a key at its basic rate. GitHub is skipped until its token is configured; Oryn starts the official server with only the `repos`, `issues`, and `pull_requests` toolsets in read-only mode. Keep the token scoped to repositories you want Oryn to inspect. Playwright uses a headless isolated browser; page-changing actions ask for approval. Arbitrary code execution, screenshots, and saved browser state are not exposed to the model.
+
+If an MCP server is missing or cannot start, Oryn continues with its built-in tools and prints which server was skipped.
 
 ## Project structure
 

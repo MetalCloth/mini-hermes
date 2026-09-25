@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from src.agent.conversation_loop import TurnCancelled, run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
+from src.mcp.client import MCPClient
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
@@ -46,17 +47,26 @@ class DashboardServer(ThreadingHTTPServer):
         port: int = 9119,
         store: SQLiteSessionStore | None = None,
         provider_factory: Callable[[str], Any] = CodexProvider,
+        mcp_client: MCPClient | None = None,
     ) -> None:
         super().__init__(("127.0.0.1", port), DashboardHandler)
         self.project_root = validate_project_root(project_root.expanduser().resolve(strict=True))
         self.store = store if store is not None else SQLiteSessionStore()
         self.provider_factory = provider_factory
+        self.mcp_client = mcp_client
         self.model = MODEL
         self.token = secrets.token_urlsafe(32)
         self.state_lock = threading.Lock()
         self.active_turns: dict[str, threading.Event] = {}
         self.approvals: dict[str, Approval] = {}
         self.file_change_history: dict[str, list[FileChange]] = {}
+
+    def server_close(self) -> None:
+        try:
+            if self.mcp_client:
+                self.mcp_client.close()
+        finally:
+            super().server_close()
 
     def session_root(self, session_id: str) -> Path | None:
         if not SESSION_ID_PATTERN.fullmatch(session_id) or not self.store.session_exists(session_id):
@@ -357,6 +367,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             start = len(history)
             history.append({"role": "user", "content": prompt})
             provider = self.server.provider_factory(self.server.model)
+            mcp_tools = self.server.mcp_client.tool_schemas() if self.server.mcp_client else []
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -392,7 +403,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             try:
                 answer = run_turn(
-                    history, provider.complete, tool_schemas(), root,
+                    history, provider.complete, tool_schemas(mcp_tools), root,
                     lambda command: self._ask(session_id, cancel_event, "terminal", "Project terminal", command),
                     lambda path, content, exists: self._ask(
                         session_id,
@@ -413,6 +424,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         diff,
                     ),
                     undo_history=undo_history,
+                    mcp_client=self.server.mcp_client,
+                    confirm_mcp=lambda name, preview: self._ask(
+                        session_id, cancel_event, "mcp", name, preview
+                    ),
                 )
                 if cancel_event.is_set():
                     raise TurnCancelled
@@ -452,7 +467,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=9119)
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab")
     args = parser.parse_args(argv)
-    server = DashboardServer(args.project, args.port)
+    server = DashboardServer(args.project, args.port, mcp_client=MCPClient())
+    for status in server.mcp_client.start():
+        print(f"mcp> {status}")
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"Oryn dashboard: {url}")
     print(f"Project: {server.project_root}")

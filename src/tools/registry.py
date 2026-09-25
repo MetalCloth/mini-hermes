@@ -17,7 +17,7 @@ from src.tools.terminal_tool import run_terminal
 from src.tools.web_tools import web_extract, web_search
 
 
-def tool_schemas() -> list[dict[str, Any]]:
+def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     schemas = [
         {
             "name": "terminal",
@@ -248,11 +248,12 @@ def tool_schemas() -> list[dict[str, Any]]:
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
     ]
-    return [
+    tools = [
         {"type": "function", "name": schema["name"], "description": schema["description"],
          "parameters": schema["parameters"], "strict": True}
         for schema in schemas
     ]
+    return [*tools, *(mcp_tools or [])]
 
 
 def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,

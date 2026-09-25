@@ -209,7 +209,7 @@ class ToolTests(unittest.TestCase):
             config = Path(folder) / ".mini-hermes"
             config.mkdir()
             (config / "tavily.env").write_text("TAVILY_API_KEY='file-key'\n")
-            with patch("src.tools.web_tools.Path.home", return_value=Path(folder)):
+            with patch("src.security.secrets.Path.home", return_value=Path(folder)):
                 with patch.dict(os.environ, {"TAVILY_API_KEY": ""}):
                     self.assertEqual(_tavily_api_key(), "file-key")
                 with patch.dict(os.environ, {"TAVILY_API_KEY": "env-key"}):

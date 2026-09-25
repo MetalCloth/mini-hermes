@@ -1,6 +1,7 @@
 """Persistent terminal chat with a Codex model."""
 
 import argparse
+import atexit
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from src.agent.conversation_loop import run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
+from src.mcp.client import MCPClient
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
@@ -78,6 +80,15 @@ def _confirm_undo(path: str, diff: str, removes_created_file: bool) -> bool:
     print(_approval_preview(diff))
     try:
         return input("Allow this undo? [y/N] ").strip().lower() in {"y", "yes"}
+    except EOFError:
+        return False
+
+
+def _confirm_mcp(name: str, preview: str) -> bool:
+    print(f"Oryn wants approval to call {name}:")
+    print(_approval_preview(preview))
+    try:
+        return input("Allow this browser action? [y/N] ").strip().lower() in {"y", "yes"}
     except EOFError:
         return False
 
@@ -161,7 +172,11 @@ def main(argv: list[str] | None = None) -> None:
         })
     history.extend(saved_messages)
     saved_count = len(history)
-    tools = tool_schemas()
+    mcp_client = MCPClient()
+    for status in mcp_client.start():
+        print(f"mcp> {status}")
+    atexit.register(mcp_client.close)
+    tools = tool_schemas(mcp_client.tool_schemas())
     print(f"Session ID: {session_id}")
     print(f"Project: {project_root}")
     if saved_messages:
@@ -227,6 +242,8 @@ def main(argv: list[str] | None = None) -> None:
                 confirm_edit=_confirm_edit,
                 confirm_undo=_confirm_undo,
                 undo_history=undo_history,
+                mcp_client=mcp_client,
+                confirm_mcp=_confirm_mcp,
             )
         except KeyboardInterrupt:
             finish_text()

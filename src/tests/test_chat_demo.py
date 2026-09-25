@@ -16,6 +16,11 @@ class ChatDemoTests(unittest.TestCase):
         patcher = patch.object(chat_demo, "load_project_instructions", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        mcp_patcher = patch.object(chat_demo, "MCPClient")
+        self.mcp_client_type = mcp_patcher.start()
+        self.mcp_client_type.return_value.start.return_value = []
+        self.mcp_client_type.return_value.tool_schemas.return_value = []
+        self.addCleanup(mcp_patcher.stop)
 
     def test_write_confirmation_shows_target_and_content_and_eof_denies(self):
         output = io.StringIO()
@@ -50,6 +55,8 @@ class ChatDemoTests(unittest.TestCase):
 
         provider.assert_called_once_with("gpt-5.6-luna")
         self.assertIn("write_file", advertised_tools[0])
+        self.mcp_client_type.return_value.start.assert_called_once_with()
+        self.mcp_client_type.return_value.tool_schemas.assert_called_once_with()
         self.assertEqual(histories[0], [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": "Hi"},

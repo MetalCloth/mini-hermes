@@ -226,6 +226,7 @@ function ApprovalCard({ item, onDecide }: { item: Extract<TimelineItem, { kind: 
   }
 
   const title = item.action === "terminal" ? "Run a terminal command?"
+    : item.action === "mcp" ? `Call ${item.target}?`
     : item.action === "edit" ? `Apply proposed edit to ${item.target}?`
     : item.action === "undo" ? `Restore previous contents of ${item.target}?`
     : item.action === "undo_created" ? `Delete ${item.target} to undo Oryn's creation?`
