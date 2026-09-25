@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { ArrowUp, Folder, FolderCode, MessageSquarePlus, PanelLeft, Search, Wrench } from "lucide-react";
-import { ThinkingOrb } from "./thinking-orbs";
+import { ArrowUp, Folder, FolderCode, MessageSquarePlus, PanelLeft, Search, Square, Wrench } from "lucide-react";
 
 const shortcuts = [
   { id: "new", label: "/new", description: "Start a chat in this project", Icon: MessageSquarePlus },
@@ -15,13 +14,15 @@ type PromptInputBoxProps = {
   value: string;
   onValueChange: (value: string) => void;
   onSubmit: () => void;
+  onCancel: () => void;
+  canStop?: boolean;
   onShortcut: (command: ShortcutId) => void;
   project: string;
   isLoading: boolean;
   disabled?: boolean;
 };
 
-export function PromptInputBox({ value, onValueChange, onSubmit, onShortcut, project, isLoading, disabled = false }: PromptInputBoxProps) {
+export function PromptInputBox({ value, onValueChange, onSubmit, onCancel, canStop = true, onShortcut, project, isLoading, disabled = false }: PromptInputBoxProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -103,9 +104,11 @@ export function PromptInputBox({ value, onValueChange, onSubmit, onShortcut, pro
         <span className="prompt-box-tools" title="Oryn chooses tools automatically"><Wrench size={14} aria-hidden="true" /><span>Auto tools</span></span>
         <div className="prompt-box-actions">
           <span className="prompt-box-hint">{isLoading ? "Keep typing · send when Oryn finishes" : "Enter to send · Shift+Enter for a new line"}</span>
-          <button className={`prompt-box-send${isLoading ? " is-loading" : ""}`} type="submit" aria-label={isLoading ? "Oryn is working" : "Send message"} disabled={unavailable || !value.trim()}>
-            {isLoading ? <ThinkingOrb state="working" size={20} theme="dark" aria-hidden="true" /> : <ArrowUp size={19} strokeWidth={2.4} aria-hidden="true" />}
-          </button>
+          {isLoading && canStop
+            ? <button className="prompt-box-send is-stop" type="button" aria-label="Stop Oryn" title="Stop Oryn" onClick={onCancel} disabled={disabled}><Square size={14} fill="currentColor" aria-hidden="true" /></button>
+            : isLoading
+              ? <button className="prompt-box-send" type="button" aria-label="Oryn is starting" disabled><span className="prompt-loading-dot" aria-hidden="true" /></button>
+              : <button className="prompt-box-send" type="submit" aria-label="Send message" disabled={disabled || !value.trim()}><ArrowUp size={19} strokeWidth={2.4} aria-hidden="true" /></button>}
         </div>
       </div>
     </form>

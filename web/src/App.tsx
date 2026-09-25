@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createSession, decideApproval, getBootstrap, getSession, streamTurn, TurnRejected, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
+import { cancelTurn, createSession, decideApproval, deleteSession, getBootstrap, getSession, renameSession, streamTurn, TurnRejected, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
 import { Composer, EmptyState, Header, Sidebar, Timeline, type Status, type TimelineItem } from "./components";
 import type { ShortcutId } from "@/components/ui/ai-prompt-box";
 
@@ -25,6 +25,7 @@ export default function App() {
   const [chats, setChats] = useState<Record<string, TimelineItem[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [running, setRunning] = useState<string[]>([]);
+  const [stoppable, setStoppable] = useState<string[]>([]);
   const [starting, setStarting] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
@@ -33,12 +34,15 @@ export default function App() {
   const loadVersion = useRef(0);
   const creating = useRef(false);
   const active = useRef(new Set<string>());
+  const stopping = useRef(new Set<string>());
   const scrollRef = useRef<HTMLDivElement>(null);
   const draftKey = selected ?? `project:${project}`;
   const prompt = drafts[draftKey] ?? "";
   const items = selected ? chats[selected] ?? [] : [];
   const busy = selected ? running.includes(selected) : starting;
   const status = appStatus.kind === "error" ? appStatus : selected ? statuses[selected] ?? ready : appStatus;
+  const canStop = Boolean(selected && stoppable.includes(selected));
+  const stopPending = canStop && status.kind === "busy" && status.message === "Stopping Oryn…";
 
   function updateItems(id: string, change: (current: TimelineItem[]) => TimelineItem[]) {
     setChats((current) => ({ ...current, [id]: change(current[id] ?? []) }));
@@ -174,6 +178,51 @@ export default function App() {
       ? { kind: "busy", message: "Oryn is continuing…" } : current[sessionId] ?? ready }));
   }
 
+  async function stopTurn(id: string) {
+    stopping.current.add(id);
+    setStatuses((current) => ({ ...current, [id]: { kind: "busy", message: "Stopping Oryn…" } }));
+    try {
+      await cancelTurn(token, id);
+    } catch (cause) {
+      stopping.current.delete(id);
+      setStatuses((current) => ({ ...current, [id]: { kind: "error", message: cause instanceof Error ? cause.message : String(cause) } }));
+    }
+  }
+
+  async function renameChat(id: string) {
+    const session = sessions.find((item) => item.id === id);
+    if (!session) return;
+    const title = window.prompt("Rename chat", session.title);
+    if (title === null) return;
+    try {
+      await renameSession(token, id, title);
+      setSessions((current) => current.map((item) => item.id === id ? { ...item, title: title.trim().replace(/\s+/g, " ") } : item));
+    } catch (cause) {
+      setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+
+  async function removeChat(id: string) {
+    const session = sessions.find((item) => item.id === id);
+    if (!session || !window.confirm(`Delete “${session.title}” and its saved messages?`)) return;
+    try {
+      await deleteSession(token, id);
+      setSessions((current) => current.filter((item) => item.id !== id));
+      setChats((current) => {
+        const remaining = { ...current };
+        delete remaining[id];
+        return remaining;
+      });
+      if (selected === id) {
+        setSelected(null);
+        setProject(session.project_root);
+        setAppStatus(ready);
+      }
+    } catch (cause) {
+      setAppStatus({ kind: "error", message: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+
   async function send() {
     const text = prompt.trim();
     if (!text || !token || creating.current || (selected && active.current.has(selected))) return;
@@ -209,7 +258,7 @@ export default function App() {
 
       function onEvent(event: TurnEvent) {
         if (event.type === "delta") {
-          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Oryn is replying…" } }));
+          setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: "Oryn is replying…" } }));
           if (!currentTextKey) {
             const key = crypto.randomUUID();
             currentTextKey = key;
@@ -223,27 +272,35 @@ export default function App() {
           const key = crypto.randomUUID();
           toolKeys.set(event.id, key);
           updateItems(turnId, (current) => [...current, { key, kind: "tool", name: event.name, detail: event.detail, result: "" }]);
-          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: `Using ${event.name.replaceAll("_", " ")}…` } }));
+          setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: `Using ${event.name.replaceAll("_", " ")}…` } }));
         } else if (event.type === "tool_result") {
           const key = toolKeys.get(event.id);
           updateItems(turnId, (current) => current.map((item) => item.key === key && item.kind === "tool" ? { ...item, result: event.result || "No output" } : item));
-          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Oryn is working…" } }));
+          setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: "Oryn is working…" } }));
         } else if (event.type === "approval") {
           updateItems(turnId, (current) => [...current, { key: crypto.randomUUID(), kind: "approval", id: event.id, action: event.action, target: event.target, content: event.content }]);
-          setStatuses((current) => ({ ...current, [turnId]: { kind: "busy", message: "Waiting for your decision" } }));
+          setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: "Waiting for your decision" } }));
         } else if (event.type === "done") {
           if (!currentTextKey && event.answer) {
             updateItems(turnId, (current) => [...current, { key: crypto.randomUUID(), kind: "message", role: "assistant", content: event.answer }]);
           }
           finished = true;
+          stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: ready }));
+        } else if (event.type === "cancelled") {
+          finished = true;
+          stopping.current.delete(turnId);
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "ready", message: "Stopped" } }));
         } else if (event.type === "error") {
           finished = true;
+          stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: { kind: "error", message: event.message } }));
         }
       }
 
-      await streamTurn(token, sessionId, text, onEvent);
+      await streamTurn(token, sessionId, text, onEvent, () => {
+        setStoppable((current) => current.includes(turnId) ? current : [...current, turnId]);
+      });
       if (!finished) throw new Error("The connection ended early. Reopen the session to inspect what was saved.");
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -260,7 +317,11 @@ export default function App() {
         setAppStatus({ kind: "error", message });
       }
     } finally {
-      if (sessionId) setRunningSession(sessionId, false);
+      if (sessionId) {
+        stopping.current.delete(sessionId);
+        setRunningSession(sessionId, false);
+        setStoppable((current) => current.filter((id) => id !== sessionId));
+      }
       else {
         creating.current = false;
         setStarting(false);
@@ -273,13 +334,13 @@ export default function App() {
   const title = sessions.find((session) => session.id === selected)?.title || "New session";
   return (
     <div className="app-shell">
-      <Sidebar project={project} projects={projects} model={model} sessions={sessions} selected={selected} running={running} open={sidebarOpen} expanded={sidebarExpanded} onClose={() => setSidebarOpen(false)} onExpand={() => setSidebarExpanded(true)} onNew={() => void newSession()} onSelect={(id) => void openSession(id)} onProject={selectProject} />
+      <Sidebar project={project} projects={projects} model={model} sessions={sessions} selected={selected} running={running} open={sidebarOpen} expanded={sidebarExpanded} onClose={() => setSidebarOpen(false)} onExpand={() => setSidebarExpanded(true)} onNew={() => void newSession()} onSelect={(id) => void openSession(id)} onRename={(id) => void renameChat(id)} onDelete={(id) => void removeChat(id)} onProject={selectProject} />
       <main className="workspace">
         <Header title={title} model={model} status={status} sidebarOpen={sidebarOpen} sidebarExpanded={sidebarExpanded} onMenu={() => setSidebarOpen((open) => !open)} onCollapse={() => setSidebarExpanded((expanded) => !expanded)} />
         <div id="chat-scroll" className="chat-scroll" ref={scrollRef}>
           {items.length === 0 ? <EmptyState /> : <Timeline items={items} status={status} onDecide={(id, allow) => approve(selected!, id, allow)} />}
         </div>
-        <Composer prompt={prompt} project={project} busy={busy} disabled={!token} status={status} onPrompt={setPrompt} onSend={() => void send()} onShortcut={runShortcut} />
+        <Composer prompt={prompt} project={project} busy={busy} disabled={!token} status={status} canStop={canStop} stopPending={stopPending} onPrompt={setPrompt} onSend={() => void send()} onCancel={() => selected && void stopTurn(selected)} onShortcut={runShortcut} />
       </main>
     </div>
   );

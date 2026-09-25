@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
-import { Bot, ChevronDown, Folder, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Search, Wrench, X } from "lucide-react";
+import { Bot, ChevronDown, Folder, Menu, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Trash2, Wrench, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import type { SessionSummary } from "./api";
 import mascotUrl from "./assets/mascot.png";
 import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import { PromptInputBox, type ShortcutId } from "@/components/ui/ai-prompt-box";
+import { normalizeLatexDelimiters } from "./markdown";
 
 export type TimelineItem =
   | { key: string; kind: "message"; role: "user" | "assistant"; content: string }
@@ -38,10 +41,12 @@ type SidebarProps = {
   onExpand: () => void;
   onNew: () => void;
   onSelect: (id: string) => void;
+  onRename: (id: string) => void;
+  onDelete: (id: string) => void;
   onProject: (root: string) => void;
 };
 
-export function Sidebar({ project, projects, model, sessions, selected, running, open, expanded, onClose, onExpand, onNew, onSelect, onProject }: SidebarProps) {
+export function Sidebar({ project, projects, model, sessions, selected, running, open, expanded, onClose, onExpand, onNew, onSelect, onRename, onDelete, onProject }: SidebarProps) {
   const [query, setQuery] = useState("");
   const [collapsedProjects, setCollapsedProjects] = useState<string[]>([]);
   const [width, setWidth] = useState(() => window.innerWidth <= 980 ? 280 : Math.round(Math.min(352, Math.max(270, window.innerWidth * .254))));
@@ -138,10 +143,19 @@ export function Sidebar({ project, projects, model, sessions, selected, running,
                 </div>
                 <div id={`project-chats-${index}`} className="session-list" hidden={!isExpanded}>
                   {chats.map((session) => (
-                    <button key={session.id} className="session-item" type="button" title={session.title} aria-current={selected === session.id ? "page" : undefined} onClick={() => onSelect(session.id)}>
-                      <span className="session-copy"><span className="session-title">{session.title}</span><small>{session.message_count} {session.message_count === 1 ? "message" : "messages"}</small></span>
-                      {running.includes(session.id) && <span className="session-running" title="Oryn is working"><span className="sr-only">Oryn is working</span></span>}
-                    </button>
+                    <div key={session.id} className="session-row">
+                      <button className="session-item" type="button" title={session.title} aria-current={selected === session.id ? "page" : undefined} onClick={() => onSelect(session.id)}>
+                        <span className="session-copy"><span className="session-title">{session.title}</span><small>{session.message_count} {session.message_count === 1 ? "message" : "messages"}</small></span>
+                        {running.includes(session.id) && <span className="session-running" title="Oryn is working"><span className="sr-only">Oryn is working</span></span>}
+                      </button>
+                      <details className="session-actions">
+                        <summary aria-label={`Actions for ${session.title}`} title="Chat actions"><MoreHorizontal size={16} aria-hidden="true" /></summary>
+                        <div className="session-menu">
+                          <button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onRename(session.id); }}><Pencil size={14} aria-hidden="true" />Rename</button>
+                          <button type="button" disabled={running.includes(session.id)} onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onDelete(session.id); }}><Trash2 size={14} aria-hidden="true" />Delete</button>
+                        </div>
+                      </details>
+                    </div>
                   ))}
                   {chats.length === 0 && !term && <p className="project-empty">No chats yet</p>}
                 </div>
@@ -181,7 +195,7 @@ export function Header({ title, model, status, sidebarOpen, sidebarExpanded, onM
       </div>
       <div className="topbar-right">
         <span className="header-model">{model}</span>
-        <span id="connection-status" className={`connection-status ${status.kind}`}><span className="local-dot" aria-hidden="true" />{status.kind === "busy" ? "Working" : status.kind === "error" ? "Error" : "Ready"}</span>
+        <span id="connection-status" className={`connection-status ${status.kind}`} role="status" aria-live="polite"><span className="local-dot" aria-hidden="true" />{status.message === "Stopped" ? "Stopped" : status.kind === "busy" ? "Working" : status.kind === "error" ? "Error" : "Ready"}</span>
       </div>
     </header>
   );
@@ -240,7 +254,7 @@ export function Timeline({ items, status, onDecide }: { items: TimelineItem[]; s
             <div className="message-body">
               {item.role === "assistant" && <div className="message-role">Oryn</div>}
               {item.role === "assistant"
-                ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}>{item.content}</ReactMarkdown></div>
+                ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { throwOnError: false }]]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}>{normalizeLatexDelimiters(item.content)}</ReactMarkdown></div>
                 : <div className="message-content">{item.content}</div>}
             </div>
           </article>
@@ -270,14 +284,17 @@ type ComposerProps = {
   status: Status;
   onPrompt: (value: string) => void;
   onSend: () => void;
+  onCancel: () => void;
+  canStop: boolean;
+  stopPending: boolean;
   onShortcut: (command: ShortcutId) => void;
 };
 
-export function Composer({ prompt, project, busy, disabled, status, onPrompt, onSend, onShortcut }: ComposerProps) {
+export function Composer({ prompt, project, busy, disabled, status, onPrompt, onSend, onCancel, canStop, stopPending, onShortcut }: ComposerProps) {
   return (
     <div className="composer-area">
       {status.kind === "error" && <p className="status-message error" role="alert">{status.message}</p>}
-      <PromptInputBox value={prompt} onValueChange={onPrompt} onSubmit={onSend} onShortcut={onShortcut} project={project} isLoading={busy} disabled={disabled} />
+      <PromptInputBox value={prompt} onValueChange={onPrompt} onSubmit={onSend} onCancel={onCancel} canStop={canStop} onShortcut={onShortcut} project={project} isLoading={busy} disabled={disabled || stopPending} />
       <div className="composer-footnote">Oryn asks before writing files or running commands.</div>
     </div>
   );

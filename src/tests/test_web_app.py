@@ -16,7 +16,7 @@ class TextProvider:
     def __init__(self, model: str) -> None:
         self.model = model
 
-    def complete(self, messages, tools, on_text_delta=None):
+    def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
         if on_text_delta:
             on_text_delta("Hello ")
             on_text_delta("from Mini-Hermes.")
@@ -27,7 +27,7 @@ class WriteProvider:
     def __init__(self, model: str) -> None:
         self.model = model
 
-    def complete(self, messages, tools, on_text_delta=None):
+    def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
         if any(message["role"] == "tool" for message in messages):
             if on_text_delta:
                 on_text_delta("The file is ready.")

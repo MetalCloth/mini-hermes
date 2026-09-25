@@ -4,7 +4,9 @@ import argparse
 import base64
 import json
 import os
+import socket
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -168,8 +170,13 @@ class CodexProvider:
     def complete(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ModelResponse:
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Codex request cancelled")
         auth = _read_auth(self.auth_file)
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Codex request cancelled")
         instructions = "\n\n".join(
             message["content"] for message in messages
             if message["role"] in {"system", "developer"}
@@ -247,14 +254,44 @@ class CodexProvider:
                 "OpenAI-Beta": "responses=experimental",
             },
         )
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Codex request cancelled")
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
-                return _response_text(response, on_text_delta)
+                finished = threading.Event()
+                watcher = None
+                if cancel_event:
+                    def interrupt_on_cancel() -> None:
+                        while not finished.wait(0.1):
+                            if cancel_event.is_set():
+                                try:
+                                    # CPython's urllib response exposes its socket; shutdown wakes a blocked SSE read.
+                                    response.fp.raw._sock.shutdown(socket.SHUT_RDWR)
+                                except (AttributeError, OSError):
+                                    response.close()
+                                return
+
+                    watcher = threading.Thread(target=interrupt_on_cancel, daemon=True)
+                    watcher.start()
+                try:
+                    return _response_text(response, on_text_delta)
+                finally:
+                    finished.set()
+                    if watcher:
+                        watcher.join(timeout=0.2)
         except urllib.error.HTTPError as exc:
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Codex request cancelled") from exc
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Codex endpoint returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Codex request cancelled") from exc
             raise RuntimeError(f"Could not reach Codex endpoint: {exc.reason}") from exc
+        except OSError as exc:
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Codex request cancelled") from exc
+            raise
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -25,6 +25,7 @@ export type TurnEvent =
   | { type: "tool_result"; id: string; name: string; result: string }
   | { type: "approval"; id: string; action: string; target: string; content: string }
   | { type: "done"; answer: string }
+  | { type: "cancelled" }
   | { type: "error"; message: string };
 
 export class TurnRejected extends Error {}
@@ -35,9 +36,9 @@ export async function getBootstrap(): Promise<Bootstrap> {
   return response.json() as Promise<Bootstrap>;
 }
 
-async function requestJson<T>(path: string, token: string, body: object): Promise<T> {
+async function requestJson<T>(path: string, token: string, body: object, method = "POST"): Promise<T> {
   const response = await fetch(path, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json", "X-Mini-Hermes-Token": token },
     body: JSON.stringify(body),
   });
@@ -49,6 +50,23 @@ async function requestJson<T>(path: string, token: string, body: object): Promis
 export async function createSession(token: string, projectRoot: string): Promise<string> {
   const result = await requestJson<{ id: string }>("/api/sessions", token, { project_root: projectRoot });
   return result.id;
+}
+
+export async function renameSession(token: string, id: string, title: string): Promise<void> {
+  await requestJson(`/api/sessions/${encodeURIComponent(id)}`, token, { title }, "PATCH");
+}
+
+export async function deleteSession(token: string, id: string): Promise<void> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-Mini-Hermes-Token": token },
+  });
+  const result = await response.json() as { error?: string };
+  if (!response.ok) throw new Error(result.error || `Could not delete chat (${response.status}).`);
+}
+
+export async function cancelTurn(token: string, id: string): Promise<void> {
+  await requestJson("/api/turns/cancel", token, { session_id: id });
 }
 
 export async function getSession(id: string): Promise<SavedMessage[]> {
@@ -67,6 +85,7 @@ export async function streamTurn(
   sessionId: string,
   content: string,
   onEvent: (event: TurnEvent) => void,
+  onStarted?: () => void,
 ): Promise<void> {
   const response = await fetch("/api/turns", {
     method: "POST",
@@ -78,6 +97,7 @@ export async function streamTurn(
     throw new TurnRejected(failure.error || `Could not start the turn (${response.status}).`);
   }
   if (!response.body) throw new Error("This browser cannot stream responses.");
+  onStarted?.();
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

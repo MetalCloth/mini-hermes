@@ -116,7 +116,8 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "to click, fill a field, or inspect changing page content. Returns the current "
                 "URL and an accessibility snapshot with element refs such as '@e2'. "
                 "The browser stays open for this agent turn only and closes after the final answer. "
-                "Use web_extract for a simple one-page read. Requires FIRECRAWL_API_KEY."
+                "Browser sessions use Firecrawl credits, so use web_extract for a simple one-page read. "
+                "Requires FIRECRAWL_API_KEY."
             ),
             "parameters": {
                 "type": "object", "properties": {

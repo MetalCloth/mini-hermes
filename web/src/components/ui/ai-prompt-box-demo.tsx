@@ -12,6 +12,7 @@ export function AiPromptBoxDemo() {
           value={value}
           onValueChange={setValue}
           onSubmit={() => { setSent(value.trim()); setValue(""); }}
+          onCancel={() => {}}
           onShortcut={(command) => { setSent(`Ran /${command}`); setValue(""); }}
           project="/your/project"
           isLoading={false}

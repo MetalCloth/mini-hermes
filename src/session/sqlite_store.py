@@ -31,7 +31,7 @@ class SQLiteSessionStore:
                 )
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS sessions "
-                    "(id TEXT PRIMARY KEY, project_root TEXT)"
+                    "(id TEXT PRIMARY KEY, project_root TEXT, title TEXT)"
                 )
                 columns = {
                     row[1] for row in connection.execute("PRAGMA table_info(sessions)")
@@ -39,6 +39,8 @@ class SQLiteSessionStore:
                 if "project_root" not in columns:
                     # Older session databases recorded chat IDs but no project folder.
                     connection.execute("ALTER TABLE sessions ADD COLUMN project_root TEXT")
+                if "title" not in columns:
+                    connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
                 connection.execute(
                     "INSERT OR IGNORE INTO sessions (id) "
                     "SELECT DISTINCT session_id FROM messages"
@@ -125,6 +127,40 @@ class SQLiteSessionStore:
         finally:
             connection.close()
         return row[0] if row else None
+
+    def session_title(self, session_id: str) -> str | None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT title FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0] if row else None
+
+    def rename_session(self, session_id: str, title: str) -> bool:
+        title = " ".join(title.split())
+        if not title or len(title) > 80:
+            raise ValueError("Chat title must be 1 to 80 characters.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE sessions SET title = ? WHERE id = ?", (title, session_id)
+                )
+                return cursor.rowcount == 1
+        finally:
+            connection.close()
+
+    def delete_session(self, session_id: str) -> bool:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+                return cursor.rowcount == 1
+        finally:
+            connection.close()
 
     def bind_session_to_project(self, session_id: str, project_root: Path) -> None:
         root = str(project_root)

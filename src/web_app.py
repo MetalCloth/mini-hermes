@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from src.agent.conversation_loop import run_turn
+from src.agent.conversation_loop import TurnCancelled, run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.providers.codex import CodexProvider
@@ -31,6 +31,7 @@ SESSION_ID_PATTERN = re.compile(r"(?:[0-9a-f]{32}|main)\Z")
 
 @dataclass
 class Approval:
+    session_id: str
     decision: bool | None = None
     ready: threading.Event = field(default_factory=threading.Event)
 
@@ -52,7 +53,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.model = MODEL
         self.token = secrets.token_urlsafe(32)
         self.state_lock = threading.Lock()
-        self.active_sessions: set[str] = set()
+        self.active_turns: dict[str, threading.Event] = {}
         self.approvals: dict[str, Approval] = {}
 
     def session_root(self, session_id: str) -> Path | None:
@@ -85,7 +86,9 @@ class DashboardServer(ThreadingHTTPServer):
                 continue
             messages = self.store.load_messages(session_id)
             user_text = [m.get("content", "") for m in messages if m.get("role") == "user"]
-            title = " ".join(str(user_text[0]).split())[:72] if user_text else "New session"
+            title = self.store.session_title(session_id)
+            if not title:
+                title = " ".join(str(user_text[0]).split())[:72] if user_text else "New session"
             result.append({"id": session_id, "title": title, "message_count": len(user_text), "project_root": str(root)})
         return result
 
@@ -200,6 +203,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             session_id = self.server.store.create_session(Path(requested_root))
             self._json(201, {"id": session_id})
+        elif self.path == "/api/turns/cancel":
+            session_id = data.get("session_id")
+            if not isinstance(session_id, str) or not SESSION_ID_PATTERN.fullmatch(session_id):
+                self._json(400, {"error": "Give a valid session ID."})
+                return
+            with self.server.state_lock:
+                cancel_event = self.server.active_turns.get(session_id)
+                if cancel_event:
+                    cancel_event.set()
+                    for approval in self.server.approvals.values():
+                        if approval.session_id == session_id:
+                            approval.decision = False
+                            approval.ready.set()
+            self._json(200, {"cancelled": cancel_event is not None})
         elif self.path == "/api/approvals":
             approval_id, allow = data.get("id"), data.get("allow")
             if not isinstance(approval_id, str) or not isinstance(allow, bool):
@@ -218,16 +235,71 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "Endpoint not found."})
 
+    def do_PATCH(self) -> None:
+        if not self._valid_host() or not self._valid_mutation():
+            return
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/sessions/"):
+            self._json(404, {"error": "Endpoint not found."})
+            return
+        session_id = path.removeprefix("/api/sessions/")
+        if self.server.session_root(session_id) is None:
+            self._json(404, {"error": "Session not found."})
+            return
+        data = self._body()
+        if data is None:
+            return
+        title = data.get("title")
+        if not isinstance(title, str):
+            self._json(400, {"error": "Give a chat title."})
+            return
+        try:
+            renamed = self.server.store.rename_session(session_id, title)
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        if not renamed:
+            self._json(404, {"error": "Session not found."})
+            return
+        self._json(200, {"id": session_id, "title": " ".join(title.split())})
+
+    def do_DELETE(self) -> None:
+        if not self._valid_host() or not self._valid_mutation():
+            return
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/sessions/"):
+            self._json(404, {"error": "Endpoint not found."})
+            return
+        session_id = path.removeprefix("/api/sessions/")
+        with self.server.state_lock:
+            if self.server.session_root(session_id) is None:
+                result = "missing"
+            elif session_id in self.server.active_turns:
+                result = "active"
+            elif not self.server.store.delete_session(session_id):
+                result = "missing"
+            else:
+                result = "deleted"
+        if result == "missing":
+            self._json(404, {"error": "Session not found."})
+        elif result == "active":
+            self._json(409, {"error": "Stop the active turn before deleting this chat."})
+        else:
+            self._json(200, {"deleted": True})
+
     def _event(self, kind: str, **data: Any) -> None:
         line = json.dumps({"type": kind, **data}, ensure_ascii=False, separators=(",", ":"))
         self.wfile.write((line + "\n").encode("utf-8"))
         self.wfile.flush()
 
-    def _ask(self, action: str, target: str, content: str) -> bool:
+    def _ask(self, session_id: str, cancel_event: threading.Event, action: str, target: str, content: str) -> bool:
         approval_id = secrets.token_urlsafe(18)
-        approval = Approval()
+        approval = Approval(session_id)
         with self.server.state_lock:
             self.server.approvals[approval_id] = approval
+            if cancel_event.is_set():
+                approval.decision = False
+                approval.ready.set()
         try:
             self._event("approval", id=approval_id, action=action, target=target, content=content)
             approval.ready.wait(timeout=300)
@@ -238,19 +310,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _turn(self, data: dict[str, Any]) -> None:
         session_id, prompt = data.get("session_id"), data.get("content")
-        root = self.server.session_root(session_id) if isinstance(session_id, str) else None
-        if root is None:
+        if not isinstance(session_id, str) or not SESSION_ID_PATTERN.fullmatch(session_id):
             self._json(404, {"error": "Session not found."})
             return
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 10_000:
             self._json(400, {"error": "Write a message of 1 to 10,000 characters."})
             return
         with self.server.state_lock:
-            if session_id in self.server.active_sessions:
+            root = self.server.session_root(session_id)
+            if root is None:
+                self._json(404, {"error": "Session not found."})
+                return
+            if session_id in self.server.active_turns:
                 self._json(409, {"error": "This session is already answering. Wait for it to finish."})
                 return
-            self.server.active_sessions.add(session_id)
+            cancel_event = threading.Event()
+            self.server.active_turns[session_id] = cancel_event
         streaming = False
+        partial_text: list[str] = []
         try:
             saved = self.server.store.load_messages(session_id)
             instructions = load_project_instructions(root)
@@ -280,6 +357,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             def show_tool(phase: str, call: ToolCall, result: str | None) -> None:
                 if phase == "start":
+                    partial_text.clear()
                     detail = next((str(call.arguments[key]) for key in
                                    ("path", "ref", "url", "query", "command", "key")
                                    if key in call.arguments), "")
@@ -288,18 +366,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._event("tool_result", id=call.id, name=call.name,
                                 result=(result or "")[:2000])
 
+            def show_text(delta: str) -> None:
+                partial_text.append(delta)
+                self._event("delta", text=delta)
+
             try:
                 answer = run_turn(
                     history, provider.complete, tool_schemas(), root,
-                    lambda command: self._ask("terminal", "Project terminal", command),
+                    lambda command: self._ask(session_id, cancel_event, "terminal", "Project terminal", command),
                     lambda path, content, exists: self._ask(
+                        session_id,
+                        cancel_event,
                         "replace" if exists else "create", path, content
                     ),
-                    on_text_delta=lambda delta: self._event("delta", text=delta),
+                    on_text_delta=show_text,
                     on_tool_event=show_tool,
+                    cancel_event=cancel_event,
                 )
+                if cancel_event.is_set():
+                    raise TurnCancelled
                 history.append({"role": "assistant", "content": answer})
                 outcome = {"type": "done", "answer": answer}
+            except TurnCancelled:
+                if partial_text:
+                    history.append({"role": "assistant", "content": "".join(partial_text)})
+                outcome = {"type": "cancelled"}
             except Exception as exc:
                 outcome = {"type": "error", "message": f"Agent turn failed: {exc}"}
             try:
@@ -321,7 +412,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     pass
         finally:
             with self.server.state_lock:
-                self.server.active_sessions.discard(session_id)
+                self.server.active_turns.pop(session_id, None)
 
 
 def main(argv: list[str] | None = None) -> None:
