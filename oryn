@@ -22,4 +22,8 @@ if [[ "${1:-}" == "dashboard" ]]; then
     npm --prefix "$app_dir/web" run build
     exec "$app_python" -m src.web_app "$@"
 fi
-exec "$app_python" -m src.chat_demo "$@"
+if [[ "${1:-}" == "repl" ]]; then
+    shift
+    exec "$app_python" -m src.chat_demo "$@"
+fi
+exec "$app_python" -m src.tui_app "$@"

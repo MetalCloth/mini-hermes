@@ -26,6 +26,8 @@ To use a different project folder, start Oryn from that folder or pass `--projec
 
 ## Terminal chat
 
+By default, `./oryn` opens the full-screen Python TUI. Type `/` for commands. `Ctrl+P` opens the command palette, `Ctrl+N` starts a chat, `Ctrl+O` opens saved sessions, `F2` changes the model, and `Ctrl+Enter` sends a message. `Enter` adds a line; `Ctrl+C` stops a reply or quits when idle.
+
 ```bash
 ./oryn
 ./oryn --new
@@ -33,6 +35,8 @@ To use a different project folder, start Oryn from that folder or pass `--projec
 ./oryn --resume SESSION_ID
 ./oryn --search "text to find"
 ```
+
+Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 

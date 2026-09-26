@@ -41,6 +41,8 @@ class SQLiteSessionStore:
                     connection.execute("ALTER TABLE sessions ADD COLUMN project_root TEXT")
                 if "title" not in columns:
                     connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+                if "model" not in columns:
+                    connection.execute("ALTER TABLE sessions ADD COLUMN model TEXT")
                 connection.execute(
                     "INSERT OR IGNORE INTO sessions (id) "
                     "SELECT DISTINCT session_id FROM messages"
@@ -137,6 +139,31 @@ class SQLiteSessionStore:
         finally:
             connection.close()
         return row[0] if row else None
+
+    def session_model(self, session_id: str) -> str | None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT model FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        return row[0] if row else None
+
+    def set_session_model(self, session_id: str, model: str) -> None:
+        model = model.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", model):
+            raise ValueError("Model ID must be 1 to 120 letters, digits, dots, underscores, or hyphens.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE sessions SET model = ? WHERE id = ?", (model, session_id)
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(f"No saved session with ID {session_id}.")
+        finally:
+            connection.close()
 
     def rename_session(self, session_id: str, title: str) -> bool:
         title = " ".join(title.split())

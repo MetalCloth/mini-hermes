@@ -1,0 +1,359 @@
+Screen {
+    background: #0c0e13;
+    color: #e6e9f0;
+}
+
+#workspace {
+    height: 1fr;
+}
+
+#sidebar {
+    width: 28;
+    background: #11141b;
+    border-right: solid #252a36;
+    padding: 1 2;
+}
+
+#brand {
+    height: 2;
+    color: #edf0f8;
+    text-style: bold;
+    content-align: left middle;
+}
+
+.eyebrow, .section-label {
+    color: #858da0;
+    text-style: bold;
+    height: 1;
+}
+
+.eyebrow {
+    color: #77839e;
+    margin-bottom: 2;
+}
+
+.section-label {
+    margin-top: 2;
+    color: #69748a;
+}
+
+#project-name {
+    color: #dce2ef;
+    text-style: bold;
+    height: 1;
+}
+
+#project-path {
+    color: #7f899e;
+    height: 2;
+    overflow: hidden;
+}
+
+#session-list {
+    color: #aeb6c7;
+    height: 1fr;
+    padding-top: 1;
+}
+
+#sidebar-keys {
+    color: #798399;
+    height: 4;
+    border-top: solid #252a36;
+    padding-top: 1;
+}
+
+#main-panel {
+    width: 1fr;
+    height: 1fr;
+}
+
+#topbar {
+    height: 3;
+    padding: 0 2;
+    border-bottom: solid #252a36;
+    align-vertical: middle;
+}
+
+#topbar-title {
+    color: #f0f2f7;
+    text-style: bold;
+    width: auto;
+    margin-right: 2;
+}
+
+#topbar-project {
+    color: #8791a7;
+    width: 1fr;
+}
+
+#model-chip {
+    color: #c4d3ff;
+    background: #1a2233;
+    padding: 0 1;
+    width: auto;
+}
+
+#transcript {
+    height: 1fr;
+    padding: 1 5;
+}
+
+#welcome {
+    height: 1fr;
+    align: center middle;
+    padding: 2;
+}
+
+#welcome-mark {
+    color: #8baaff;
+    text-style: bold;
+    text-align: center;
+    height: 3;
+    width: 1fr;
+}
+
+#welcome-title {
+    color: #eff2f8;
+    text-style: bold;
+    text-align: center;
+    width: 1fr;
+    height: 2;
+}
+
+#welcome-copy {
+    color: #8e98ad;
+    text-align: center;
+    width: 1fr;
+    height: 2;
+}
+
+#welcome-hint {
+    color: #8194c3;
+    text-align: center;
+    width: 1fr;
+    height: 2;
+    margin-top: 1;
+}
+
+.message-card {
+    width: 1fr;
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    border-left: tall #313949;
+}
+
+.message-card.user {
+    border-left: tall #7798e8;
+    background: #121722;
+    padding: 1 2;
+}
+
+.message-card.assistant {
+    border-left: tall #69b5b1;
+    padding: 1 2;
+}
+
+.message-label {
+    color: #91a4ce;
+    text-style: bold;
+    height: 1;
+    margin-bottom: 1;
+}
+
+.message-status {
+    display: none;
+    height: 1;
+    margin-bottom: 1;
+    text-style: bold;
+}
+
+.message-status.cancelled {
+    color: #d6b06e;
+}
+
+.message-status.failed {
+    color: #e18a91;
+}
+
+.message-copy {
+    width: 1fr;
+    height: auto;
+    color: #dfe4ee;
+    background: transparent;
+}
+
+#activity-row {
+    height: 2;
+    padding: 0 3;
+    color: #8a94a8;
+    border-top: solid #222733;
+    align-vertical: middle;
+}
+
+#activity-dot {
+    width: 2;
+    color: #79a3ff;
+}
+
+#activity-dot.working {
+    color: #8bb8ff;
+    text-style: bold;
+}
+
+#activity-label {
+    width: 1fr;
+    color: #9ba5b9;
+    overflow: hidden;
+}
+
+#activity-label.error {
+    color: #ff9c9c;
+}
+
+#tool-count {
+    width: auto;
+    color: #707a8f;
+}
+
+#composer-frame {
+    height: auto;
+    min-height: 8;
+    max-height: 15;
+    margin: 0 3 1 3;
+    padding: 0 1;
+    border: round #39445a;
+    background: #11151d;
+}
+
+#composer {
+    height: 5;
+    min-height: 3;
+    max-height: 10;
+    border: none;
+    background: transparent;
+    color: #e8ebf2;
+    padding: 1;
+}
+
+#composer:focus {
+    border: none;
+}
+
+#composer-footer {
+    height: 2;
+    padding: 0 1;
+    color: #758097;
+    align-vertical: middle;
+}
+
+#composer-hint {
+    width: 1fr;
+}
+
+#send-hint {
+    width: auto;
+    color: #93a9dc;
+}
+
+Footer {
+    background: #11141b;
+    color: #8690a3;
+}
+
+PaletteScreen, ChoiceScreen, TextPromptScreen, InfoScreen, ApprovalScreen {
+    align: center middle;
+    background: #0c0e13;
+}
+
+#palette-card, #picker-card, #prompt-card, #info-card, #approval-card {
+    width: 72;
+    max-width: 92%;
+    height: auto;
+    max-height: 80%;
+    padding: 1 2;
+    border: round #3a455c;
+    background: #151923;
+}
+
+#palette-title, #picker-title {
+    color: #e9edf7;
+    text-style: bold;
+    height: 2;
+    content-align: left middle;
+}
+
+#palette-search, #value-input {
+    height: 3;
+    margin: 0 0 1 0;
+    border: round #364057;
+    background: #0f1219;
+}
+
+#palette-options, #picker-options {
+    height: 12;
+    border: none;
+    background: #151923;
+    padding: 0;
+}
+
+#palette-hint, .modal-hint {
+    height: 1;
+    color: #7f8aa0;
+    margin-top: 1;
+}
+
+#picker-empty {
+    height: 4;
+    color: #8d97aa;
+    content-align: center middle;
+}
+
+#prompt-card {
+    width: 68;
+}
+
+#info-card {
+    height: 70%;
+}
+
+#info-scroll {
+    height: 1fr;
+    border-top: solid #2d3443;
+    border-bottom: solid #2d3443;
+    padding: 1;
+}
+
+#info-card Button {
+    margin-top: 1;
+    width: 18;
+    align-horizontal: right;
+}
+
+#approval-card {
+    width: 88;
+    height: 70%;
+}
+
+#approval-eyebrow {
+    color: #e6be74;
+    text-style: bold;
+    height: 1;
+}
+
+#approval-preview {
+    height: 1fr;
+    border: round #30394b;
+    background: #0f1218;
+    padding: 1;
+}
+
+.modal-buttons {
+    height: 3;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+.modal-buttons Button {
+    margin-left: 1;
+}
