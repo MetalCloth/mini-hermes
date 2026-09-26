@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-_PRIVATE_PARTS = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env", "tavily.env")
+_PRIVATE_PARTS = (".git", ".venv", "node_modules", "__pycache__", ".codex", ".mini-hermes", ".ssh", "firecrawl.env", "tavily.env", "mcp.env")
 MAX_UNDO_HISTORY = 20
 MAX_UNDO_SNAPSHOT_BYTES = 1_000_000
 

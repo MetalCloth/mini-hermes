@@ -13,12 +13,14 @@ export type SavedMessage = {
 };
 
 export type McpServerStatus = {
-  name: "context7" | "github" | "playwright";
+  name: "github" | "context7" | "microsoft_learn" | "huggingface" | "tavily"
+    | "firecrawl" | "exa" | "linear" | "notion" | "playwright";
   enabled: boolean;
   state: "connected" | "disabled" | "unavailable" | "starting";
   message: string;
   tool_count: number;
   access: string;
+  transport: "http" | "stdio";
 };
 
 export type Bootstrap = {

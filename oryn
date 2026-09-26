@@ -10,6 +10,10 @@ fi
 
 # Preserve the caller's working directory as the default project.
 export PYTHONPATH="$app_dir${PYTHONPATH:+:$PYTHONPATH}"
+if [[ "${1:-}" == "mcp" ]]; then
+    shift
+    exec "$app_python" -m src.mcp.oauth "$@"
+fi
 if [[ "${1:-}" == "dashboard" ]]; then
     shift
     if ! command -v npm >/dev/null 2>&1; then

@@ -242,12 +242,16 @@ export function McpSettingsDialog({ open, servers, onClose, onUpdate, onSave }: 
         <div><span className="mcp-kicker">TOOLS & CONNECTIONS</span><h2 id="mcp-dialog-title">MCP servers</h2></div>
         <button className="chrome-button" type="button" aria-label="Close MCP settings" onClick={() => dialogRef.current?.close()}><X size={19} /></button>
       </div>
-      <p id="mcp-dialog-description" className="mcp-dialog-description">Choose which connected tools Oryn can use. Server processes run on this laptop; connected servers may access their network services.</p>
+      <p id="mcp-dialog-description" className="mcp-dialog-description">Connect hosted services and choose which tools Oryn can use. Playwright provides the local browser connection.</p>
       <div className="mcp-server-list">
         {servers.map((server) => (
           <section className="mcp-server-row" key={server.name}>
             <div className="mcp-server-copy">
-              <div className="mcp-server-title"><h3>{server.name === "context7" ? "Context7" : server.name === "github" ? "GitHub" : "Playwright"}</h3><span className={`mcp-status ${server.state}`}>{server.state}</span></div>
+              <div className="mcp-server-title"><h3>{{
+                github: "GitHub", context7: "Context7", microsoft_learn: "Microsoft Learn",
+                huggingface: "Hugging Face", tavily: "Tavily", firecrawl: "Firecrawl",
+                exa: "Exa", linear: "Linear", notion: "Notion", playwright: "Playwright",
+              }[server.name]}</h3><span className={`mcp-status ${server.state}`}>{server.state}</span></div>
               <p>{server.access}</p>
               <small>{server.state === "connected" ? `${server.tool_count} tool${server.tool_count === 1 ? "" : "s"} available.` : server.message}</small>
             </div>

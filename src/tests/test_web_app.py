@@ -175,7 +175,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("known MCP server", invalid["error"])
 
-        enabled = {"context7": True, "github": False, "playwright": True}
+        enabled = {name: name in {"context7", "playwright"} for name in SERVER_NAMES}
         status, data = self.request("POST", "/api/mcp", {"enabled": enabled})
         self.assertEqual(status, 200)
         self.assertEqual([server["enabled"] for server in data["mcp_servers"]], list(enabled.values()))

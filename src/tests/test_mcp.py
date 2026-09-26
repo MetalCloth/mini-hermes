@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,197 @@ from src.providers.types import ModelResponse, ToolCall
 
 
 class MCPTests(unittest.TestCase):
+    def test_mcp_cli_reuses_server_preferences(self):
+        import contextlib
+        import io
+        from src.mcp.oauth import main
+
+        with patch("src.mcp.discovery.load_enabled_servers", return_value={"context7"}):
+            with patch("src.mcp.discovery.save_enabled_servers") as save:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    main(["enable", "github"])
+                save.assert_called_once_with({"context7", "github"})
+
+    def test_hosted_presets_migrate_preferences_and_keep_secrets_out_of_urls(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            path.write_text(json.dumps({"enabled_servers": ["context7", "playwright"]}))
+            enabled = load_enabled_servers(path)
+            self.assertNotIn("github", enabled)
+            self.assertIn("notion", enabled)
+            save_enabled_servers({"context7"}, path)
+            self.assertEqual(load_enabled_servers(path), {"context7"})
+        with patch("src.mcp.discovery.local_secret", return_value="test-secret"):
+            configs = server_configs(set(SERVER_NAMES))
+        hosted = [config for config in configs if config.url]
+        self.assertEqual(len(hosted), 9)
+        self.assertTrue(all(config.url.startswith("https://") and not config.command for config in hosted))
+        self.assertTrue(all("test-secret" not in config.url and "test-secret" not in repr(config) for config in hosted))
+        self.assertEqual(next(c for c in hosted if c.name == "exa").headers, {"x-api-key": "test-secret"})
+        github = next(c for c in hosted if c.name == "github")
+        self.assertTrue(github.url.endswith("/readonly"))
+        self.assertEqual(github.headers["X-MCP-Toolsets"], "repos,issues,pull_requests")
+
+    def test_http_discovery_tool_call_and_write_approval(self):
+        import httpx2
+        from mcp import Client
+
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            self.assertEqual(request.headers["Authorization"], "Bearer test-secret")
+            if request.method != "POST":
+                return httpx2.Response(405)
+            message = json.loads(request.content)
+            if "id" not in message:
+                return httpx2.Response(202)
+            if message["method"] == "initialize":
+                result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                          "serverInfo": {"name": "http-test", "version": "1"}}
+            elif message["method"] == "tools/list":
+                result = {"tools": [
+                    {"name": "lookup", "inputSchema": {"type": "object"},
+                     "annotations": {"readOnlyHint": True}},
+                    {"name": "change", "inputSchema": {"type": "object"}},
+                ]}
+            else:
+                self.assertEqual(message["method"], "tools/call")
+                result = {"content": [{"type": "text", "text": "Hosted result"}]}
+            return httpx2.Response(200, json={"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+        config = MCPServerConfig("linear", url="https://mcp.test/mcp", headers={"Authorization": "Bearer test-secret"})
+        client = MCPClient([config])
+
+        async def exercise():
+            http = httpx2.AsyncClient(transport=httpx2.MockTransport(respond), headers=config.headers)
+            with patch("mcp.shared._httpx_utils.create_mcp_http_client", return_value=http):
+                with patch("src.mcp.client.shutil.which") as which:
+                    status = await client._connect_config(config, Client, None)
+                    which.assert_not_called()
+            try:
+                self.assertIn("Connected with 2 tool", status)
+                self.assertFalse(client.requires_approval("mcp__linear__lookup"))
+                self.assertTrue(client.requires_approval("mcp__linear__change"))
+                result = await client._clients["linear"].call_tool("lookup", {})
+                self.assertEqual(result.content[0].text, "Hosted result")
+            finally:
+                await client._stacks["linear"].aclose()
+
+        asyncio.run(exercise())
+        self.assertTrue(requests)
+
+    def test_remote_failure_redacts_credentials_and_missing_keys_have_instructions(self):
+        from unittest.mock import AsyncMock
+
+        config = MCPServerConfig("tavily", url="https://mcp.tavily.com/mcp/", headers={"Authorization": "Bearer test-secret"})
+        client = MCPClient([config])
+        with patch.object(client, "_connect_one", new=AsyncMock(side_effect=RuntimeError("Bad token test-secret"))):
+            status = asyncio.run(client._connect_config(config, None, None))
+        self.assertNotIn("test-secret", status)
+        self.assertIn("[redacted]", status)
+        with patch("src.mcp.discovery.local_secret", return_value=""):
+            with patch("src.mcp.oauth.NotionTokenStorage.has_tokens", return_value=False):
+                configs = {config.name: config for config in server_configs(set(SERVER_NAMES))}
+        self.assertIn("mcp login notion", configs["notion"].disabled_reason)
+        self.assertIn("LINEAR_API_KEY", configs["linear"].disabled_reason)
+        self.assertFalse(configs["microsoft_learn"].disabled_reason)
+
+    def test_notion_token_storage_is_private_and_preserves_expiry(self):
+        from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+        from src.mcp.oauth import NotionTokenStorage
+
+        async def exercise(path):
+            storage = NotionTokenStorage(path)
+            self.assertFalse(storage.has_tokens())
+            info = OAuthClientInformationFull(client_id="test-client", redirect_uris=["http://127.0.0.1:8766/callback"])
+            await storage.set_client_info(info)
+            with patch("src.mcp.oauth.time.time", return_value=1000):
+                await storage.set_tokens(OAuthToken(access_token="test-token", token_type="Bearer", expires_in=60, refresh_token="refresh"))
+            self.assertTrue(storage.has_tokens())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with patch("src.mcp.oauth.time.time", return_value=1200):
+                tokens = await storage.get_tokens()
+            self.assertLess(tokens.expires_in, 0)
+            self.assertEqual(tokens.refresh_token, "refresh")
+            self.assertEqual((await storage.get_client_info()).client_id, "test-client")
+            path.write_text("bad json")
+            self.assertFalse(storage.has_tokens())
+
+        with tempfile.TemporaryDirectory() as folder:
+            asyncio.run(exercise(Path(folder) / "private" / "tokens.json"))
+
+    def test_notion_oauth_pkce_and_refresh_after_restart(self):
+        import base64
+        import hashlib
+        from urllib.parse import parse_qs, urlsplit
+        import httpx2
+        from src.mcp.oauth import NOTION_URL, NotionTokenStorage, notion_auth
+
+        authorization = {}
+        grants = []
+
+        async def redirect(url):
+            authorization.update(parse_qs(urlsplit(url).query))
+            self.assertEqual(authorization["code_challenge_method"], ["S256"])
+
+        async def callback():
+            from mcp.shared.auth import AuthorizationCodeResult
+            return AuthorizationCodeResult(code="test-code", state=authorization["state"][0])
+
+        def respond(request):
+            url = str(request.url)
+            if url == NOTION_URL:
+                if request.headers.get("Authorization") in {"Bearer test-token", "Bearer refreshed-token"}:
+                    return httpx2.Response(200, json={"ok": True})
+                return httpx2.Response(401, headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://mcp.notion.com/.well-known/oauth-protected-resource"',
+                })
+            if "oauth-protected-resource" in url:
+                return httpx2.Response(200, json={"resource": NOTION_URL, "authorization_servers": ["https://auth.notion.test"]})
+            if "oauth-authorization-server" in url or "openid-configuration" in url:
+                return httpx2.Response(200, json={
+                    "issuer": "https://auth.notion.test", "authorization_endpoint": "https://auth.notion.test/authorize",
+                    "token_endpoint": "https://auth.notion.test/oauth/token", "registration_endpoint": "https://auth.notion.test/register",
+                    "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"],
+                })
+            if url.endswith("/register"):
+                metadata = json.loads(request.content)
+                return httpx2.Response(201, json={**metadata, "client_id": "test-client"})
+            if url.endswith("/oauth/token"):
+                params = parse_qs(request.content.decode())
+                grant = params["grant_type"][0]
+                grants.append(grant)
+                if grant == "authorization_code":
+                    digest = hashlib.sha256(params["code_verifier"][0].encode()).digest()
+                    self.assertEqual(base64.urlsafe_b64encode(digest).rstrip(b"=").decode(), authorization["code_challenge"][0])
+                else:
+                    self.assertEqual(params["refresh_token"], ["test-refresh"])
+                return httpx2.Response(200, json={
+                    "access_token": "test-token" if grant == "authorization_code" else "refreshed-token",
+                    "token_type": "Bearer", "expires_in": 60, "refresh_token": "test-refresh",
+                })
+            self.fail(f"Unexpected OAuth request: {url}")
+
+        async def exercise(path):
+            storage = NotionTokenStorage(path)
+            auth = notion_auth(redirect, callback, storage)
+            with patch("src.mcp.oauth.time.time", return_value=1000):
+                async with httpx2.AsyncClient(auth=auth, transport=httpx2.MockTransport(respond)) as http:
+                    self.assertEqual((await http.get(NOTION_URL)).status_code, 200)
+            storage._save(oauth_metadata=auth.context.oauth_metadata.model_dump(mode="json"),
+                          resource_metadata=auth.context.protected_resource_metadata.model_dump(mode="json"))
+            with patch("src.mcp.oauth.time.time", return_value=1200):
+                restarted = notion_auth(storage=storage)
+                async with httpx2.AsyncClient(auth=restarted, transport=httpx2.MockTransport(respond)) as http:
+                    self.assertEqual((await http.get(NOTION_URL)).status_code, 200)
+            self.assertEqual(grants, ["authorization_code", "refresh_token"])
+            self.assertEqual((await storage.get_tokens()).access_token, "refreshed-token")
+
+        with tempfile.TemporaryDirectory() as folder:
+            asyncio.run(exercise(Path(folder) / "auth.json"))
+
     def test_stdio_server_notices_do_not_leak_to_the_terminal(self):
         server = '''
 import json, os, sys

@@ -1,25 +1,32 @@
 """Oryn's small, known-good MCP server presets."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.security.secrets import local_secret
 
 
-SERVER_NAMES = ("context7", "github", "playwright")
+SERVER_NAMES = (
+    "github", "context7", "microsoft_learn", "huggingface", "tavily",
+    "firecrawl", "exa", "linear", "notion", "playwright",
+)
 _DEFAULT_ENABLED = set(SERVER_NAMES)
+_LEGACY_SERVERS = {"context7", "github", "playwright"}
 
 
 @dataclass(frozen=True)
 class MCPServerConfig:
     name: str
-    command: str
-    args: tuple[str, ...]
-    env: dict[str, str]
+    command: str = ""
+    args: tuple[str, ...] = ()
+    env: dict[str, str] = field(default_factory=dict, repr=False)
     disabled_reason: str = ""
     enabled: bool = True
     access: str = ""
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
+    oauth: bool = False
 
 
 def mcp_settings_path() -> Path:
@@ -33,7 +40,11 @@ def load_enabled_servers(path: Path | None = None) -> set[str]:
         enabled = data["enabled_servers"]
         if not isinstance(enabled, list) or any(name not in SERVER_NAMES for name in enabled):
             return set(_DEFAULT_ENABLED)
-        return set(enabled)
+        known = data.get("known_servers", list(_LEGACY_SERVERS))
+        if (not isinstance(known, list) or any(name not in SERVER_NAMES for name in known)
+                or not set(enabled) <= set(known)):
+            return set(_DEFAULT_ENABLED)
+        return set(enabled) | (_DEFAULT_ENABLED - set(known))
     except (OSError, ValueError, KeyError, TypeError):
         return set(_DEFAULT_ENABLED)
 
@@ -47,7 +58,9 @@ def save_enabled_servers(enabled: set[str], path: Path | None = None) -> None:
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
         with temporary.open("w", encoding="utf-8") as settings:
-            settings.write(json.dumps({"enabled_servers": sorted(enabled)}) + "\n")
+            settings.write(json.dumps({
+                "enabled_servers": sorted(enabled), "known_servers": list(SERVER_NAMES),
+            }) + "\n")
             settings.flush()
         temporary.chmod(0o600)
         temporary.replace(target)
@@ -56,42 +69,53 @@ def save_enabled_servers(enabled: set[str], path: Path | None = None) -> None:
 
 
 def server_configs(enabled_servers: set[str] | None = None) -> list[MCPServerConfig]:
-    """Build fixed server commands; Oryn does not run arbitrary MCP commands."""
+    """Use official hosted endpoints; keep the existing isolated Playwright browser."""
     enabled = load_enabled_servers() if enabled_servers is None else enabled_servers
     if not enabled <= set(SERVER_NAMES):
         raise ValueError("Unknown MCP server.")
-    context7_key = local_secret("CONTEXT7_API_KEY", "mcp.env")
-    github_token = local_secret("GITHUB_PERSONAL_ACCESS_TOKEN", "mcp.env")
-    github = MCPServerConfig(
-        "github", "docker",
-        (
-            "run", "-i", "--rm",
-            "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
-            "-e", "GITHUB_READ_ONLY",
-            "-e", "GITHUB_TOOLSETS",
-            "ghcr.io/github/github-mcp-server",
-        ),
-        {
-            "GITHUB_PERSONAL_ACCESS_TOKEN": github_token,
-            "GITHUB_READ_ONLY": "true",
-            "GITHUB_TOOLSETS": "repos,issues,pull_requests",
-        },
-        enabled="github" in enabled,
-        access="Read-only GitHub access to repositories, issues, and pull requests.",
-    ) if github_token else MCPServerConfig(
-        "github", "docker", (), {},
-        "Add GITHUB_PERSONAL_ACCESS_TOKEN to ~/.mini-hermes/mcp.env.",
-        enabled="github" in enabled,
-        access="Read-only GitHub access to repositories, issues, and pull requests.",
+    # Credentials stay in request headers, never URLs or subprocess arguments.
+    presets = (
+        ("github", "https://api.githubcopilot.com/mcp/readonly", "GITHUB_PERSONAL_ACCESS_TOKEN",
+         "Read-only repository, issue, and pull-request access.", True),
+        ("context7", "https://mcp.context7.com/mcp", "CONTEXT7_API_KEY",
+         "Current library documentation and code examples.", False),
+        ("microsoft_learn", "https://learn.microsoft.com/api/mcp", "",
+         "Public Microsoft documentation and code samples.", False),
+        ("huggingface", "https://huggingface.co/mcp", "HF_TOKEN",
+         "Models, datasets, papers, and configured Hub tools; changes need approval.", False),
+        ("tavily", "https://mcp.tavily.com/mcp/", "TAVILY_API_KEY",
+         "Web search, extraction, mapping, and crawling.", True),
+        ("firecrawl", "https://mcp.firecrawl.dev/v2/mcp", "FIRECRAWL_API_KEY",
+         "Web search, scraping, and crawling; limited tools work without a key.", False),
+        ("exa", "https://mcp.exa.ai/mcp", "EXA_API_KEY",
+         "Web search and page reading; basic tools work without a key.", False),
+        ("linear", "https://mcp.linear.app/mcp", "LINEAR_API_KEY",
+         "Issues, projects, and comments; changes need approval.", True),
+        ("notion", "https://mcp.notion.com/mcp", "NOTION_ACCESS_TOKEN",
+         "Workspace pages and databases; changes need approval.", False),
     )
+    configs = []
+    for name, url, key_name, access, required in presets:
+        key = local_secret(key_name, "mcp.env") if key_name else ""
+        if not key and name in {"tavily", "firecrawl"}:
+            key = local_secret(key_name, f"{name}.env")
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        if name == "exa" and key:
+            headers = {"x-api-key": key}
+        if name == "github":
+            headers.update({"X-MCP-Toolsets": "repos,issues,pull_requests", "X-MCP-Readonly": "true"})
+        reason = f"Add {key_name} to ~/.mini-hermes/mcp.env." if required and not key else ""
+        oauth = name == "notion" and not key
+        if oauth:
+            from src.mcp.oauth import NotionTokenStorage
+            if not NotionTokenStorage().has_tokens():
+                reason = "Sign in with ./oryn mcp login notion, then restart Oryn."
+        configs.append(MCPServerConfig(
+            name, url=url, headers=headers, oauth=oauth,
+            enabled=name in enabled, disabled_reason=reason, access=access,
+        ))
     return [
-        MCPServerConfig(
-            "context7", "npx", ("-y", "@upstash/context7-mcp"),
-            {"CONTEXT7_API_KEY": context7_key} if context7_key else {},
-            enabled="context7" in enabled,
-            access="Searches Context7's documentation library and retrieves library docs.",
-        ),
-        github,
+        *configs,
         MCPServerConfig(
             "playwright", "npx",
             (

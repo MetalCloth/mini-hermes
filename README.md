@@ -51,16 +51,46 @@ For a simple page read, Oryn uses `web_extract`. Browser interaction opens a sho
 
 ## MCP tools
 
-Oryn connects to three local MCP servers: Context7 for library documentation, GitHub for repository/issues/pull-request reading, and Playwright for browser interaction. The official MCP Python SDK is installed with `pip install -r requirements.txt`; Node.js 20+ is needed for Context7 and Playwright, and Docker is needed for GitHub.
+Oryn connects directly to nine official hosted MCP servers using the installed MCP Python SDK. GitHub and Context7 no longer need Docker or Node.js. Playwright remains a separate local, headless browser connection and needs Node.js 20+.
 
-On first startup, Oryn may download the Context7 and Playwright npm packages and the GitHub Docker image. Put credentials in `~/.mini-hermes/mcp.env` (never in the repository):
+| Connection | Official endpoint | Authentication |
+| --- | --- | --- |
+| GitHub | `https://api.githubcopilot.com/mcp/readonly` | `GITHUB_PERSONAL_ACCESS_TOKEN` |
+| Context7 | `https://mcp.context7.com/mcp` | Optional `CONTEXT7_API_KEY` |
+| Microsoft Learn | `https://learn.microsoft.com/api/mcp` | None |
+| Hugging Face | `https://huggingface.co/mcp` | Optional `HF_TOKEN`; account tools require access |
+| Tavily | `https://mcp.tavily.com/mcp/` | `TAVILY_API_KEY` |
+| Firecrawl | `https://mcp.firecrawl.dev/v2/mcp` | Optional `FIRECRAWL_API_KEY`; keyless tools are limited |
+| Exa | `https://mcp.exa.ai/mcp` | Optional `EXA_API_KEY`; keyless tools are limited |
+| Linear | `https://mcp.linear.app/mcp` | `LINEAR_API_KEY` |
+| Notion | `https://mcp.notion.com/mcp` | Browser OAuth login |
+
+Fill the blank entries from `mcp.env.example` in `~/.mini-hermes/mcp.env` (never commit credentials). Keys travel in HTTP headers, not URLs:
 
 ```env
-CONTEXT7_API_KEY=your_context7_key
-GITHUB_PERSONAL_ACCESS_TOKEN=your_read_only_github_token
+GITHUB_PERSONAL_ACCESS_TOKEN=
+CONTEXT7_API_KEY=
+HF_TOKEN=
+TAVILY_API_KEY=
+FIRECRAWL_API_KEY=
+EXA_API_KEY=
+LINEAR_API_KEY=
 ```
 
-Context7 works without a key at its basic rate. GitHub is skipped until its token is configured; Oryn starts the official server with only the `repos`, `issues`, and `pull_requests` toolsets in read-only mode. Keep the token scoped to repositories you want Oryn to inspect. Playwright uses a headless isolated browser; page-changing actions ask for approval. Arbitrary code execution, screenshots, and saved browser state are not exposed to the model.
+Existing Tavily and Firecrawl keys in `~/.mini-hermes/tavily.env` and `firecrawl.env` are reused if `mcp.env` has no key. Restart Oryn after changing credentials.
+
+Notion's hosted server requires OAuth; a regular Notion integration API key will not work. Sign in explicitly:
+
+```bash
+./oryn mcp login notion
+./oryn
+```
+
+The login command opens your browser and receives the callback on `127.0.0.1:8766`. The MCP SDK handles PKCE and token refresh. OAuth credentials are stored with owner-only permissions in `~/.mini-hermes/mcp-notion-auth.json`. Startup never opens login windows. Missing or expired authorization is reported in MCP status; rerun the login command when needed. Advanced users can supply an existing OAuth access token as `NOTION_ACCESS_TOKEN` in `mcp.env` instead.
+
+GitHub keeps the `repos`, `issues`, and `pull_requests` toolsets in read-only mode. Hugging Face, Linear, Notion, and other tools that are not identified as read-only ask for approval before running. Playwright page-changing actions also ask for approval; arbitrary code execution, screenshots, and saved browser state are not exposed to the model.
+
+The dashboard MCP settings show all connections and retain enable/disable preferences. Existing switches are preserved when the new services are added. In the TUI, `/mcps` shows connection status and setup instructions. You can also use `./oryn mcp enable github` or `./oryn mcp disable github` from the terminal, then restart Oryn.
 
 If an MCP server is missing or cannot start, Oryn continues with its built-in tools and prints which server was skipped.
 

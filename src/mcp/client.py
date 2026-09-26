@@ -1,4 +1,4 @@
-"""Synchronous bridge from Oryn's turn loop to long-lived MCP stdio clients."""
+"""Synchronous bridge to hosted MCP connections and the local Playwright client."""
 
 import asyncio
 import ipaddress
@@ -58,6 +58,7 @@ class MCPClient:
         self._clients: dict[str, Any] = {}
         self._bindings: dict[str, tuple[str, str, Any]] = {}
         self._schemas: list[dict[str, Any]] = []
+        self._read_only_tools: set[str] = set()
         self._statuses: list[str] = []
         self._status_by_name: dict[str, tuple[str, str]] = {}
 
@@ -109,6 +110,7 @@ class MCPClient:
                 "message": message,
                 "tool_count": sum(server == config.name for server, _, _ in self._bindings.values()),
                 "access": config.access,
+                "transport": "http" if config.url else "stdio",
             })
         return result
 
@@ -148,7 +150,9 @@ class MCPClient:
             return True
         server_name, tool_name, _ = binding
         if server_name != "playwright":
-            return False
+            if server_name in {"github", "context7", "microsoft_learn", "tavily"}:
+                return False
+            return provider_name not in self._read_only_tools
         if tool_name not in _SAFE_PLAYWRIGHT_TOOLS:
             return True
         return tool_name == "browser_navigate" and self._private_or_unverified_url(
@@ -292,7 +296,7 @@ class MCPClient:
             state, message = "unavailable", config.disabled_reason
             self._status_by_name[config.name] = (state, message)
             return f"{config.name}: not connected. {message}"
-        command = shutil.which(config.command)
+        command = shutil.which(config.command) if not config.url else ""
         if command is None:
             message = f"'{config.command}' is not installed."
             self._status_by_name[config.name] = ("unavailable", message)
@@ -300,11 +304,21 @@ class MCPClient:
         try:
             count = await self._connect_one(client_type, parameters_type, config, command)
         except Exception as exc:
-            detail = " ".join(str(exc).split())
-            for secret in config.env.values():
+            while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+                exc = exc.exceptions[0]
+            detail = str(exc)
+            credentials = list(config.env.values()) + [
+                value for key, value in config.headers.items()
+                if key.casefold() in {"authorization", "x-api-key"}
+            ]
+            for secret in credentials:
                 if secret:
                     detail = detail.replace(secret, "[redacted]")
-            reason = detail[:180] or type(exc).__name__
+                    if secret.startswith("Bearer "):
+                        detail = detail.replace(secret[7:], "[redacted]")
+            detail = " ".join(detail.split())
+            reason = ("Sign-in expired or failed; run ./oryn mcp login notion, then restart Oryn."
+                      if config.oauth else detail[:180] or type(exc).__name__)
             message = f"Unavailable ({reason}); Oryn skipped this server."
             self._status_by_name[config.name] = ("unavailable", message)
             return f"{config.name}: {message}"
@@ -324,6 +338,7 @@ class MCPClient:
             removed = [name for name, binding in self._bindings.items() if binding[0] == config.name]
             for name in removed:
                 self._bindings.pop(name, None)
+                self._read_only_tools.discard(name)
             self._schemas = [schema for schema in self._schemas if schema.get("name") not in removed]
             self._status_by_name[config.name] = ("disabled", "Disabled in Oryn settings.")
 
@@ -343,18 +358,25 @@ class MCPClient:
 
         stack = AsyncExitStack()
         try:
-            params = parameters_type(
-                command=command,
-                args=list(config.args),
-                env=_server_environment(config.env),
-                cwd=Path.home(),
-            )
-            # The GitHub server rejects the SDK's auto-negotiation probe.
-            mode = "legacy" if config.name == "github" else "auto"
-            # Subprocess notices must not write over the terminal UI. Connection
-            # failures still surface through the existing per-server status.
-            errlog = stack.enter_context(open(os.devnull, "w"))
-            transport = stdio_client(params, errlog=errlog)
+            if config.url:
+                from mcp.client.streamable_http import streamable_http_client
+                from mcp.shared._httpx_utils import create_mcp_http_client
+                from src.mcp.oauth import notion_auth
+
+                http = await stack.enter_async_context(create_mcp_http_client(
+                    headers=config.headers, auth=notion_auth() if config.oauth else None,
+                ))
+                transport = streamable_http_client(config.url, http_client=http)
+            else:
+                params = parameters_type(
+                    command=command, args=list(config.args),
+                    env=_server_environment(config.env), cwd=Path.home(),
+                )
+                # Subprocess notices must not write over the terminal UI.
+                errlog = stack.enter_context(open(os.devnull, "w"))
+                transport = stdio_client(params, errlog=errlog)
+            # Hosted servers currently use the stable initialize handshake.
+            mode = "legacy" if config.url or config.name == "github" else "auto"
             client = await stack.enter_async_context(client_type(transport, mode=mode))
             tools = []
             cursor = None
@@ -380,6 +402,8 @@ class MCPClient:
                 if provider_name in self._bindings:
                     continue
                 self._bindings[provider_name] = (config.name, tool_name, client)
+                if getattr(getattr(tool, "annotations", None), "read_only_hint", None) is True:
+                    self._read_only_tools.add(provider_name)
                 registered.append(schema)
             self._clients[config.name] = client
             self._stacks[config.name] = stack
