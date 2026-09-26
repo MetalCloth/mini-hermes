@@ -4,7 +4,10 @@ import argparse
 import base64
 import json
 import os
+import re
+import shutil
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -20,7 +23,7 @@ from src.providers.types import ModelResponse, ToolCall
 ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-CODEX_VERSION = "0.144.1"
+CODEX_VERSION = "0.157.1"
 AUTH_FILE = Path.home() / ".codex" / "auth.json"
 
 
@@ -169,17 +172,24 @@ def _tool_call(item: dict[str, Any]) -> ToolCall:
 class CodexProvider:
     """Translate Oryn messages and tools for the Codex Responses endpoint."""
 
-    def __init__(self, model: str, auth_file: Path = AUTH_FILE):
+    def __init__(
+        self, model: str, auth_file: Path = AUTH_FILE, *,
+        reasoning_effort: str = "default", service_tier: str = "default",
+    ):
         self.model = model
         self.auth_file = Path(auth_file)
+        self.configure(reasoning_effort=reasoning_effort, service_tier=service_tier)
 
-    def cached_models(self) -> list[tuple[str, str]]:
-        """Read the CLI's model catalog without a network request or credentials."""
+    def _model_catalog(self) -> dict:
         try:
             catalog = json.loads(self.auth_file.with_name("models_cache.json").read_text())
         except (OSError, ValueError):
-            return []
-        models = catalog.get("models", []) if isinstance(catalog, dict) else []
+            return {}
+        return catalog if isinstance(catalog, dict) else {}
+
+    def cached_models(self) -> list[tuple[str, str]]:
+        """Read the CLI's model catalog without a network request or credentials."""
+        models = self._model_catalog().get("models", [])
         if not isinstance(models, list):
             return []
         return [
@@ -189,6 +199,69 @@ class CodexProvider:
             and isinstance(model.get("slug"), str) and model["slug"]
             and isinstance(model.get("display_name", ""), str)
         ]
+
+    def model_options(self) -> dict[str, list[tuple[str, str]]]:
+        """Offer only capabilities advertised for this model by the Codex catalog."""
+        options = {
+            "reasoning_effort": [("default", "Model default")],
+            "service_tier": [("default", "Standard")],
+        }
+        models = self._model_catalog().get("models", [])
+        if not isinstance(models, list):
+            return options
+        model = next((m for m in models if isinstance(m, dict) and m.get("slug") == self.model), {})
+        for field, source, key in (
+            ("reasoning_effort", "supported_reasoning_levels", "effort"),
+            ("service_tier", "service_tiers", "id"),
+        ):
+            entries = model.get(source, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get(key)
+                if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value):
+                    continue
+                if value in dict(options[field]):
+                    continue
+                label = entry.get("name") or value.replace("xhigh", "extra high").title()
+                description = entry.get("description", "")
+                if isinstance(description, str) and description:
+                    label = f"{label} — {description}"
+                options[field].append((value, str(label)))
+        default = model.get("default_reasoning_level")
+        if isinstance(default, str) and default in dict(options["reasoning_effort"]):
+            options["reasoning_effort"][0] = ("default", f"Model default ({default})")
+        return options
+
+    def configure(self, *, reasoning_effort: str, service_tier: str) -> None:
+        if not isinstance(reasoning_effort, str) or not isinstance(service_tier, str):
+            raise ValueError("Model settings must be strings.")
+        options = self.model_options()
+        if service_tier == "standard":
+            service_tier = "default"
+        elif service_tier == "fast" and "priority" in dict(options["service_tier"]):
+            service_tier = "priority"
+        for field, value in (("reasoning_effort", reasoning_effort), ("service_tier", service_tier)):
+            if value not in dict(options[field]):
+                allowed = ", ".join(dict(options[field]))
+                raise ValueError(f"{self.model} {field}: choose {allowed}. Refresh the Codex model catalog if needed.")
+        self.reasoning_effort = reasoning_effort
+        self.service_tier = service_tier
+
+    def client_version(self) -> str:
+        """Use the version that discovered the models, then the installed CLI."""
+        version = self._model_catalog().get("client_version")
+        if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", version):
+            try:
+                cli = shutil.which("codex")
+                version = subprocess.run(
+                    [cli, "--version"], capture_output=True, text=True, timeout=2, check=True,
+                ).stdout.strip().removeprefix("codex-cli ") if cli else ""
+            except (OSError, subprocess.SubprocessError):
+                version = ""
+        return version if re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?", version) else CODEX_VERSION
 
     def complete(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
@@ -259,10 +332,15 @@ class CodexProvider:
             "stream": True,
             "store": False,
         }
+        if self.reasoning_effort != "default":
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        if self.service_tier != "default":
+            payload["service_tier"] = self.service_tier
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         body = json.dumps(payload).encode()
+        client_version = self.client_version()
         request = urllib.request.Request(
             ENDPOINT,
             data=body,
@@ -272,8 +350,8 @@ class CodexProvider:
                 "Content-Type": "application/json",
                 "Accept": "text/event-stream",
                 "Originator": "codex_cli_rs",
-                "Version": CODEX_VERSION,
-                "User-Agent": f"codex-cli/{CODEX_VERSION}",
+                "Version": client_version,
+                "User-Agent": f"codex-cli/{client_version}",
                 "OpenAI-Beta": "responses=experimental",
             },
         )

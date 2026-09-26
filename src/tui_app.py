@@ -3,6 +3,7 @@
 import argparse
 import json
 import re
+import sqlite3
 import threading
 from datetime import datetime, timezone
 from itertools import groupby
@@ -38,6 +39,8 @@ COMMANDS = (
     ("help", "Show help"),
     ("mcps", "Show MCP connections"),
     ("models", "Switch model"),
+    ("effort", "Configure reasoning effort"),
+    ("speed", "Configure model speed"),
     ("project", "Open project folder"),
     ("sessions", "Switch session"),
     ("tools", "Show available tools"),
@@ -195,13 +198,15 @@ class ChoiceScreen(ModalScreen[str | None]):
     def __init__(
         self, title: str, choices: list[tuple[str, str, str]],
         current: str, *, allow_custom: bool = False, store: SQLiteSessionStore | None = None,
+        descriptions: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(classes="model-picker" if allow_custom else "sessions-picker")
+        super().__init__(classes="sessions-picker" if store else "model-picker")
         self.title = title
         self.choices = choices
         self.current = current
         self.allow_custom = allow_custom
         self.store = store
+        self.descriptions = descriptions or {}
         self._renaming: str | None = None
         self._deleting: str | None = None
 
@@ -213,6 +218,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             yield Input(placeholder="Search", id="picker-search")
             yield OptionList(id="picker-options", markup=False)
             yield Static("", id="picker-empty")
+            yield Static("", id="picker-description", markup=False)
             yield Static(self._hint(), id="picker-hint", classes="modal-hint")
 
     def _hint(self) -> str:
@@ -233,7 +239,7 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_resize(self, event) -> None:
         # Keep the search and hints visible in short terminals; only rows scroll.
         self.query_one("#picker-options", OptionList).styles.max_height = max(
-            1, min(16, int(event.size.height * 0.8) - 8),
+            1, min(16, int(event.size.height * 0.8) - (11 if self.descriptions else 8)),
         )
 
     def _filter(self, query: str, selected: str | None = None) -> None:
@@ -251,7 +257,7 @@ class ChoiceScreen(ModalScreen[str | None]):
                 rows.append(Option(Text(""), disabled=True))
             rows.append(Option(Text(f"  {group}"), disabled=True))
             for choice_id, label, _ in group_choices:
-                marker = "●" if choice_id == self.current else " "
+                marker = "●" if choice_id == self.current else ("○" if self.descriptions else " ")
                 if choice_id == self._deleting:
                     label = "Press ctrl+d again to confirm deletion"
                 rows.append(Option(Text(f"{marker} {label}"), id=choice_id))
@@ -261,6 +267,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         empty = self.query_one("#picker-empty", Static)
         empty.display = not matches
         empty.update("No matches." if self.choices else "No saved sessions yet. Start with /new.")
+        description = self.query_one("#picker-description", Static)
+        description.display = bool(matches and self.descriptions)
         highlighted = next((i for i, row in enumerate(rows) if row.id == (selected or self.current)), None)
         options.highlighted = highlighted if highlighted is not None else next(
             (i for i, row in enumerate(rows) if row.id), None,
@@ -302,6 +310,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             self.dismiss(event.option.id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        self.query_one("#picker-description", Static).update(self.descriptions.get(self._selected_session(), ""))
         if self._deleting and event.option.id != self._deleting and event.option.id == self._selected_session():
             self._deleting = None
             self._filter(self.query_one(Input).value, event.option.id)
@@ -491,6 +500,8 @@ class OrynTUI(App[None]):
         Binding("ctrl+n", "new_session", "New chat"),
         Binding("ctrl+o", "open_sessions", "Sessions"),
         Binding("f2", "choose_model", "Model"),
+        Binding("f3", "choose_effort", "Effort"),
+        Binding("f4", "choose_speed", "Speed"),
         Binding("escape", "dismiss_palette", "Close", show=False),
         Binding("ctrl+c", "stop_or_quit", "Stop/Quit", priority=True),
     ]
@@ -517,6 +528,7 @@ class OrynTUI(App[None]):
         self.history = history
         self.saved_count = len(history)
         self.provider = provider
+        self._restore_model_settings()
         self.mcp_client = mcp_client
         self.tools = initial_tools
         self.undo_history = undo_history if undo_history is not None else []
@@ -566,6 +578,8 @@ class OrynTUI(App[None]):
                             yield Static("Oryn", id="agent-chip")
                             yield Static("·", id="model-separator")
                             yield Button(self.model_labels.get(self.model, self.model), id="model-chip")
+                            yield Button(self._effort_label(), id="effort-chip")
+                            yield Button(self._speed_label(), id="speed-chip")
                             yield Static("ChatGPT", id="provider-chip")
                     with Horizontal(id="composer-footer"):
                         yield Static("enter send   shift+enter new line", id="send-hint")
@@ -594,6 +608,7 @@ class OrynTUI(App[None]):
         self.query_one("#shortcut-hints", Static).update(
             "ctrl+p commands" if compact else "ctrl+p commands   ctrl+o sessions   f2 models"
         )
+        self.query_one("#provider-chip").display = not compact
 
     def on_unmount(self) -> None:
         self._cancel_active_turn()
@@ -778,9 +793,21 @@ class OrynTUI(App[None]):
         if not self.turn_active and len(self.screen_stack) == 1:
             self.run_worker(self._change_model(), group="commands", exclusive=True)
 
+    def action_choose_effort(self) -> None:
+        if not self.turn_active and len(self.screen_stack) == 1:
+            self.run_worker(self._change_setting("reasoning_effort"), group="commands", exclusive=True)
+
+    def action_choose_speed(self) -> None:
+        if not self.turn_active and len(self.screen_stack) == 1:
+            self.run_worker(self._change_setting("service_tier"), group="commands", exclusive=True)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "model-chip":
             self.action_choose_model()
+        elif event.button.id == "effort-chip":
+            self.action_choose_effort()
+        elif event.button.id == "speed-chip":
+            self.action_choose_speed()
 
     def _show_palette(self, query: str = "") -> None:
         palette = self.query_one("#palette-overlay", PalettePanel)
@@ -825,6 +852,8 @@ class OrynTUI(App[None]):
                 self._save_model(argument)
             else:
                 await self._change_model()
+        elif name in {"effort", "speed"}:
+            await self._change_setting("reasoning_effort" if name == "effort" else "service_tier", argument)
         elif name == "project":
             if argument:
                 self._switch_project(argument)
@@ -844,6 +873,8 @@ class OrynTUI(App[None]):
                 "/new       Start a new session\n"
                 "/sessions  Resume a saved session\n"
                 "/models    Change this session's model\n"
+                "/effort    Set reasoning effort for the selected model\n"
+                "/speed     Set Standard or Fast speed when supported\n"
                 "/project   Switch project folder\n"
                 "/tools     List available tools\n"
                 "/mcps      Show MCP connection status\n"
@@ -854,6 +885,8 @@ class OrynTUI(App[None]):
                 "Ctrl+N    New session\n"
                 "Ctrl+O    Session picker\n"
                 "F2        Change model\n"
+                "F3        Change reasoning effort\n"
+                "F4        Change model speed\n"
                 "Enter     Send message\n"
                 "Shift+Enter Add a new line\n"
                 "Ctrl+C    Stop turn, or quit when idle\n"
@@ -868,6 +901,7 @@ class OrynTUI(App[None]):
     async def _new_session(self) -> None:
         self.session_id = self.store.create_session(self.project_root)
         self.store.set_session_model(self.session_id, self.model)
+        self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
         await self._load_session(self.session_id)
         self._set_activity("New session ready", working=False)
 
@@ -911,7 +945,8 @@ class OrynTUI(App[None]):
         self.project_root = project_root
         self.session_id = session_id
         self.model = self.store.session_model(session_id) or DEFAULT_MODEL
-        self.provider = CodexProvider(self.model)
+        self.provider = CodexProvider(self.model, self.provider.auth_file)
+        self._restore_model_settings()
         self.history = _base_history(project_root)
         self.history.extend(self.store.load_messages(session_id))
         self.saved_count = len(self.history)
@@ -959,9 +994,61 @@ class OrynTUI(App[None]):
             self._set_activity(str(exc), working=False, error=True)
             return
         self.model = model.strip()
-        self.provider = CodexProvider(self.model)
+        self.provider = CodexProvider(self.model, self.provider.auth_file)
+        self._restore_model_settings()
         self._refresh_header()
         self._set_activity(f"Model set to {self.model}", working=False)
+
+    def _model_settings(self) -> dict[str, str]:
+        return {"reasoning_effort": self.provider.reasoning_effort, "service_tier": self.provider.service_tier}
+
+    def _restore_model_settings(self) -> None:
+        saved = self.store.session_model_settings(self.session_id, self.model)
+        options = self.provider.model_options()
+        self.provider.configure(**{
+            key: saved.get(key, "default") if saved.get(key, "default") in dict(choices) else "default"
+            for key, choices in options.items()
+        })
+
+    def _effort_label(self) -> str:
+        return f"Effort: {self.provider.reasoning_effort}"
+
+    def _speed_label(self) -> str:
+        return "Standard" if self.provider.service_tier == "default" else (
+            "Fast" if self.provider.service_tier in {"priority", "fast"} else self.provider.service_tier.title()
+        )
+
+    async def _change_setting(self, field: str, argument: str | None = None) -> None:
+        self._hide_palette()
+        title = "Reasoning effort" if field == "reasoning_effort" else "Model speed"
+        options = self.provider.model_options()[field]
+        choices = []
+        descriptions = {}
+        for key, text in options:
+            label, _, description = text.partition(" — ")
+            if field == "reasoning_effort":
+                label = {"xhigh": "Extra high", "max": "Maximum"}.get(key, label)
+            choices.append((key, label, self.model))
+            descriptions[key] = description or (
+                "Use the model's recommended reasoning level." if field == "reasoning_effort"
+                else "Regular processing without Fast mode."
+            )
+        value = argument.strip().lower() if argument else await self.push_screen_wait(ChoiceScreen(
+            title, choices, getattr(self.provider, field), descriptions=descriptions,
+        ))
+        if value:
+            previous = self._model_settings()
+            settings = {**previous, field: value}
+            try:
+                self.provider.configure(**settings)
+                self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                self.provider.configure(**previous)
+                self._set_activity(str(exc), working=False, error=True)
+            else:
+                self._refresh_header()
+                self._set_activity(f"{self._effort_label()} · {self._speed_label()}", working=False)
+        self.query_one("#composer", TextArea).focus()
 
     async def _choose_project(self) -> None:
         result = await self.push_screen_wait(TextPromptScreen(
@@ -981,6 +1068,7 @@ class OrynTUI(App[None]):
         self.project_root = project_root
         self.session_id = self.store.create_session(project_root)
         self.store.set_session_model(self.session_id, self.model)
+        self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
         self.history = _base_history(project_root)
         self.saved_count = len(self.history)
         self._refresh_header()
@@ -995,6 +1083,8 @@ class OrynTUI(App[None]):
         self.query_one("#topbar-title", Static).update(title)
         self.query_one("#topbar-project", Static).update(self.project_root.name or "Project")
         self.query_one("#model-chip", Button).label = self.model_labels.get(self.model, self.model)
+        self.query_one("#effort-chip", Button).label = self._effort_label()
+        self.query_one("#speed-chip", Button).label = self._speed_label()
         self.query_one("#workspace-path", Static).update(self._project_label())
 
     def _project_label(self) -> str:
@@ -1115,6 +1205,8 @@ def _base_history(project_root: Path) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Open Oryn's full-screen terminal chat.")
     parser.add_argument("--model", help="Codex model slug (defaults to the saved session model)")
+    parser.add_argument("--effort", help="reasoning effort from the model catalog, or default")
+    parser.add_argument("--speed", help="standard or fast, when supported by the selected model")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
     session_options = parser.add_mutually_exclusive_group()
     session_options.add_argument("--new", action="store_true", help="start a new chat")
@@ -1177,6 +1269,12 @@ def main(argv: list[str] | None = None) -> None:
             mcp_client=mcp_client,
             initial_tools=tool_schemas(),
         )
+        if args.effort or args.speed:
+            app.provider.configure(
+                reasoning_effort=args.effort or app.provider.reasoning_effort,
+                service_tier=args.speed or app.provider.service_tier,
+            )
+            store.set_session_model_settings(session_id, model, app._model_settings())
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     except Exception as exc:

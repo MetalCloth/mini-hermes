@@ -13,6 +13,92 @@ from textual.widgets import Button, Input, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_effort_and_speed_pickers_persist_per_model_and_keep_the_draft(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "models_cache.json").write_text(json.dumps({"models": [
+                {"slug": "gpt-6-astra", "supported_reasoning_levels": [
+                    {"effort": "low", "description": "Fast responses with lighter reasoning."},
+                    {"effort": "high", "description": "Greater reasoning depth for complex problems."},
+                 ], "service_tiers": [{"id": "priority", "name": "Fast", "description": "More speed, increased usage."}]},
+                {"slug": "gpt-6-luna", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "max"}],
+                 "service_tiers": [{"id": "priority", "name": "Fast"}]},
+            ]}))
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session = store.create_session(root)
+            store.set_session_model(session, "gpt-6-astra")
+            mcp = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id=session, project_root=root, model="gpt-6-astra", history=[],
+                provider=CodexProvider("gpt-6-astra", root / "auth.json"), mcp_client=mcp, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    composer = app.query_one("#composer", TextArea)
+                    composer.load_text("Keep this draft")
+                    await pilot.pause()
+                    await pilot.click("#effort-chip")
+                    await pilot.pause()
+                    self.assertEqual(app.screen.styles.background.a, 0)
+                    app.screen.query_one(Input).value = "high"
+                    await pilot.pause()
+                    self.assertEqual(str(app.screen.query_one("#picker-description", Static).content),
+                                     "Greater reasoning depth for complex problems.")
+                    options = app.screen.query_one(OptionList)
+                    self.assertNotIn("—", str(options.highlighted_option.prompt))
+                    self.assertTrue(str(options.highlighted_option.prompt).startswith("○ High"))
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(app.provider.reasoning_effort, "high")
+                    self.assertEqual(composer.text, "Keep this draft")
+                    self.assertTrue(composer.has_focus)
+                    await pilot.press("f4")
+                    await pilot.pause()
+                    app.screen.query_one(Input).value = "Fast"
+                    await pilot.pause()
+                    self.assertEqual(str(app.screen.query_one("#picker-description", Static).content),
+                                     "More speed, increased usage.")
+                    self.assertNotIn("—", str(app.screen.query_one(OptionList).highlighted_option.prompt))
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(app.provider.service_tier, "priority")
+                    await app._execute_command("effort", "ultra")
+                    self.assertEqual(app.provider.reasoning_effort, "high")
+                    self.assertIn("choose default, low, high", str(app.query_one("#activity-label", Static).content))
+                    app._save_model("gpt-6-luna")
+                    self.assertEqual(app._model_settings(), {"reasoning_effort": "default", "service_tier": "default"})
+                    await app._execute_command("effort", "max")
+                    await app._execute_command("speed", "standard")
+                    app._save_model("gpt-6-astra")
+                    self.assertEqual(app._model_settings(), {"reasoning_effort": "high", "service_tier": "priority"})
+                    reopened = SQLiteSessionStore(store.db_path)
+                    self.assertEqual(reopened.session_model_settings(session, "gpt-6-luna")["reasoning_effort"], "max")
+                    await app._load_session(session)
+                    self.assertEqual(app._model_settings(), {"reasoning_effort": "high", "service_tier": "priority"})
+                    app.turn_active = True
+                    app.action_choose_effort()
+                    app.action_choose_speed()
+                    self.assertEqual(len(app.screen_stack), 1)
+                    await app._execute_command("speed", "standard")
+                    self.assertEqual(app.provider.service_tier, "priority")
+                    app.turn_active = False
+                    await pilot.resize_terminal(64, 24)
+                    await pilot.pause()
+                    frame = app.query_one("#composer-frame").region
+                    for selector in ["#model-chip", "#effort-chip", "#speed-chip"]:
+                        button = app.query_one(selector, Button)
+                        self.assertLessEqual(button.region.right, frame.right)
+                    await pilot.press("f3")
+                    await pilot.pause()
+                    card = app.screen.query_one("#picker-card").region
+                    self.assertLessEqual(app.screen.query_one("#picker-hint").region.bottom, card.bottom)
+                    self.assertLessEqual(card.bottom, 24)
+                    await pilot.press("escape")
+                    await pilot.pause()
+                    self.assertTrue(composer.has_focus)
+            finally:
+                mcp.close()
+
     async def test_open_mcp_status_updates_when_startup_finishes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

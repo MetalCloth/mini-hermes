@@ -43,6 +43,8 @@ class SQLiteSessionStore:
                     connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
                 if "model" not in columns:
                     connection.execute("ALTER TABLE sessions ADD COLUMN model TEXT")
+                if "model_settings" not in columns:
+                    connection.execute("ALTER TABLE sessions ADD COLUMN model_settings TEXT NOT NULL DEFAULT '{}'")
                 if "updated_at" not in columns:
                     connection.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
                 if "pinned" not in columns:
@@ -190,6 +192,48 @@ class SQLiteSessionStore:
                 )
                 if cursor.rowcount != 1:
                     raise ValueError(f"No saved session with ID {session_id}.")
+        finally:
+            connection.close()
+
+    def session_model_settings(self, session_id: str, model: str) -> dict[str, str]:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT model_settings FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        try:
+            saved = json.loads(row[0]) if row else {}
+            settings = saved.get(model, {}) if isinstance(saved, dict) else {}
+            return {key: value for key, value in settings.items()
+                    if key in {"reasoning_effort", "service_tier"} and isinstance(value, str)} if isinstance(settings, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def set_session_model_settings(self, session_id: str, model: str, settings: dict[str, str]) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", model):
+            raise ValueError("Invalid model ID.")
+        if (set(settings) != {"reasoning_effort", "service_tier"}
+                or any(not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value)
+                       for value in settings.values())):
+            raise ValueError("Invalid model settings.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT model_settings FROM sessions WHERE id = ?", (session_id,),
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"No saved session with ID {session_id}.")
+                saved = json.loads(row[0])
+                if not isinstance(saved, dict):
+                    raise ValueError("Saved model settings are invalid.")
+                saved[model] = settings
+                connection.execute(
+                    "UPDATE sessions SET model_settings = ? WHERE id = ?", (json.dumps(saved), session_id),
+                )
         finally:
             connection.close()
 

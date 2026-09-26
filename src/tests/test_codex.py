@@ -3,8 +3,10 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
+from pathlib import Path
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -15,6 +17,47 @@ from src.providers.codex import _response_text
 
 
 class CodexStreamTests(unittest.TestCase):
+    def test_model_capabilities_drive_settings_payload_and_client_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder) / "models_cache.json"
+            cache.write_text(json.dumps({"client_version": "0.157.1", "models": [{
+                "slug": "gpt-6-astra", "default_reasoning_level": "low",
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+                "service_tiers": [{"id": "priority", "name": "Fast"}],
+            }]}))
+            provider = codex.CodexProvider("gpt-6-astra", Path(folder) / "auth.json")
+            self.assertEqual(provider.model_options()["reasoning_effort"][0], ("default", "Model default (low)"))
+            provider.configure(reasoning_effort="high", service_tier="fast")
+            for effort in ["ultra", "none", []]:
+                with self.assertRaises(ValueError):
+                    provider.configure(reasoning_effort=effort, service_tier="default")
+                self.assertEqual(provider.reasoning_effort, "high")
+                self.assertEqual(provider.service_tier, "priority")
+            with patch.object(codex, "_read_auth", return_value={"tokens": {"access_token": "a", "account_id": "b"}}):
+                for explicit in [True, False]:
+                    if not explicit:
+                        provider.configure(reasoning_effort="default", service_tier="standard")
+                    response = io.BytesIO(b'data: {"type":"response.output_text.delta","delta":"OK"}\n\ndata: {"type":"response.completed","response":{}}\n\n')
+                    with patch.object(codex.urllib.request, "urlopen", return_value=response) as urlopen:
+                        provider.complete([{"role": "user", "content": "Hi"}])
+                    request = urlopen.call_args.args[0]
+                    payload = json.loads(request.data)
+                    self.assertEqual(request.get_header("Version"), "0.157.1")
+                    self.assertEqual(request.get_header("User-agent"), "codex-cli/0.157.1")
+                    if explicit:
+                        self.assertEqual(payload["reasoning"], {"effort": "high"})
+                        self.assertEqual(payload["service_tier"], "priority")
+                    else:
+                        self.assertNotIn("reasoning", payload)
+                        self.assertNotIn("service_tier", payload)
+            cache.write_text(json.dumps({"client_version": "0.157.1\nInjected: value", "models": None}))
+            with patch.object(codex.shutil, "which", return_value="/bin/codex"):
+                with patch.object(codex.subprocess, "run", return_value=SimpleNamespace(stdout="codex-cli 0.158.0\n")):
+                    self.assertEqual(provider.client_version(), "0.158.0")
+            self.assertEqual(provider.model_options()["service_tier"], [("default", "Standard")])
+            with self.assertRaises(ValueError):
+                provider.configure(reasoning_effort="high", service_tier="fast")
+
     def test_collects_text_deltas_until_completion(self):
         stream = io.BytesIO(
             b'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n'

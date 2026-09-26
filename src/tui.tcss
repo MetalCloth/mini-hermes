@@ -61,12 +61,14 @@ Screen { background: $oryn-canvas; color: $oryn-ink; }
 #composer-meta { height: 1; margin-top: 1; }
 #agent-chip { width: auto; color: $oryn-blue; }
 #model-separator { width: 3; color: $oryn-muted; content-align: center middle; }
-#model-chip {
+#model-chip, #effort-chip, #speed-chip {
     width: auto; min-width: 0; height: 1; min-height: 1;
     border: none; padding: 0; margin-right: 1;
     background: transparent; color: $oryn-ink; text-style: none;
 }
-#model-chip:hover, #model-chip:focus { background: $oryn-element; color: $oryn-peach; border: none; }
+#model-chip:hover, #model-chip:focus,
+#effort-chip:hover, #effort-chip:focus,
+#speed-chip:hover, #speed-chip:focus { background: $oryn-element; color: $oryn-peach; border: none; }
 #provider-chip { width: auto; color: $oryn-muted; }
 #composer-footer { height: 1; padding: 0 2; color: $oryn-muted; }
 #send-hint { width: 1fr; color: $oryn-muted; }
@@ -120,6 +122,7 @@ ChoiceScreen.sessions-picker #picker-card { width: 84; }
 #picker-search > .input--cursor { background: $oryn-peach; color: $oryn-canvas; }
 #picker-search > .input--placeholder { color: $oryn-muted; }
 #picker-empty { height: auto; min-height: 2; color: $oryn-muted; content-align: left middle; }
+#picker-description { display: none; height: 2; margin-top: 1; color: $oryn-muted; }
 .modal-hint { height: auto; min-height: 1; color: $oryn-muted; margin-top: 1; }
 #prompt-card { width: 60; }
 #value-input { height: 2; padding: 0; border: none; border-bottom: solid #3c3c3c; background: $oryn-panel; }

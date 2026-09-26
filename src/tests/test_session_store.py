@@ -18,6 +18,20 @@ class SQLiteSessionStoreTests(unittest.TestCase):
             store = SQLiteSessionStore(path)
             self.assertIsNone(store.session_entries()[0]["updated_at"])
             self.assertEqual(store.session_title("legacy"), "Old chat")
+            self.assertEqual(store.session_model_settings("legacy", "gpt-6-astra"), {})
+            astra = {"reasoning_effort": "high", "service_tier": "priority"}
+            luna = {"reasoning_effort": "low", "service_tier": "default"}
+            store.set_session_model_settings("legacy", "gpt-6-astra", astra)
+            store.set_session_model_settings("legacy", "gpt-6-luna", luna)
+            reopened = SQLiteSessionStore(path)
+            self.assertEqual(reopened.session_model_settings("legacy", "gpt-6-astra"), astra)
+            self.assertEqual(reopened.session_model_settings("legacy", "gpt-6-luna"), luna)
+            self.assertEqual(reopened.session_model_settings("missing", "gpt-6-astra"), {})
+            with self.assertRaises(ValueError):
+                store.set_session_model_settings("legacy", "gpt-6-astra", {**astra, "service_tier": None})
+            with self.assertRaises(ValueError):
+                store.set_session_model_settings("missing", "gpt-6-astra", astra)
+            self.assertEqual(store.session_model_settings("legacy", "gpt-6-astra"), astra)
             recent = store.create_session(Path(folder))
             store.append_messages([{"role": "user", "content": "hello"}], recent)
             store.toggle_session_pin("legacy")

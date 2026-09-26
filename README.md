@@ -28,13 +28,18 @@ To use a different project folder, start Oryn from that folder or pass `--projec
 
 By default, `./oryn` opens the full-screen Python TUI. Type `/` for commands. `Ctrl+P` opens the command palette, `Ctrl+N` starts a chat, `Ctrl+O` opens saved sessions, and `F2` changes the model. `Enter` sends a message; `Shift+Enter` adds a line. `Ctrl+C` stops a reply or quits when idle.
 
+Click the effort or speed below the prompt, or use `/effort` (`F3`) and `/speed` (`F4`). Each picker reads the selected model's advertised options from `~/.codex/models_cache.json`; unsupported choices are rejected. Choices are saved separately for each model in each session and apply to the next turn. New chats inherit the current choices. Fast mode requests priority processing and can use more credits; availability depends on the account. Unknown models or a missing catalog keep provider defaults until the Codex CLI refreshes its catalog.
+
 ```bash
 ./oryn
 ./oryn --new
 ./oryn --list
 ./oryn --resume SESSION_ID
 ./oryn --search "text to find"
+./oryn --model gpt-6-astra --effort high --speed fast
 ```
+
+You can also type `/effort high`, `/effort default`, `/speed fast`, or `/speed standard` directly. Oryn sends the catalog's client version in provider requests, falling back to the installed `codex --version`, instead of hardcoding the old `0.144.1` version. Open the Codex CLI to refresh its catalog after upgrading it.
 
 Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
