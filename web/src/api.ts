@@ -12,12 +12,22 @@ export type SavedMessage = {
   turn_status?: "cancelled" | "failed";
 };
 
+export type McpServerStatus = {
+  name: "context7" | "github" | "playwright";
+  enabled: boolean;
+  state: "connected" | "disabled" | "unavailable" | "starting";
+  message: string;
+  tool_count: number;
+  access: string;
+};
+
 export type Bootstrap = {
   token: string;
   project: string;
   projects: string[];
   model: string;
   sessions: SessionSummary[];
+  mcp_servers: McpServerStatus[];
 };
 
 export type TurnEvent =
@@ -79,6 +89,14 @@ export async function getSession(id: string): Promise<SavedMessage[]> {
 
 export async function decideApproval(token: string, id: string, allow: boolean): Promise<void> {
   await requestJson("/api/approvals", token, { id, allow });
+}
+
+export async function updateMcpServers(
+  token: string,
+  enabled: Record<McpServerStatus["name"], boolean>,
+): Promise<McpServerStatus[]> {
+  const result = await requestJson<{ mcp_servers: McpServerStatus[] }>("/api/mcp", token, { enabled });
+  return result.mcp_servers;
 }
 
 export async function streamTurn(

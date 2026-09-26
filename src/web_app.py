@@ -17,6 +17,7 @@ from src.agent.conversation_loop import TurnCancelled, run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
+from src.mcp.discovery import SERVER_NAMES, mcp_settings_path, save_enabled_servers
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
@@ -48,16 +49,19 @@ class DashboardServer(ThreadingHTTPServer):
         store: SQLiteSessionStore | None = None,
         provider_factory: Callable[[str], Any] = CodexProvider,
         mcp_client: MCPClient | None = None,
+        mcp_settings_file: Path | None = None,
     ) -> None:
         super().__init__(("127.0.0.1", port), DashboardHandler)
         self.project_root = validate_project_root(project_root.expanduser().resolve(strict=True))
         self.store = store if store is not None else SQLiteSessionStore()
         self.provider_factory = provider_factory
         self.mcp_client = mcp_client
+        self.mcp_settings_file = mcp_settings_file
         self.model = MODEL
         self.token = secrets.token_urlsafe(32)
         self.state_lock = threading.Lock()
         self.active_turns: dict[str, threading.Event] = {}
+        self.mcp_reconfiguring = False
         self.approvals: dict[str, Approval] = {}
         self.file_change_history: dict[str, list[FileChange]] = {}
 
@@ -165,6 +169,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "projects": self.server.projects(),
                 "model": self.server.model,
                 "sessions": self.server.sessions(),
+                "mcp_servers": self.server.mcp_client.status_snapshot() if self.server.mcp_client else [],
             })
             return
         if path.startswith("/api/sessions/"):
@@ -247,6 +252,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 approval.decision = allow
                 approval.ready.set()
             self._json(200, {"allowed": allow})
+        elif self.path == "/api/mcp":
+            self._update_mcp(data)
         elif self.path == "/api/turns":
             self._turn(data)
         else:
@@ -310,6 +317,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write((line + "\n").encode("utf-8"))
         self.wfile.flush()
 
+    def _update_mcp(self, data: dict[str, Any]) -> None:
+        enabled = data.get("enabled")
+        if (not isinstance(enabled, dict) or set(enabled) != set(SERVER_NAMES)
+                or any(not isinstance(value, bool) for value in enabled.values())):
+            self._json(400, {"error": "Choose enabled or disabled for each known MCP server."})
+            return
+        with self.server.state_lock:
+            if self.server.active_turns:
+                self._json(409, {"error": "Wait for the active turn to finish before changing MCP servers."})
+                return
+            if self.server.mcp_reconfiguring:
+                self._json(409, {"error": "MCP servers are already being updated."})
+                return
+            client = self.server.mcp_client
+            if client is None:
+                self._json(503, {"error": "MCP servers are unavailable in this dashboard."})
+                return
+            self.server.mcp_reconfiguring = True
+            previous = {config.name for config in client.configs if config.enabled}
+
+        try:
+            statuses = client.set_enabled({name for name, value in enabled.items() if value})
+            save_enabled_servers(
+                {name for name, value in enabled.items() if value},
+                self.server.mcp_settings_file or mcp_settings_path(),
+            )
+        except Exception as exc:
+            try:
+                client.set_enabled(previous)
+            except Exception:
+                pass
+            self._json(500, {"error": f"Could not update MCP servers: {exc}"})
+        else:
+            self._json(200, {"mcp_servers": statuses})
+        finally:
+            with self.server.state_lock:
+                self.server.mcp_reconfiguring = False
+
     def _ask(self, session_id: str, cancel_event: threading.Event, action: str, target: str, content: str) -> bool:
         approval_id = secrets.token_urlsafe(18)
         approval = Approval(session_id)
@@ -341,6 +386,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if session_id in self.server.active_turns:
                 self._json(409, {"error": "This session is already answering. Wait for it to finish."})
+                return
+            if self.server.mcp_reconfiguring:
+                self._json(409, {"error": "MCP servers are restarting. Try again in a moment."})
                 return
             cancel_event = threading.Event()
             self.server.active_turns[session_id] = cancel_event

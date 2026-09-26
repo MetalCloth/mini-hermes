@@ -2,18 +2,22 @@
 
 import argparse
 import json
+import re
 import threading
+from datetime import datetime, timezone
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
 from rich.markdown import Markdown
 from rich.text import Text
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Input, Label, OptionList, Static, TextArea
+from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from src.agent.conversation_loop import TurnCancelled, run_turn
@@ -30,15 +34,16 @@ from src.tools.registry import tool_schemas
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 COMMANDS = (
-    ("new", "Start a fresh session"),
-    ("sessions", "Find and resume a saved session"),
-    ("model", "Change the model for this session"),
-    ("project", "Switch the active project folder"),
-    ("tools", "See tools available to Oryn"),
-    ("mcp", "Check MCP connection status"),
-    ("help", "Show commands and keyboard shortcuts"),
-    ("quit", "Close Oryn"),
+    ("new", "New session"),
+    ("help", "Show help"),
+    ("mcps", "Show MCP connections"),
+    ("models", "Switch model"),
+    ("project", "Open project folder"),
+    ("sessions", "Switch session"),
+    ("tools", "Show available tools"),
+    ("exit", "Exit the app"),
 )
+COMMAND_ALIASES = {"model": "models", "mcp": "mcps", "quit": "exit", "q": "exit"}
 
 
 class StreamChunk(Message):
@@ -91,23 +96,24 @@ class MessageCard(Vertical):
         super().__init__(classes=f"message-card {role}")
 
     def compose(self) -> ComposeResult:
-        label = "YOU" if self.role == "user" else "ORYN"
-        yield Label(label, classes="message-label")
-        status = Label(
-            self._status_label(),
-            id="message-status",
-            classes=f"message-status {self.turn_status}" if self.turn_status else "message-status",
-        )
-        status.display = self.turn_status is not None
-        yield status
-        yield Static(self._renderable(), classes="message-copy")
+        with Vertical(classes="message-body"):
+            status = Label(
+                self._status_label(),
+                id="message-status",
+                classes=f"message-status {self.turn_status}" if self.turn_status else "message-status",
+            )
+            status.display = self.turn_status is not None
+            yield status
+            yield Static(self._renderable(), classes="message-copy")
+            if self.role == "assistant":
+                yield Label("▣ Oryn", classes="message-meta")
 
     def _renderable(self) -> Any:
         if not self.content:
             if self.turn_status:
                 return Text("No partial answer was returned.", style="dim italic")
             return Text("Thinking…", style="dim italic")
-        return Markdown(self.content)
+        return Text(self.content) if self.role == "user" else Markdown(self.content, code_theme="ansi_dark")
 
     def _status_label(self) -> str:
         return {
@@ -128,57 +134,37 @@ class MessageCard(Vertical):
         label.set_class(self.turn_status == "failed", "failed")
 
 
-class PaletteScreen(ModalScreen[tuple[str, str | None] | None]):
-    BINDINGS = [Binding("escape", "close", "Close", show=False)]
-
-    def __init__(self, query: str = "") -> None:
-        super().__init__()
-        self.search_text = query.strip().lstrip("/")
-
+class Welcome(Vertical):
     def compose(self) -> ComposeResult:
-        with Vertical(id="palette-card"):
-            yield Label("ORYN  /  COMMANDS", id="palette-title")
-            yield Input(value=self.search_text, placeholder="Search sessions, model, tools…", id="palette-search")
-            yield OptionList(id="palette-options", markup=False)
-            yield Static("↑ ↓ navigate   ·   Enter select   ·   Esc close", id="palette-hint")
+        yield Static(
+            " ██████╗ ██████╗ ██╗   ██╗███╗   ██╗\n"
+            "██╔═══██╗██╔══██╗╚██╗ ██╔╝████╗  ██║\n"
+            "██║   ██║██████╔╝ ╚████╔╝ ██╔██╗ ██║\n"
+            "██║   ██║██╔══██╗  ╚██╔╝  ██║╚██╗██║\n"
+            "╚██████╔╝██║  ██║   ██║   ██║ ╚████║\n"
+            " ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝",
+            id="welcome-mark",
+        )
 
-    def on_mount(self) -> None:
-        self._filter(self.search_text)
-        self.query_one("#palette-search", Input).focus()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "palette-search":
-            self.search_text = event.value
-            self._filter(event.value)
+class PalettePanel(Vertical):
+    def compose(self) -> ComposeResult:
+        yield OptionList(id="palette-options", markup=False)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        query = event.value.strip().lstrip("/")
-        parts = query.split(maxsplit=1)
-        known = {name for name, _ in COMMANDS}
-        if parts and parts[0] in known:
-            self.dismiss((parts[0], parts[1] if len(parts) > 1 else None))
-            return
-        highlighted = self.query_one("#palette-options", OptionList).highlighted_option
-        if highlighted and highlighted.id:
-            self.dismiss((highlighted.id, None))
+    def on_resize(self) -> None:
+        self.app.call_after_refresh(self.app._position_palette)
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id:
-            self.dismiss((event.option.id, None))
-
-    def on_key(self, event) -> None:
-        if event.key == "down" and self.query_one("#palette-search", Input).has_focus:
-            options = self.query_one("#palette-options", OptionList)
-            if options.option_count:
-                options.focus()
-                event.stop()
+            self.app._select_palette_command(event.option.id)
 
     def _filter(self, query: str) -> None:
         options = self.query_one("#palette-options", OptionList)
         filter_text = query.strip().lstrip("/").casefold()
+        filter_text = filter_text.split(maxsplit=1)[0] if filter_text else ""
         matches = [
             (name, description) for name, description in COMMANDS
-            if filter_text in name.casefold() or filter_text in description.casefold()
+            if name.casefold().startswith(filter_text)
         ]
         options.set_options([
             Option(Text(f"/{name:<12} {description}"), id=name)
@@ -186,41 +172,195 @@ class PaletteScreen(ModalScreen[tuple[str, str | None] | None]):
         ])
         if matches:
             options.highlighted = 0
+        self.app.call_after_refresh(self.app._position_palette)
 
-    def action_close(self) -> None:
-        self.dismiss(None)
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        options = self.query_one(OptionList)
+        descriptions = dict(COMMANDS)
+        for index in range(options.option_count):
+            option = options.get_option_at_index(index)
+            prompt = Text(f"/{option.id:<12} ")
+            prompt.append(descriptions[option.id], style=None if index == event.option_index else "#808080")
+            options.replace_option_prompt_at_index(index, prompt)
 
 
 class ChoiceScreen(ModalScreen[str | None]):
-    BINDINGS = [Binding("escape", "close", "Close", show=False)]
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=False, priority=True),
+        Binding("ctrl+f", "pin_session", "Pin", show=False, priority=True),
+        Binding("ctrl+d", "delete_session", "Delete", show=False, priority=True),
+        Binding("ctrl+r", "rename_session", "Rename", show=False, priority=True),
+    ]
 
-    def __init__(self, title: str, choices: list[tuple[str, str]]) -> None:
-        super().__init__()
+    def __init__(
+        self, title: str, choices: list[tuple[str, str, str]],
+        current: str, *, allow_custom: bool = False, store: SQLiteSessionStore | None = None,
+    ) -> None:
+        super().__init__(classes="model-picker" if allow_custom else "sessions-picker")
         self.title = title
         self.choices = choices
+        self.current = current
+        self.allow_custom = allow_custom
+        self.store = store
+        self._renaming: str | None = None
+        self._deleting: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-card"):
-            yield Label(self.title, id="picker-title")
-            if self.choices:
-                yield OptionList(*[
-                    Option(Text(label), id=choice_id)
-                    for choice_id, label in self.choices
-                ], id="picker-options", markup=False)
-            else:
-                yield Static("No saved sessions yet.", id="picker-empty")
-            yield Static("↑ ↓ navigate   ·   Enter select   ·   Esc close", classes="modal-hint")
+            with Horizontal(id="picker-header"):
+                yield Label(self.title, id="picker-title")
+                yield Static("esc", id="picker-escape")
+            yield Input(placeholder="Search", id="picker-search")
+            yield OptionList(id="picker-options", markup=False)
+            yield Static("", id="picker-empty")
+            yield Static(self._hint(), id="picker-hint", classes="modal-hint")
+
+    def _hint(self) -> str:
+        return (
+            "pin/unpin ctrl+f   delete ctrl+d   rename ctrl+r"
+            if self.store else "↑ ↓ navigate   enter select   esc close"
+        )
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
+        if action in {"pin_session", "delete_session", "rename_session"}:
+            return self.store is not None and self._renaming is None
+        return True
 
     def on_mount(self) -> None:
-        if self.choices:
-            self.query_one("#picker-options", OptionList).focus()
+        self._filter("")
+        self.query_one("#picker-search", Input).focus()
+
+    def on_resize(self, event) -> None:
+        # Keep the search and hints visible in short terminals; only rows scroll.
+        self.query_one("#picker-options", OptionList).styles.max_height = max(
+            1, min(16, int(event.size.height * 0.8) - 8),
+        )
+
+    def _filter(self, query: str, selected: str | None = None) -> None:
+        query = query.strip()
+        matches = [
+            choice for choice in self.choices
+            if query.casefold() in " ".join(choice).casefold()
+        ]
+        if self.allow_custom and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", query):
+            if query not in {choice[0] for choice in self.choices}:
+                matches.append((query, f"Use {query}", "Custom model ID"))
+        rows: list[Option] = []
+        for group, group_choices in groupby(matches, key=lambda choice: choice[2]):
+            if rows:
+                rows.append(Option(Text(""), disabled=True))
+            rows.append(Option(Text(f"  {group}"), disabled=True))
+            for choice_id, label, _ in group_choices:
+                marker = "●" if choice_id == self.current else " "
+                if choice_id == self._deleting:
+                    label = "Press ctrl+d again to confirm deletion"
+                rows.append(Option(Text(f"{marker} {label}"), id=choice_id))
+        options = self.query_one("#picker-options", OptionList)
+        options.set_options(rows)
+        options.display = bool(matches)
+        empty = self.query_one("#picker-empty", Static)
+        empty.display = not matches
+        empty.update("No matches." if self.choices else "No saved sessions yet. Start with /new.")
+        highlighted = next((i for i, row in enumerate(rows) if row.id == (selected or self.current)), None)
+        options.highlighted = highlighted if highlighted is not None else next(
+            (i for i, row in enumerate(rows) if row.id), None,
+        )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if not self._renaming:
+            self._deleting = None
+            self._filter(event.value, self._selected_session())
+
+    def on_input_submitted(self) -> None:
+        if self._renaming:
+            try:
+                self.store.rename_session(self._renaming, self.query_one(Input).value)
+            except ValueError as exc:
+                empty = self.query_one("#picker-empty", Static)
+                empty.update(str(exc))
+                empty.display = True
+                return
+            self._finish_rename()
+            self.app._refresh_header()
+            return
+        selected = self.query_one("#picker-options", OptionList).highlighted_option
+        if selected and selected.id:
+            self.dismiss(selected.id)
+
+    def on_key(self, event) -> None:
+        if not self._renaming and event.key in {"up", "down"} and self.query_one("#picker-search", Input).has_focus:
+            options = self.query_one("#picker-options", OptionList)
+            if event.key == "up":
+                options.action_cursor_up()
+            else:
+                options.action_cursor_down()
+            event.prevent_default()
+            event.stop()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id:
             self.dismiss(event.option.id)
 
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if self._deleting and event.option.id != self._deleting and event.option.id == self._selected_session():
+            self._deleting = None
+            self._filter(self.query_one(Input).value, event.option.id)
+
+    def _selected_session(self) -> str | None:
+        option = self.query_one(OptionList).highlighted_option
+        return option.id if option else None
+
+    def _refresh_sessions(self, selected: str | None = None) -> None:
+        self.choices = self.app._session_choices()
+        self._filter(self.query_one(Input).value, selected)
+
+    def action_pin_session(self) -> None:
+        selected = self._selected_session()
+        if selected:
+            self.store.toggle_session_pin(selected)
+            self._refresh_sessions(selected)
+
+    def action_delete_session(self) -> None:
+        selected = self._selected_session()
+        if not selected:
+            return
+        if self._deleting != selected:
+            self._deleting = selected
+            self._filter(self.query_one(Input).value, selected)
+            return
+        self.store.delete_session(selected)
+        self._deleting = None
+        if selected == self.current:
+            self.dismiss("__new_session__")
+        else:
+            self._refresh_sessions()
+
+    def action_rename_session(self) -> None:
+        selected = self._selected_session()
+        if not selected:
+            return
+        self._deleting = None
+        self._renaming = selected
+        self.query_one("#picker-title", Label).update("Rename session")
+        self.query_one(OptionList).display = False
+        self.query_one("#picker-hint", Static).update("enter save   esc cancel")
+        search = self.query_one(Input)
+        search.value = next(label for key, label, _ in self.choices if key == selected)
+        search.focus()
+        search.select_all()
+
+    def _finish_rename(self) -> None:
+        selected, self._renaming = self._renaming, None
+        self.query_one("#picker-title", Label).update(self.title)
+        self.query_one("#picker-hint", Static).update(self._hint())
+        self.query_one(Input).value = ""
+        self._refresh_sessions(selected)
+
     def action_close(self) -> None:
-        self.dismiss(None)
+        if self._renaming:
+            self._finish_rename()
+        else:
+            self.dismiss(None)
 
 
 class TextPromptScreen(ModalScreen[str | None]):
@@ -313,6 +453,34 @@ class ApprovalScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ChatComposer(TextArea):
+    BINDINGS = [
+        Binding("enter", "send", "Send", priority=True),
+        Binding("shift+enter", "newline", "New line", show=False, priority=True),
+        Binding("escape", "close_commands", "Close commands", show=False, priority=True),
+    ]
+
+    async def action_send(self) -> None:
+        await self.app.action_send_prompt()
+
+    def action_newline(self) -> None:
+        self.insert("\n")
+
+    def action_close_commands(self) -> None:
+        self.app.action_dismiss_palette()
+
+    def on_key(self, event) -> None:
+        palette = self.app.query_one("#palette-overlay", PalettePanel)
+        if palette.display and event.key in {"up", "down"}:
+            options = palette.query_one(OptionList)
+            if event.key == "up":
+                options.action_cursor_up()
+            else:
+                options.action_cursor_down()
+            event.prevent_default()
+            event.stop()
+
+
 class OrynTUI(App[None]):
     """A Textual view over Oryn's existing Python harness."""
 
@@ -323,8 +491,8 @@ class OrynTUI(App[None]):
         Binding("ctrl+n", "new_session", "New chat"),
         Binding("ctrl+o", "open_sessions", "Sessions"),
         Binding("f2", "choose_model", "Model"),
+        Binding("escape", "dismiss_palette", "Close", show=False),
         Binding("ctrl+c", "stop_or_quit", "Stop/Quit", priority=True),
-        Binding("ctrl+enter", "send_prompt", "Send", priority=True),
     ]
 
     def __init__(
@@ -345,6 +513,7 @@ class OrynTUI(App[None]):
         self.session_id = session_id
         self.project_root = project_root
         self.model = model
+        self.model_labels = dict(provider.cached_models())
         self.history = history
         self.saved_count = len(history)
         self.provider = provider
@@ -360,60 +529,55 @@ class OrynTUI(App[None]):
         self._partial_reply_text = ""
         self._turn_start = 0
         self._pending_approval: ApprovalRequest | None = None
-        self._opening_palette = False
+        self._palette_draft: str | None = None
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="workspace"):
-            with Vertical(id="sidebar"):
-                yield Static("◉  ORYN", id="brand")
-                yield Static("LOCAL CODING AGENT", classes="eyebrow")
-                yield Static("PROJECT", classes="section-label")
-                yield Static(self.project_root.name or str(self.project_root), id="project-name")
-                yield Static(str(self.project_root), id="project-path", markup=False)
-                yield Static("SESSIONS", classes="section-label")
-                yield Static(self._sidebar_sessions(), id="session-list", markup=False)
-                yield Static("Ctrl+N  new chat\nCtrl+O  sessions\nF2       model", id="sidebar-keys", markup=False)
-            with Vertical(id="main-panel"):
-                with Horizontal(id="topbar"):
-                    yield Static("Oryn", id="topbar-title")
-                    yield Static(self.project_root.name or "Project", id="topbar-project")
-                    yield Static(self.model, id="model-chip")
-                with VerticalScroll(id="transcript"):
-                    visible = [
-                        message for message in self.history
-                        if message.get("role") in {"user", "assistant"}
-                    ]
-                    if visible:
-                        for message in visible:
-                            yield MessageCard(
-                                message["role"], message.get("content", ""), message.get("turn_status"),
-                            )
-                    else:
-                        with Vertical(id="welcome"):
-                            yield Static("◉", id="welcome-mark")
-                            yield Static("A clear space to think.", id="welcome-title")
-                            yield Static(
-                                "Ask Oryn to understand a project, explain a concept, or help change code.",
-                                id="welcome-copy",
-                            )
-                            yield Static("Type  /  to browse commands", id="welcome-hint")
-                with Horizontal(id="activity-row"):
-                    yield Static("●", id="activity-dot")
-                    yield Static("Ready", id="activity-label")
-                    yield Static(f"{len(self.tools)} tools", id="tool-count")
-                with Vertical(id="composer-frame"):
-                    yield TextArea(
-                        id="composer",
-                        placeholder="Ask Oryn anything…",
-                        tab_behavior="indent",
-                        highlight_cursor_line=False,
-                    )
+        with Vertical(id="main-panel"):
+            with Horizontal(id="topbar"):
+                yield Static("Oryn", id="topbar-title")
+                yield Static(self.project_root.name or "Project", id="topbar-project")
+            with VerticalScroll(id="transcript"):
+                visible = [
+                    message for message in self.history
+                    if message.get("role") in {"user", "assistant"}
+                ]
+                if visible:
+                    for message in visible:
+                        yield MessageCard(
+                            message["role"], message.get("content", ""), message.get("turn_status"),
+                        )
+                else:
+                    yield Welcome(id="welcome")
+            with Horizontal(id="activity-row"):
+                yield Static("●", id="activity-dot")
+                yield Static("Ready", id="activity-label")
+                yield Static(f"{len(self.tools)} tools", id="tool-count")
+            with Horizontal(id="composer-row"):
+                with Vertical(id="composer-wrap"):
+                    yield PalettePanel(id="palette-overlay")
+                    with Vertical(id="composer-frame"):
+                        yield ChatComposer(
+                            id="composer",
+                            placeholder="Ask anything…",
+                            tab_behavior="indent",
+                            highlight_cursor_line=False,
+                        )
+                        with Horizontal(id="composer-meta"):
+                            yield Static("Oryn", id="agent-chip")
+                            yield Static("·", id="model-separator")
+                            yield Button(self.model_labels.get(self.model, self.model), id="model-chip")
+                            yield Static("ChatGPT", id="provider-chip")
                     with Horizontal(id="composer-footer"):
-                        yield Static("/ commands   ·   Ctrl+P actions", id="composer-hint")
-                        yield Static("Ctrl+Enter  send", id="send-hint")
-                yield Footer()
+                        yield Static("enter send   shift+enter new line", id="send-hint")
+                        yield Static("/ commands", id="composer-commands")
+            yield Static(id="home-spacer")
+            with Horizontal(id="app-footer"):
+                yield Static(self._project_label(), id="workspace-path")
+                yield Static("ctrl+p commands   ctrl+o sessions   f2 models", id="shortcut-hints")
 
     def on_mount(self) -> None:
+        self._sync_home()
+        self._refresh_header()
         self.query_one("#composer", TextArea).focus()
         self.call_after_refresh(self._scroll_to_bottom)
         # MCP startup can be slow; keep it outside Textual's executor and event loop.
@@ -424,10 +588,12 @@ class OrynTUI(App[None]):
 
     def on_resize(self, event) -> None:
         compact = event.size.width < 94
-        self.query_one("#sidebar").display = not compact
-        self.query_one("#transcript").styles.padding = (1, 2 if compact else 5)
-        margin = 1 if compact else 3
-        self.query_one("#composer-frame").styles.margin = (0, margin, 1, margin)
+        self.query_one("#transcript").styles.padding = (1, 1 if compact else 2)
+        margin = 1 if compact else 2
+        self.query_one("#composer-wrap").styles.margin = (0, margin, 1, margin)
+        self.query_one("#shortcut-hints", Static).update(
+            "ctrl+p commands" if compact else "ctrl+p commands   ctrl+o sessions   f2 models"
+        )
 
     def on_unmount(self) -> None:
         self._cancel_active_turn()
@@ -436,15 +602,13 @@ class OrynTUI(App[None]):
             self._pending_approval = None
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id != "composer" or self._opening_palette or self.turn_active:
+        if event.text_area.id != "composer" or self.turn_active:
             return
         value = event.text_area.text
         if value.startswith("/"):
-            query = value[1:]
-            self._opening_palette = True
-            event.text_area.clear()
-            self.push_screen(PaletteScreen(query), self._palette_chosen)
-            self._opening_palette = False
+            self._show_palette(value[1:])
+        else:
+            self.query_one("#palette-overlay", PalettePanel).display = False
 
     def on_stream_chunk(self, event: StreamChunk) -> None:
         self._reply_text += event.text
@@ -502,15 +666,22 @@ class OrynTUI(App[None]):
         except Exception as exc:
             self._set_activity(f"Could not save this session: {exc}", working=False, error=True)
         self.query_one("#composer", TextArea).focus()
-        self._refresh_sidebar()
 
+    @on(MCPReady)
     def on_mcp_ready(self, event: MCPReady) -> None:
         self.mcp_ready = True
         self.mcp_statuses = event.statuses
         self.tools = tool_schemas(event.schemas)
         self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
+        if isinstance(self.screen, InfoScreen) and self.screen.title == "MCP STATUS":
+            self.screen.query_one("#info-scroll Static", Static).update(Text(self._mcp_status_body()))
         if not self.turn_active:
             self._set_activity("Ready · MCP connected" if event.schemas else "Ready", working=False)
+
+    def _mcp_status_body(self) -> str:
+        if not self.mcp_ready:
+            return "MCP servers are still connecting. Local tools remain available."
+        return "\n".join(self.mcp_statuses) or "No MCP servers are configured."
 
     def on_approval_request(self, request: ApprovalRequest) -> None:
         if self._pending_approval:
@@ -530,13 +701,16 @@ class OrynTUI(App[None]):
         if not prompt:
             return
         if prompt.startswith("/"):
-            name, _, argument = prompt[1:].partition(" ")
-            self.run_worker(
-                self._execute_command(name, argument.strip() or None),
-                group="commands",
-                exclusive=True,
-            )
-            composer.clear()
+            parts = prompt[1:].strip().split(maxsplit=1)
+            if not parts:
+                parts = [""]
+            name = COMMAND_ALIASES.get(parts[0].casefold(), parts[0].casefold())
+            if name not in dict(COMMANDS):
+                selected = self.query_one("#palette-options", OptionList).highlighted_option
+                if not selected or not selected.id:
+                    return
+                name = selected.id
+            self._select_palette_command(name, parts[1] if len(parts) > 1 else None)
             return
 
         welcome = self.query("#welcome")
@@ -549,6 +723,8 @@ class OrynTUI(App[None]):
         self._scroll_to_bottom()
         composer.clear()
         self.history.append({"role": "user", "content": prompt})
+        self._sync_home()
+        self._refresh_header()
         self._turn_start = len(self.history) - 1
         self.turn_active = True
         self._reply_text = ""
@@ -568,10 +744,18 @@ class OrynTUI(App[None]):
         if self.turn_active:
             self._set_activity("Finish the current turn before opening commands.", working=True)
             return
-        self.run_worker(self._show_palette(), group="commands", exclusive=True)
+        composer = self.query_one("#composer", TextArea)
+        if not composer.text.startswith("/"):
+            self._palette_draft = composer.text
+            composer.load_text("/")
+        self._show_palette(composer.text.lstrip("/"))
+
+    def action_dismiss_palette(self) -> None:
+        if self.query_one("#palette-overlay", PalettePanel).display:
+            self._hide_palette()
 
     async def action_new_session(self) -> None:
-        if not self.turn_active:
+        if not self.turn_active and len(self.screen_stack) == 1:
             await self._new_session()
 
     def action_stop_or_quit(self) -> None:
@@ -587,24 +771,49 @@ class OrynTUI(App[None]):
             self.pop_screen()
 
     def action_open_sessions(self) -> None:
-        if not self.turn_active:
+        if not self.turn_active and len(self.screen_stack) == 1:
             self.run_worker(self._show_sessions(), group="commands", exclusive=True)
 
     def action_choose_model(self) -> None:
-        if not self.turn_active:
+        if not self.turn_active and len(self.screen_stack) == 1:
             self.run_worker(self._change_model(), group="commands", exclusive=True)
 
-    async def _show_palette(self, query: str = "") -> None:
-        result = await self.push_screen_wait(PaletteScreen(query))
-        if result:
-            await self._execute_command(*result)
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "model-chip":
+            self.action_choose_model()
 
-    def _palette_chosen(self, result: tuple[str, str | None] | None) -> None:
-        if result:
-            self.run_worker(self._execute_command(*result), group="commands", exclusive=True)
+    def _show_palette(self, query: str = "") -> None:
+        palette = self.query_one("#palette-overlay", PalettePanel)
+        palette.display = True
+        palette._filter(query)
+        self.query_one("#composer", TextArea).focus()
+        self.call_after_refresh(self._position_palette)
+
+    def _position_palette(self) -> None:
+        palette = self.query_one("#palette-overlay", PalettePanel)
+        if not palette.display:
+            return
+        available = max(1, self.query_one("#composer-frame").region.y)
+        palette.query_one(OptionList).styles.max_height = min(10, available)
+        palette.styles.offset = (0, -min(palette.region.height, available))
+
+    def _hide_palette(self) -> None:
+        self.query_one("#palette-overlay", PalettePanel).display = False
+        composer = self.query_one("#composer", TextArea)
+        if self._palette_draft is not None:
+            draft, self._palette_draft = self._palette_draft, None
+            composer.load_text(draft)
+        composer.focus()
+
+    def _select_palette_command(self, name: str, argument: str | None = None) -> None:
+        if self._palette_draft is None:
+            self.query_one("#composer", TextArea).clear()
+        self._hide_palette()
+        self.run_worker(self._execute_command(name, argument), group="commands", exclusive=True)
 
     async def _execute_command(self, name: str, argument: str | None = None) -> None:
-        if self.turn_active and name not in {"help", "tools", "mcp"}:
+        name = COMMAND_ALIASES.get(name, name)
+        if self.turn_active and name not in {"help", "tools", "mcps"}:
             self._set_activity("Finish the current turn before changing sessions or settings.", working=True)
             return
         if name in {"new", "clear"}:
@@ -627,31 +836,27 @@ class OrynTUI(App[None]):
                 for tool in self.tools
             ) or "No tools are currently available."
             self.push_screen(InfoScreen("TOOLS AVAILABLE TO ORYN", body))
-        elif name == "mcp":
-            body = (
-                "MCP servers are still connecting. Local tools remain available."
-                if not self.mcp_ready else "\n".join(self.mcp_statuses) or "No MCP servers are configured."
-            )
-            self.push_screen(InfoScreen("MCP STATUS", body))
+        elif name == "mcps":
+            self.push_screen(InfoScreen("MCP STATUS", self._mcp_status_body()))
         elif name == "help":
             body = (
                 "COMMANDS\n"
                 "/new       Start a new session\n"
                 "/sessions  Resume a saved session\n"
-                "/model     Change this session's model\n"
+                "/models    Change this session's model\n"
                 "/project   Switch project folder\n"
                 "/tools     List available tools\n"
-                "/mcp       Show MCP connection status\n"
+                "/mcps      Show MCP connection status\n"
                 "/help      Show this guide\n"
-                "/quit      Close Oryn\n\n"
+                "/exit      Close Oryn\n\n"
                 "KEYS\n"
                 "Ctrl+P    Open command palette\n"
                 "Ctrl+N    New session\n"
                 "Ctrl+O    Session picker\n"
                 "F2        Change model\n"
-                "Ctrl+Enter Send message\n"
+                "Enter     Send message\n"
+                "Shift+Enter Add a new line\n"
                 "Ctrl+C    Stop turn, or quit when idle\n"
-                "Enter     Add a new line\n"
                 "Esc       Close a dialog or deny approval"
             )
             self.push_screen(InfoScreen("ORYN QUICK GUIDE", body))
@@ -667,23 +872,38 @@ class OrynTUI(App[None]):
         self._set_activity("New session ready", working=False)
 
     async def _show_sessions(self) -> None:
-        sessions = self.store.list_sessions()
-        choices: list[tuple[str, str]] = []
-        for session_id in sessions:
-            root = self.store.session_project_root(session_id)
-            root = root or str(APP_ROOT)
-            title = self.store.session_title(session_id)
-            messages = self.store.load_messages(session_id)
-            first_user = next((
-                " ".join(str(message.get("content", "")).split())
-                for message in messages if message.get("role") == "user"
-            ), "Empty session")
-            title = title or first_user[:54]
-            label = f"{title}   ·   {Path(root).name}   ·   {session_id[:8]}"
-            choices.append((session_id, label))
-        result = await self.push_screen_wait(ChoiceScreen("SAVED SESSIONS", choices))
-        if result:
+        self._hide_palette()
+        result = await self.push_screen_wait(ChoiceScreen(
+            "Sessions", self._session_choices(), self.session_id, store=self.store,
+        ))
+        if result == "__new_session__":
+            await self._new_session()
+        elif result:
             await self._load_session(result)
+        self.query_one("#composer", TextArea).focus()
+
+    def _session_choices(self) -> list[tuple[str, str, str]]:
+        choices: list[tuple[str, str, str]] = []
+        for entry in self.store.session_entries():
+            session_id = entry["id"]
+            title = entry["title"]
+            if not title:
+                messages = self.store.load_messages(session_id)
+                title = next((
+                    " ".join(str(message.get("content", "")).split())[:64]
+                    for message in messages if message.get("role") == "user"
+                ), "New session")
+            group = "Earlier"
+            if entry["updated_at"]:
+                try:
+                    date = datetime.fromisoformat(entry["updated_at"]).replace(tzinfo=timezone.utc).astimezone().date()
+                    group = "Today" if date == datetime.now().date() else date.strftime("%a %b %d %Y")
+                except ValueError:
+                    pass
+            if entry["pinned"]:
+                group = "Pinned"
+            choices.append((session_id, title, group))
+        return choices
 
     async def _load_session(self, session_id: str) -> None:
         saved_root = self.store.session_project_root(session_id)
@@ -711,20 +931,26 @@ class OrynTUI(App[None]):
                     message["role"], message.get("content", ""), message.get("turn_status"),
                 ))
         else:
-            await transcript.mount(
-                Static("◉\n\nA clear space to think.\n\nAsk Oryn about this project, then type / to browse commands.", id="welcome")
-            )
+            await transcript.mount(Welcome(id="welcome"))
+        self._sync_home()
         self._refresh_header()
         self._scroll_to_bottom()
 
     async def _change_model(self) -> None:
-        result = await self.push_screen_wait(TextPromptScreen(
-            "MODEL FOR THIS SESSION",
-            self.model,
-            "Enter a Codex model ID, for example gpt-5.6-luna",
+        self._hide_palette()
+        models = dict(self.provider.cached_models())
+        for session_id in self.store.list_sessions():
+            saved_model = self.store.session_model(session_id)
+            if saved_model:
+                models.setdefault(saved_model, saved_model)
+        models.setdefault(self.model, self.model)
+        result = await self.push_screen_wait(ChoiceScreen(
+            "Select model", [(model, label, "ChatGPT") for model, label in models.items()],
+            self.model, allow_custom=True,
         ))
         if result:
             self._save_model(result)
+        self.query_one("#composer", TextArea).focus()
 
     def _save_model(self, model: str) -> None:
         try:
@@ -762,36 +988,24 @@ class OrynTUI(App[None]):
         self._set_activity(f"Project opened · {project_root}", working=False)
 
     def _refresh_header(self) -> None:
-        self.query_one("#project-name", Static).update(self.project_root.name or str(self.project_root))
-        self.query_one("#project-path", Static).update(str(self.project_root))
+        title = self.store.session_title(self.session_id) or next((
+            " ".join(str(message.get("content", "")).split())[:64]
+            for message in self.history if message.get("role") == "user"
+        ), "New session")
+        self.query_one("#topbar-title", Static).update(title)
         self.query_one("#topbar-project", Static).update(self.project_root.name or "Project")
-        self.query_one("#model-chip", Static).update(self.model)
-        self._refresh_sidebar()
+        self.query_one("#model-chip", Button).label = self.model_labels.get(self.model, self.model)
+        self.query_one("#workspace-path", Static).update(self._project_label())
 
-    def _sidebar_sessions(self) -> str:
-        return self._session_summary()
+    def _project_label(self) -> str:
+        try:
+            return "~/" + str(self.project_root.relative_to(Path.home()))
+        except ValueError:
+            return str(self.project_root)
 
-    def _session_summary(self) -> str:
-        entries = []
-        for session_id in self.store.list_sessions():
-            root = self.store.session_project_root(session_id)
-            if (root or str(APP_ROOT)) != str(self.project_root):
-                continue
-            title = self.store.session_title(session_id)
-            if not title:
-                messages = self.store.load_messages(session_id)
-                title = next((
-                    " ".join(str(message.get("content", "")).split())
-                    for message in messages if message.get("role") == "user"
-                ), "New session")
-            marker = "› " if session_id == self.session_id else "  "
-            entries.append(f"{marker}{title[:30]}")
-            if len(entries) == 5:
-                break
-        return "\n".join(entries) if entries else "No chats yet"
-
-    def _refresh_sidebar(self) -> None:
-        self.query_one("#session-list", Static).update(self._session_summary())
+    def _sync_home(self) -> None:
+        empty = not any(message.get("role") in {"user", "assistant"} for message in self.history)
+        self.query_one("#main-panel").set_class(empty, "home")
 
     def _set_activity(self, text: str, *, working: bool, error: bool = False) -> None:
         dot = self.query_one("#activity-dot", Static)
@@ -800,6 +1014,9 @@ class OrynTUI(App[None]):
         dot.set_class(working, "working")
         label.update(text)
         label.set_class(error, "error")
+        self.query_one("#activity-row").set_class(
+            not working and not error and text.startswith("Ready"), "idle",
+        )
 
     def _scroll_to_bottom(self) -> None:
         self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)

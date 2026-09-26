@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
-import { Bot, ChevronDown, FileCode2, Folder, Menu, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Trash2, Wrench, X } from "lucide-react";
+import { Bot, ChevronDown, FileCode2, Folder, Menu, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import type { SessionSummary } from "./api";
+import type { McpServerStatus, SessionSummary } from "./api";
 import mascotUrl from "./assets/mascot.png";
 import { ThinkingOrb, type OrbState } from "@/components/ui/thinking-orbs";
 import { PromptInputBox, type ShortcutId } from "@/components/ui/ai-prompt-box";
@@ -183,9 +183,10 @@ type HeaderProps = {
   sidebarExpanded: boolean;
   onMenu: () => void;
   onCollapse: () => void;
+  onSettings: () => void;
 };
 
-export function Header({ title, model, status, sidebarOpen, sidebarExpanded, onMenu, onCollapse }: HeaderProps) {
+export function Header({ title, model, status, sidebarOpen, sidebarExpanded, onMenu, onCollapse, onSettings }: HeaderProps) {
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -196,8 +197,71 @@ export function Header({ title, model, status, sidebarOpen, sidebarExpanded, onM
       <div className="topbar-right">
         <span className="header-model">{model}</span>
         <span id="connection-status" className={`connection-status ${status.kind}`} role="status" aria-live="polite"><span className="local-dot" aria-hidden="true" />{status.message === "Stopped" ? "Stopped" : status.kind === "busy" ? "Working" : status.kind === "error" ? "Error" : "Ready"}</span>
+        <button className="chrome-button mcp-settings-button" type="button" aria-label="MCP server settings" title="MCP server settings" onClick={onSettings}><Settings2 size={19} /></button>
       </div>
     </header>
+  );
+}
+
+type McpSettingsDialogProps = {
+  open: boolean;
+  servers: McpServerStatus[];
+  onClose: () => void;
+  onUpdate: (servers: McpServerStatus[]) => void;
+  onSave: (enabled: Record<McpServerStatus["name"], boolean>) => Promise<McpServerStatus[]>;
+};
+
+export function McpSettingsDialog({ open, servers, onClose, onUpdate, onSave }: McpSettingsDialogProps) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (open && dialog && !dialog.open) dialog.showModal();
+    else if (!open && dialog?.open) dialog.close();
+  }, [open]);
+
+  async function setServerEnabled(name: McpServerStatus["name"], enabled: boolean) {
+    setSaving(true);
+    setError("");
+    const selection = Object.fromEntries(servers.map((server) => [server.name, server.enabled])) as Record<McpServerStatus["name"], boolean>;
+    selection[name] = enabled;
+    try {
+      onUpdate(await onSave(selection));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <dialog ref={dialogRef} className="mcp-dialog" aria-labelledby="mcp-dialog-title" aria-describedby="mcp-dialog-description" onClose={onClose} onClick={(event) => { if (event.target === event.currentTarget) dialogRef.current?.close(); }}>
+      <div className="mcp-dialog-heading">
+        <div><span className="mcp-kicker">TOOLS & CONNECTIONS</span><h2 id="mcp-dialog-title">MCP servers</h2></div>
+        <button className="chrome-button" type="button" aria-label="Close MCP settings" onClick={() => dialogRef.current?.close()}><X size={19} /></button>
+      </div>
+      <p id="mcp-dialog-description" className="mcp-dialog-description">Choose which connected tools Oryn can use. Server processes run on this laptop; connected servers may access their network services.</p>
+      <div className="mcp-server-list">
+        {servers.map((server) => (
+          <section className="mcp-server-row" key={server.name}>
+            <div className="mcp-server-copy">
+              <div className="mcp-server-title"><h3>{server.name === "context7" ? "Context7" : server.name === "github" ? "GitHub" : "Playwright"}</h3><span className={`mcp-status ${server.state}`}>{server.state}</span></div>
+              <p>{server.access}</p>
+              <small>{server.state === "connected" ? `${server.tool_count} tool${server.tool_count === 1 ? "" : "s"} available.` : server.message}</small>
+            </div>
+            <label className="mcp-switch">
+              <span className="sr-only">Enable {server.name}</span>
+              <input type="checkbox" checked={server.enabled} disabled={saving} onChange={(event) => void setServerEnabled(server.name, event.target.checked)} />
+              <span aria-hidden="true" />
+            </label>
+          </section>
+        ))}
+      </div>
+      {error && <p className="mcp-settings-error" role="alert">{error}</p>}
+      <div className="mcp-dialog-footer"><span role="status" aria-live="polite">{saving ? "Updating server…" : "API keys remain in mcp.env."}</span><button type="button" onClick={() => dialogRef.current?.close()}>Done</button></div>
+    </dialog>
   );
 }
 

@@ -78,7 +78,8 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Create or replace one UTF-8 text file inside the project folder. "
                 "Use a project-relative path and provide the complete file content. "
                 "The user approves every write; existing file content will be replaced. "
-                "Files outside the project are rejected. Parent folders must already exist. "
+                "Files outside the project and private config paths (such as .env and key files) are rejected. "
+                "Parent folders must already exist. "
                 "Returns a confirmation or an actionable error."
             ),
             "parameters": {
@@ -94,7 +95,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Make one focused replacement in an existing UTF-8 project file. "
                 "Read the file first, then provide exact old_text that occurs once and new_text. "
                 "Oryn shows the unified diff and must get user approval before applying it. "
-                "Paths stay inside the project; use write_file to create a file or replace its full contents."
+                "Paths stay inside the project and private config paths are rejected; use write_file to create a file or replace its full contents."
             ),
             "parameters": {
                 "type": "object", "properties": {

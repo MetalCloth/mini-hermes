@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { cancelTurn, createSession, decideApproval, deleteSession, getBootstrap, getSession, renameSession, streamTurn, TurnRejected, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
-import { Composer, EmptyState, Header, Sidebar, Timeline, type Status, type TimelineItem } from "./components";
+import { cancelTurn, createSession, decideApproval, deleteSession, getBootstrap, getSession, renameSession, streamTurn, TurnRejected, updateMcpServers, type McpServerStatus, type SavedMessage, type SessionSummary, type TurnEvent } from "./api";
+import { Composer, EmptyState, Header, McpSettingsDialog, Sidebar, Timeline, type Status, type TimelineItem } from "./components";
 import type { ShortcutId } from "@/components/ui/ai-prompt-box";
 
 function savedItems(messages: SavedMessage[]): TimelineItem[] {
@@ -20,6 +20,8 @@ export default function App() {
   const [project, setProject] = useState("");
   const [projects, setProjects] = useState<string[]>([]);
   const [model, setModel] = useState("");
+  const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([]);
+  const [mcpSettingsOpen, setMcpSettingsOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [chats, setChats] = useState<Record<string, TimelineItem[]>>({});
@@ -69,6 +71,7 @@ export default function App() {
         setProject(data.project);
         setProjects(data.projects);
         setModel(data.model);
+        setMcpServers(data.mcp_servers ?? []);
         setSessions(data.sessions);
         if (data.sessions[0]) {
           const history = await getSession(data.sessions[0].id);
@@ -348,12 +351,13 @@ export default function App() {
     <div className="app-shell">
       <Sidebar project={project} projects={projects} model={model} sessions={sessions} selected={selected} running={running} open={sidebarOpen} expanded={sidebarExpanded} onClose={() => setSidebarOpen(false)} onExpand={() => setSidebarExpanded(true)} onNew={() => void newSession()} onSelect={(id) => void openSession(id)} onRename={(id) => void renameChat(id)} onDelete={(id) => void removeChat(id)} onProject={selectProject} />
       <main className="workspace">
-        <Header title={title} model={model} status={status} sidebarOpen={sidebarOpen} sidebarExpanded={sidebarExpanded} onMenu={() => setSidebarOpen((open) => !open)} onCollapse={() => setSidebarExpanded((expanded) => !expanded)} />
+        <Header title={title} model={model} status={status} sidebarOpen={sidebarOpen} sidebarExpanded={sidebarExpanded} onMenu={() => setSidebarOpen((open) => !open)} onCollapse={() => setSidebarExpanded((expanded) => !expanded)} onSettings={() => setMcpSettingsOpen(true)} />
         <div id="chat-scroll" className="chat-scroll" ref={scrollRef}>
           {items.length === 0 ? <EmptyState /> : <Timeline items={items} status={status} onDecide={(id, allow) => approve(selected!, id, allow)} />}
         </div>
         <Composer prompt={prompt} project={project} busy={busy} disabled={!token} status={status} canStop={canStop} stopPending={stopPending} onPrompt={setPrompt} onSend={() => void send()} onCancel={() => selected && void stopTurn(selected)} onShortcut={runShortcut} />
       </main>
+      <McpSettingsDialog open={mcpSettingsOpen} servers={mcpServers} onClose={() => setMcpSettingsOpen(false)} onUpdate={setMcpServers} onSave={(enabled) => updateMcpServers(token, enabled)} />
     </div>
   );
 }

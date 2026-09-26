@@ -1,11 +1,35 @@
 import tempfile
+import sqlite3
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from src.session.sqlite_store import SQLiteSessionStore
 
 
 class SQLiteSessionStoreTests(unittest.TestCase):
+    def test_picker_metadata_migrates_and_persists_without_inventing_legacy_dates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sessions.sqlite3"
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, project_root TEXT, title TEXT)")
+                connection.execute("INSERT INTO sessions (id, title) VALUES ('legacy', 'Old chat')")
+                connection.commit()
+            store = SQLiteSessionStore(path)
+            self.assertIsNone(store.session_entries()[0]["updated_at"])
+            self.assertEqual(store.session_title("legacy"), "Old chat")
+            recent = store.create_session(Path(folder))
+            store.append_messages([{"role": "user", "content": "hello"}], recent)
+            store.toggle_session_pin("legacy")
+            entries = SQLiteSessionStore(path).session_entries()
+            self.assertEqual(entries[0]["id"], "legacy")
+            self.assertEqual(entries[0]["pinned"], 1)
+            self.assertTrue(entries[1]["updated_at"])
+            store.toggle_session_pin("legacy")
+            self.assertEqual(store.session_entries()[0]["id"], recent)
+            with self.assertRaises(ValueError):
+                store.toggle_session_pin("missing")
+
     def test_reopens_and_restores_ordered_messages_with_tool_data(self):
         messages = [
             {"role": "user", "content": "Read README"},

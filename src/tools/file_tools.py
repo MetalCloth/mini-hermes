@@ -45,6 +45,8 @@ def _remember_file_change(
 
 
 def _is_private_path(target: Path, root: Path) -> bool:
+    if target == (Path.home() / ".mini-hermes" / "firecrawl.env").resolve():
+        return True
     return any(
         part in _PRIVATE_PARTS or part == ".env" or part.startswith(".env.")
         for part in target.relative_to(root).parts
@@ -198,6 +200,8 @@ def write_file(
     target = (root / path).resolve()
     if not target.is_relative_to(root):
         raise ValueError("File path must stay inside the project folder.")
+    if _is_private_path(target, root):
+        raise ValueError("That project path is excluded from editing.")
     if not target.parent.is_dir():
         raise ValueError(f"Parent folder for '{path}' does not exist; choose an existing project folder.")
     exists = target.exists()

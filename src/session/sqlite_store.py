@@ -43,6 +43,10 @@ class SQLiteSessionStore:
                     connection.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
                 if "model" not in columns:
                     connection.execute("ALTER TABLE sessions ADD COLUMN model TEXT")
+                if "updated_at" not in columns:
+                    connection.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
+                if "pinned" not in columns:
+                    connection.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
                 connection.execute(
                     "INSERT OR IGNORE INTO sessions (id) "
                     "SELECT DISTINCT session_id FROM messages"
@@ -57,7 +61,7 @@ class SQLiteSessionStore:
         try:
             with connection:
                 connection.execute(
-                    "INSERT INTO sessions (id, project_root) VALUES (?, ?)",
+                    "INSERT INTO sessions (id, project_root, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
                     (session_id, str(project_root) if project_root is not None else None),
                 )
         finally:
@@ -73,6 +77,30 @@ class SQLiteSessionStore:
         finally:
             connection.close()
         return [row[0] for row in rows]
+
+    def session_entries(self) -> list[dict[str, Any]]:
+        """Session picker metadata, newest activity first; legacy dates stay unknown."""
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute(
+                "SELECT id, project_root, title, model, updated_at, pinned FROM sessions "
+                "ORDER BY pinned DESC, updated_at DESC, rowid DESC"
+            )]
+        finally:
+            connection.close()
+
+    def toggle_session_pin(self, session_id: str) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE sessions SET pinned = 1 - pinned WHERE id = ?", (session_id,),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(f"No saved session with ID {session_id}.")
+        finally:
+            connection.close()
 
     def search_messages(self, query: str, limit: int = 20) -> list[tuple[str, str | None, str, str]]:
         """Find recent user/assistant text across saved sessions."""
@@ -246,6 +274,9 @@ class SQLiteSessionStore:
                 )
                 connection.executemany(
                     "INSERT INTO messages (session_id, message_json) VALUES (?, ?)", rows
+                )
+                connection.execute(
+                    "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,),
                 )
         finally:
             connection.close()

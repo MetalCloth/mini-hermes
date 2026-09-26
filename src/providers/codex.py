@@ -173,6 +173,23 @@ class CodexProvider:
         self.model = model
         self.auth_file = Path(auth_file)
 
+    def cached_models(self) -> list[tuple[str, str]]:
+        """Read the CLI's model catalog without a network request or credentials."""
+        try:
+            catalog = json.loads(self.auth_file.with_name("models_cache.json").read_text())
+        except (OSError, ValueError):
+            return []
+        models = catalog.get("models", []) if isinstance(catalog, dict) else []
+        if not isinstance(models, list):
+            return []
+        return [
+            (model["slug"], model.get("display_name") or model["slug"])
+            for model in models
+            if isinstance(model, dict) and model.get("visibility") == "list"
+            and isinstance(model.get("slug"), str) and model["slug"]
+            and isinstance(model.get("display_name", ""), str)
+        ]
+
     def complete(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,

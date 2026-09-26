@@ -8,12 +8,13 @@ import socket
 import threading
 import time
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from src.mcp.adapter import provider_tool, provider_tool_name, result_text
-from src.mcp.discovery import MCPServerConfig, server_configs
+from src.mcp.discovery import MCPServerConfig, SERVER_NAMES, server_configs
 
 
 _SAFE_PLAYWRIGHT_TOOLS = {
@@ -27,6 +28,7 @@ _SAFE_ENV_NAMES = {
     "LC_ALL", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "DOCKER_HOST", "DOCKER_CONTEXT",
     "DOCKER_CONFIG", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
 }
+_TOOL_CALL_TIMEOUT_SECONDS = 90
 
 
 def _server_environment(extra: dict[str, str]) -> dict[str, str]:
@@ -51,10 +53,13 @@ class MCPClient:
         self._started = False
         self._closed = False
         self._stacks: dict[str, AsyncExitStack] = {}
+        self._server_tasks: dict[str, asyncio.Task[None]] = {}
+        self._server_stops: dict[str, asyncio.Event] = {}
         self._clients: dict[str, Any] = {}
         self._bindings: dict[str, tuple[str, str, Any]] = {}
         self._schemas: list[dict[str, Any]] = []
         self._statuses: list[str] = []
+        self._status_by_name: dict[str, tuple[str, str]] = {}
 
     def start(self) -> list[str]:
         with self._lock:
@@ -75,15 +80,67 @@ class MCPClient:
             future.cancel()
             self.close()
             self._statuses = ["MCP startup timed out; Oryn will continue without MCP tools."]
+            self._status_by_name.update({
+                config.name: ("unavailable", self._statuses[0]) for config in self.configs
+            })
         except Exception as exc:
-            self._statuses = [
-                f"MCP startup failed ({type(exc).__name__}); Oryn will continue without MCP tools."
-            ]
+            message = f"MCP startup failed ({type(exc).__name__}); Oryn will continue without MCP tools."
+            self._statuses = [message]
+            self._status_by_name.update({config.name: ("unavailable", message) for config in self.configs})
         return list(self._statuses)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         self.start()
         return list(self._schemas)
+
+    def status_snapshot(self) -> list[dict[str, Any]]:
+        self.start()
+        result = []
+        for config in self.configs:
+            state, message = self._status_by_name.get(
+                config.name, ("starting", "Waiting for the MCP server to connect."),
+            )
+            if not config.enabled:
+                state, message = "disabled", "Disabled in Oryn settings."
+            result.append({
+                "name": config.name,
+                "enabled": config.enabled,
+                "state": state,
+                "message": message,
+                "tool_count": sum(server == config.name for server, _, _ in self._bindings.values()),
+                "access": config.access,
+            })
+        return result
+
+    def set_enabled(self, enabled_servers: set[str]) -> list[dict[str, Any]]:
+        """Start or stop only the MCP servers whose user setting changed."""
+        if not isinstance(enabled_servers, set) or not enabled_servers <= set(SERVER_NAMES):
+            raise ValueError("Choose valid MCP servers.")
+        self.start()
+        with self._lock:
+            previous = {config.name: config.enabled for config in self.configs}
+            changed = {name for name in previous if previous[name] != (name in enabled_servers)}
+            if changed:
+                self.configs = [
+                    replace(config, enabled=config.name in enabled_servers)
+                    for config in self.configs
+                ]
+            loop = self._loop
+        if not changed:
+            return self.status_snapshot()
+        if loop is None or not loop.is_running():
+            raise RuntimeError("MCP servers are not running.")
+        future = asyncio.run_coroutine_threadsafe(self._reconfigure(changed), loop)
+        try:
+            future.result(timeout=90 * len(changed) + 15)
+        except TimeoutError:
+            future.cancel()
+            raise RuntimeError("MCP server update timed out; check its connection and try again.")
+        self._statuses = [
+            f"{config.name}: {self._status_by_name.get(config.name, ('starting', 'Connecting.'))[1]}"
+            for config in self.configs
+        ]
+        return self.status_snapshot()
 
     def requires_approval(self, provider_name: str, arguments: dict[str, Any] | None = None) -> bool:
         binding = self._bindings.get(provider_name)
@@ -146,7 +203,7 @@ class MCPClient:
         future = asyncio.run_coroutine_threadsafe(
             client.call_tool(tool_name, arguments), self._loop
         )
-        deadline = time.monotonic() + 90
+        deadline = time.monotonic() + _TOOL_CALL_TIMEOUT_SECONDS
         while True:
             if cancel_event and cancel_event.is_set():
                 future.cancel()
@@ -154,7 +211,9 @@ class MCPClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 future.cancel()
-                raise RuntimeError(f"{server_name} MCP tool timed out after 90 seconds.")
+                raise RuntimeError(
+                    f"{server_name} MCP tool timed out after {_TOOL_CALL_TIMEOUT_SECONDS} seconds."
+                )
             try:
                 result = future.result(timeout=min(0.2, remaining))
                 break
@@ -168,33 +227,120 @@ class MCPClient:
         from mcp import Client
         from mcp.client.stdio import StdioServerParameters
 
-        async def connect(config: MCPServerConfig) -> str:
-            if config.disabled_reason:
-                return f"{config.name}: not connected. {config.disabled_reason}"
-            command = shutil.which(config.command)
-            if command is None:
-                return f"{config.name}: not connected; '{config.command}' is not installed."
-            try:
-                count = await asyncio.wait_for(
-                    self._connect_one(Client, StdioServerParameters, config, command),
-                    timeout=75,
-                )
-            except asyncio.TimeoutError:
-                return f"{config.name}: connection timed out; Oryn skipped this server."
-            except Exception as exc:
-                detail = " ".join(str(exc).split())
-                for secret in config.env.values():
-                    if secret:
-                        detail = detail.replace(secret, "[redacted]")
-                reason = detail[:180] or type(exc).__name__
-                return f"{config.name}: unavailable ({reason}); Oryn skipped it."
-            return f"{config.name}: connected with {count} tool(s)."
+        self._statuses = list(await asyncio.gather(*(
+            self._start_config(config, Client, StdioServerParameters)
+            for config in self.configs
+        )))
 
-        self._statuses = list(await asyncio.gather(*(connect(config) for config in self.configs)))
+    async def _start_config(self, config: MCPServerConfig, client_type: Any, parameters_type: Any) -> str:
+        if not config.enabled:
+            self._status_by_name[config.name] = ("disabled", "Disabled in Oryn settings.")
+            return f"{config.name}: Disabled in Oryn settings."
+        ready = asyncio.get_running_loop().create_future()
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            self._serve_config(config, client_type, parameters_type, ready, stop),
+            name=f"oryn-mcp-{config.name}",
+        )
+        self._server_tasks[config.name] = task
+        self._server_stops[config.name] = stop
+        try:
+            return await asyncio.wait_for(ready, timeout=75)
+        except asyncio.TimeoutError:
+            stop.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._server_tasks.pop(config.name, None)
+            self._server_stops.pop(config.name, None)
+            message = "Connection timed out; Oryn skipped this server."
+            self._status_by_name[config.name] = ("unavailable", message)
+            return f"{config.name}: {message}"
+        except BaseException:
+            stop.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._server_tasks.pop(config.name, None)
+            self._server_stops.pop(config.name, None)
+            raise
+
+    async def _serve_config(
+        self, config: MCPServerConfig, client_type: Any, parameters_type: Any,
+        ready: asyncio.Future[str], stop: asyncio.Event,
+    ) -> None:
+        try:
+            message = await self._connect_config(config, client_type, parameters_type)
+            if not ready.done():
+                ready.set_result(message)
+            if self._status_by_name.get(config.name, ("", ""))[0] == "connected":
+                await stop.wait()
+        except BaseException as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            raise
+        finally:
+            stack = self._stacks.pop(config.name, None)
+            self._clients.pop(config.name, None)
+            if stack:
+                await stack.aclose()
+
+    async def _connect_config(self, config: MCPServerConfig, client_type: Any, parameters_type: Any) -> str:
+        if not config.enabled:
+            state, message = "disabled", "Disabled in Oryn settings."
+            self._status_by_name[config.name] = (state, message)
+            return f"{config.name}: {message}"
+        if config.disabled_reason:
+            state, message = "unavailable", config.disabled_reason
+            self._status_by_name[config.name] = (state, message)
+            return f"{config.name}: not connected. {message}"
+        command = shutil.which(config.command)
+        if command is None:
+            message = f"'{config.command}' is not installed."
+            self._status_by_name[config.name] = ("unavailable", message)
+            return f"{config.name}: not connected; {message}"
+        try:
+            count = await self._connect_one(client_type, parameters_type, config, command)
+        except Exception as exc:
+            detail = " ".join(str(exc).split())
+            for secret in config.env.values():
+                if secret:
+                    detail = detail.replace(secret, "[redacted]")
+            reason = detail[:180] or type(exc).__name__
+            message = f"Unavailable ({reason}); Oryn skipped this server."
+            self._status_by_name[config.name] = ("unavailable", message)
+            return f"{config.name}: {message}"
+        message = f"Connected with {count} tool(s)."
+        self._status_by_name[config.name] = ("connected", message)
+        return f"{config.name}: {message}"
+
+    async def _reconfigure(self, changed: set[str]) -> None:
+        disabled = [config for config in self.configs if config.name in changed and not config.enabled]
+        for config in disabled:
+            stop = self._server_stops.pop(config.name, None)
+            task = self._server_tasks.pop(config.name, None)
+            if stop:
+                stop.set()
+            if task:
+                await task
+            removed = [name for name, binding in self._bindings.items() if binding[0] == config.name]
+            for name in removed:
+                self._bindings.pop(name, None)
+            self._schemas = [schema for schema in self._schemas if schema.get("name") not in removed]
+            self._status_by_name[config.name] = ("disabled", "Disabled in Oryn settings.")
+
+        enabled = [config for config in self.configs if config.name in changed and config.enabled]
+        if enabled:
+            from mcp import Client
+            from mcp.client.stdio import StdioServerParameters
+            await asyncio.gather(*(
+                self._start_config(config, Client, StdioServerParameters)
+                for config in enabled
+            ))
 
     async def _connect_one(
         self, client_type: Any, parameters_type: Any, config: MCPServerConfig, command: str,
     ) -> int:
+        from mcp.client.stdio import stdio_client
+
         stack = AsyncExitStack()
         try:
             params = parameters_type(
@@ -205,7 +351,11 @@ class MCPClient:
             )
             # The GitHub server rejects the SDK's auto-negotiation probe.
             mode = "legacy" if config.name == "github" else "auto"
-            client = await stack.enter_async_context(client_type(params, mode=mode))
+            # Subprocess notices must not write over the terminal UI. Connection
+            # failures still surface through the existing per-server status.
+            errlog = stack.enter_context(open(os.devnull, "w"))
+            transport = stdio_client(params, errlog=errlog)
+            client = await stack.enter_async_context(client_type(transport, mode=mode))
             tools = []
             cursor = None
             while True:
@@ -252,11 +402,12 @@ class MCPClient:
             loop, thread = self._loop, self._thread
         if loop and loop.is_running():
             async def close_servers() -> None:
-                for stack in reversed(list(self._stacks.values())):
-                    try:
-                        await stack.aclose()
-                    except Exception:
-                        pass
+                for stop in self._server_stops.values():
+                    stop.set()
+                if self._server_tasks:
+                    await asyncio.gather(*self._server_tasks.values(), return_exceptions=True)
+                self._server_stops.clear()
+                self._server_tasks.clear()
                 self._stacks.clear()
                 self._clients.clear()
 

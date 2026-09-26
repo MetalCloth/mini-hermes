@@ -5,9 +5,11 @@ import json
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from src.providers.types import ModelResponse, ToolCall
+from src.mcp.discovery import MCPServerConfig, SERVER_NAMES, load_enabled_servers
 from src.session.sqlite_store import SQLiteSessionStore
 from src.web_app import DashboardServer
 
@@ -67,6 +69,29 @@ class BlockingProvider:
         while cancel_event and not cancel_event.wait(0.01):
             pass
         raise InterruptedError("Codex request cancelled")
+
+
+class FakeMCPClient:
+    def __init__(self):
+        self.configs = [MCPServerConfig(name, "fake", (), {}, enabled=True, access="Test access")
+                        for name in SERVER_NAMES]
+
+    def set_enabled(self, enabled):
+        self.configs = [replace(config, enabled=config.name in enabled) for config in self.configs]
+        return self.status_snapshot()
+
+    def status_snapshot(self):
+        return [{
+            "name": config.name,
+            "enabled": config.enabled,
+            "state": "connected" if config.enabled else "disabled",
+            "message": "Connected." if config.enabled else "Disabled in Oryn settings.",
+            "tool_count": 1 if config.enabled else 0,
+            "access": config.access,
+        } for config in self.configs]
+
+    def close(self):
+        pass
 
 
 class DashboardTests(unittest.TestCase):
@@ -138,6 +163,23 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([m["role"] for m in data["messages"]], ["user", "assistant"])
         self.assertEqual(data["messages"][1]["content"], "Hello from Mini-Hermes.")
+
+    def test_mcp_preferences_endpoint_is_validated_and_persisted(self):
+        self.server.mcp_client = FakeMCPClient()
+        self.server.mcp_settings_file = Path(self.temp.name) / "mcp-settings.json"
+        status, bootstrap = self.request("GET", "/api/bootstrap")
+        self.assertEqual(status, 200)
+        self.assertEqual([server["name"] for server in bootstrap["mcp_servers"]], list(SERVER_NAMES))
+
+        status, invalid = self.request("POST", "/api/mcp", {"enabled": {"arbitrary": True}})
+        self.assertEqual(status, 400)
+        self.assertIn("known MCP server", invalid["error"])
+
+        enabled = {"context7": True, "github": False, "playwright": True}
+        status, data = self.request("POST", "/api/mcp", {"enabled": enabled})
+        self.assertEqual(status, 200)
+        self.assertEqual([server["enabled"] for server in data["mcp_servers"]], list(enabled.values()))
+        self.assertEqual(load_enabled_servers(self.server.mcp_settings_file), {"context7", "playwright"})
 
     def test_approval_waits_then_writes(self):
         self.server.provider_factory = WriteProvider
