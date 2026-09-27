@@ -10,15 +10,23 @@ $oryn-blue: #5c9cf5;
 $oryn-accent: #9d7cd8;
 
 Screen { background: $oryn-canvas; color: $oryn-ink; }
+VerticalScroll, OptionList, TextArea {
+    scrollbar-size-vertical: 1; scrollbar-size-horizontal: 1;
+    scrollbar-background: $oryn-panel;
+    scrollbar-background-hover: $oryn-panel; scrollbar-background-active: $oryn-panel;
+    scrollbar-color: $oryn-muted;
+    scrollbar-color-hover: $oryn-peach; scrollbar-color-active: $oryn-peach;
+    scrollbar-corner-color: $oryn-panel;
+}
 #main-panel { width: 1fr; height: 1fr; align-horizontal: center; }
 #topbar { height: 2; padding: 0 2; background: $oryn-panel; align-vertical: middle; }
 #topbar-title { width: 1fr; color: $oryn-ink; text-style: bold; overflow: hidden; }
 #topbar-project { width: auto; color: $oryn-muted; margin-left: 2; }
 #transcript {
     width: 1fr; height: 1fr; padding: 1 2;
-    scrollbar-size-vertical: 1;
-    scrollbar-background: $oryn-canvas; scrollbar-color: #3c3c3c;
-    scrollbar-color-hover: #606060; scrollbar-color-active: $oryn-peach;
+    scrollbar-background: $oryn-canvas;
+    scrollbar-background-hover: $oryn-canvas; scrollbar-background-active: $oryn-canvas;
+    scrollbar-corner-color: $oryn-canvas;
 }
 #welcome { width: 1fr; height: auto; align: center bottom; padding: 0; }
 #welcome-mark { width: 1fr; height: 6; color: $oryn-ink; text-align: center; }
@@ -83,10 +91,13 @@ Screen { background: $oryn-canvas; color: $oryn-ink; }
 #palette-options, #picker-options {
     height: auto; border: none; padding: 0;
     background-tint: transparent;
-    scrollbar-size-vertical: 1;
-    scrollbar-background: $oryn-panel; scrollbar-color: #3c3c3c;
 }
-#palette-options { max-height: 10; background: $oryn-element; }
+#palette-options {
+    max-height: 10; background: $oryn-element;
+    scrollbar-background: $oryn-element;
+    scrollbar-background-hover: $oryn-element; scrollbar-background-active: $oryn-element;
+    scrollbar-corner-color: $oryn-element;
+}
 #picker-options { max-height: 16; background: $oryn-panel; }
 #palette-options > .option-list--option-highlighted,
 #palette-options:focus > .option-list--option-highlighted,
@@ -124,7 +135,7 @@ MCPManagerScreen #picker-card { width: 76; }
 #picker-search > .input--cursor { background: $oryn-peach; color: $oryn-canvas; }
 #picker-search > .input--placeholder { color: $oryn-muted; }
 #picker-empty { height: auto; min-height: 2; color: $oryn-muted; content-align: left middle; }
-#picker-details { display: none; height: 2; margin-top: 1; scrollbar-size-vertical: 1; }
+#picker-details { display: none; height: 2; margin-top: 1; }
 #picker-description { height: auto; color: $oryn-muted; }
 ToolsScreen #picker-details { height: 4; }
 ToolsScreen #picker-options { max-height: 14; }
