@@ -8,6 +8,7 @@ from threading import Event
 from typing import Any
 
 from src.agent.context import select_context
+from src.mcp.adapter import mcp_loader_tool
 from src.providers.types import ModelResponse, ToolCall
 from src.tools.browser_tools import BrowserSession
 from src.tools.file_tools import FileChange
@@ -40,6 +41,11 @@ def run_turn(
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
+    native_tools = [
+        tool for tool in tools
+        if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
+    ]
+    loaded_servers: set[str] = set()
 
     def check_cancelled() -> None:
         if cancel_event and cancel_event.is_set():
@@ -47,6 +53,19 @@ def run_turn(
 
     try:
         for _ in range(8):
+            check_cancelled()
+            tools = list(native_tools)
+            if mcp_client is not None:
+                directory = mcp_client.tool_directory()
+                if directory:
+                    tools.append(mcp_loader_tool(directory))
+                for server in sorted(loaded_servers):
+                    try:
+                        tools.extend(mcp_client.tool_schemas(server))
+                    except ValueError:
+                        # A disconnected server must not remain callable from stale definitions.
+                        loaded_servers.discard(server)
+            advertised_names = {tool["name"] for tool in tools}
             check_cancelled()
             if on_text_delta:
                 saw_delta = False
@@ -101,9 +120,30 @@ def run_turn(
                 if cancel_event and cancel_event.is_set():
                     break
                 try:
-                    if call.name.startswith("mcp__"):
+                    if call.name == "load_mcp_tools":
+                        if mcp_client is None:
+                            raise RuntimeError("MCP loading is unavailable without an active MCP client.")
+                        if not isinstance(call.arguments, dict) or set(call.arguments) != {"server"}:
+                            raise ValueError("load_mcp_tools requires exactly one argument: server.")
+                        server = call.arguments["server"]
+                        if not isinstance(server, str) or not server:
+                            raise ValueError("server must be a name from the MCP directory, e.g. github.")
+                        schemas = mcp_client.tool_schemas(server)
+                        if not schemas:
+                            raise ValueError("This server has no usable tools. Reconnect it in /mcps.")
+                        loaded_servers.add(server)
+                        result = json.dumps({
+                            "server": server, "tools": [schema["name"] for schema in schemas],
+                            "message": "Definitions loaded. Call these tools using the schemas in the next request.",
+                        }, ensure_ascii=False)
+                    elif call.name.startswith("mcp__"):
                         if mcp_client is None:
                             raise RuntimeError("MCP tool was requested without an active MCP client.")
+                        if call.name not in advertised_names:
+                            raise ValueError(
+                                "This MCP tool is not loaded for this request. Use load_mcp_tools "
+                                "with a connected server from the MCP directory, then choose an advertised tool."
+                            )
                         if mcp_client.requires_approval(call.name, call.arguments):
                             if confirm_mcp is None:
                                 raise RuntimeError("This MCP action needs user approval; no approval handler is available.")

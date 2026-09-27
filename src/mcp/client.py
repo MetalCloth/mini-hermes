@@ -92,9 +92,29 @@ class MCPClient:
             self._status_by_name.update({config.name: ("unavailable", message) for config in self.configs})
         return list(self._statuses)
 
-    def tool_schemas(self) -> list[dict[str, Any]]:
+    def tool_schemas(self, server: str | None = None) -> list[dict[str, Any]]:
         self.start()
-        return list(self._schemas)
+        if server is None:
+            return list(self._schemas)
+        if not isinstance(server, str):
+            raise ValueError("server must be a name from the MCP directory.")
+        config = next((config for config in self.configs if config.name == server), None)
+        if config is None:
+            raise ValueError("Unknown MCP server. Choose a server name from the MCP directory.")
+        if not config.enabled or self._status_by_name.get(server, ("", ""))[0] != "connected":
+            raise ValueError(f"{server} MCP is not connected. Enable, sign in, or reconnect it in /mcps.")
+        return [
+            schema for schema in self._schemas
+            if self._bindings.get(schema["name"], (None, None, None))[0] == server
+        ]
+
+    def tool_directory(self) -> list[dict[str, Any]]:
+        """Give the model service summaries and states without schemas or credentials."""
+        return [
+            {"server": status["name"], "description": status["access"][:512],
+             "state": status["state"], "tool_count": status["tool_count"]}
+            for status in self.status_snapshot()
+        ]
 
     def status_snapshot(self) -> list[dict[str, Any]]:
         self.start()

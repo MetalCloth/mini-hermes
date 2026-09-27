@@ -85,7 +85,7 @@ Legacy chats do not get invented activity dates. Unknown dates remain unknown in
 
 ## 5. Creating, loading, and appending
 
-`create_session` creates a UUID hex ID and stores the initial project root and time. The legacy ID `main` is kept for older/default behavior.
+`create_session` creates a UUID hex ID and stores the initial project root and time. Normal TUI launches create a fresh session and show the home page. Saved chats load through an explicit `--resume` or the session picker. The legacy ID `main` remains available for old chats and the original REPL's default behavior.
 
 `load_messages` selects rows by session and orders them by their integer message ID. It parses each JSON value and requires dictionary-shaped messages. Invalid JSON or invalid shapes produce clear errors.
 
@@ -139,7 +139,7 @@ Search scans recent transcript rows rather than using SQLite FTS. That simple im
 
 The TUI provides pin, rename, and two-step deletion shortcuts. The dashboard supports rename/delete and groups/searches sessions through its frontend behavior. UI controls and backend store capabilities are related but not identical.
 
-Deleting a conversation does not undo its file edits, revoke external account permissions, or delete a remote GitHub repository. It removes local chat records; the dashboard also discards that session's live undo list.
+Deleting a conversation does not undo its file edits, revoke external account permissions, or delete a remote GitHub repository. It removes local chat records; the dashboard and TUI also discard that session's live undo list.
 
 ## 8. Model settings are stored per model inside each session
 
@@ -225,6 +225,7 @@ Tool call/results already completed remain in the turn history where recorded. A
 | --- | --- |
 | Saved chat messages | Yes |
 | Turn completion status | Yes |
+| Elapsed time stored on TUI assistant replies | Yes, in the existing message JSON |
 | Session root/title/model/settings/pin | Yes |
 | MCP enabled preferences | Yes, in their separate JSON file |
 | Notion OAuth cache | Yes, in its separate private JSON file |
@@ -236,7 +237,7 @@ Tool call/results already completed remain in the turn history where recorded. A
 
 A persisted transcript is not a resumable transaction log. If the entire machine crashes during a side effect, the current implementation cannot promise an exact replay or rollback of all work. Durable file snapshots and per-turn traces are open issues.
 
-Undo history ownership also differs between interfaces: the dashboard keeps a list for each session; the TUI currently keeps one list on the app object and does not partition it on every session/project switch. The file checks still validate the active root and current result state, but the list is not a complete per-session undo journal. This is an identified limitation, not a newly implemented fix.
+The dashboard and TUI keep a separate live undo list for each session. Switching back to a chat restores its list within the same process; a new chat or project starts with an empty list. These lists remain memory-only. Sessions that share a project share its actual files, so the current-result checks still refuse undo over later edits.
 
 ## 12. Reading the database safely for learning
 

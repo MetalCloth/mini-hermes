@@ -312,7 +312,7 @@ Each `FileChange` records:
 | `result_digest` | SHA-256 digest of the bytes Oryn wrote |
 | `result_mode` | Permission mode after the change |
 
-Each supplied live history list retains at most 20 snapshots. It is memory-only; saved chat history does not recreate these snapshots after restart. The dashboard stores lists by session; the TUI currently owns one app-level list and does not partition it on every chat/project switch. Undo covers changes made through the approved write/edit tools, not arbitrary shell commands or remote MCP actions.
+Each supplied live history list retains at most 20 snapshots. It is memory-only; saved chat history does not recreate these snapshots after restart. The dashboard and TUI both store lists by session ID. New chats and project switches start with their own empty list; returning to a chat in the same process restores its existing list. Deleting a chat discards its list. Chats using the same project still share files, so a later edit from another chat or editor causes the current-result check to refuse undo. Undo covers changes made through the approved write/edit tools, not arbitrary shell commands or remote MCP actions.
 
 ```mermaid
 flowchart TD

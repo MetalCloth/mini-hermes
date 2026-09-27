@@ -8,6 +8,34 @@ from typing import Any
 _MODEL_TOOL_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 
 
+def mcp_loader_tool(directory: list[dict[str, Any]]) -> dict[str, Any]:
+    """Advertise a compact service directory instead of every MCP function schema."""
+    return {
+        "type": "function",
+        "name": "load_mcp_tools",
+        "description": (
+            "Load a connected MCP server's full tool definitions when its capabilities "
+            "are needed for the user's task. This only loads definitions; it does not run "
+            "an external action. Returns the loaded tool names; their full argument schemas "
+            "will be available in the next model request and for the rest of this user turn. "
+            "Load before calling mcp__ tools, even if their names appear in chat history. "
+            "Use exact names and arguments from the loaded definitions. Disabled or "
+            "unavailable servers must first be configured by the user in /mcps. "
+            "MCP directory: " + json.dumps(directory, ensure_ascii=False, separators=(",", ":"))
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "server": {"type": "string", "enum": [entry["server"] for entry in directory],
+                           "description": "Exact MCP server name from the directory, e.g. github."},
+            },
+            "required": ["server"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+
+
 def provider_tool_name(server_name: str, tool_name: str) -> str:
     name = f"mcp__{server_name}__{tool_name}"
     if not _MODEL_TOOL_NAME.fullmatch(name):

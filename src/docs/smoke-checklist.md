@@ -35,8 +35,8 @@ This is a repeatable manual plan, not a declaration that every item has already 
 6. **Normal undo:** undo a recorded edit. Confirm approval and exact prior bytes/mode restoration.
 7. **Undo creation:** undo an Oryn-created file. Confirm explicit delete intent and removal after approval.
 8. **Undo with later user edit:** alter the file after Oryn's edit. Confirm undo refuses and preserves your work.
-9. **Restart:** confirm chat persists; live undo is unavailable after process restart.
-10. **TUI session switching:** inspect app-level undo behavior carefully; the current TUI does not partition its live list for every session.
+9. **Restart:** confirm the home page opens, then resume the saved chat and confirm its messages persist; live undo is unavailable after process restart.
+10. **TUI session switching:** edit different files in chats A and B, return to A, and confirm undo restores only A's latest edit. Confirm a new chat/project has no earlier undo records, returning to B preserves its records, and deleting a chat discards its history without changing files.
 
 ## 4. Stop and failure recovery
 
@@ -54,10 +54,17 @@ This is a repeatable manual plan, not a declaration that every item has already 
 
 | Check | Expected result |
 | --- | --- |
+| Normal launch with existing saved chats | Home page with an empty composer and no old transcript |
+| `/sessions`, Ctrl+O, or `--resume` | Selected saved conversation loads explicitly |
 | Enter / Shift+Enter | Send / newline with a terminal that transmits the distinction |
 | `/` | Attached suggestions, same width as composer |
 | `/sessi` | Sessions suggestion, no unrelated `/new` match |
 | Ctrl+P with draft | Command palette; closing preserves draft as implemented |
+| `/` or Ctrl+P during a tool operation | Suggestions appear and filter; help/tools/MCP status open |
+| Select `/new` or `/models` during a turn | Command stays in the composer; current session/model stays unchanged |
+| Finish turn with a dialog open | Dialog keeps keyboard focus; closing returns focus to composer |
+| Complete, fail, or stop a reply | Elapsed seconds/minutes appear beside Oryn in the reply footer |
+| Reopen a saved reply | Its elapsed time remains; older replies have no fabricated time |
 | F2/F3/F4 | Model, effort, speed choices from catalog |
 | Change setting and return to model | Correct saved settings restored |
 | `/tools` | Short rows, no unwanted wrapping; selected full description below |

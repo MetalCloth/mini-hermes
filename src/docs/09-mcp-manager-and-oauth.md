@@ -216,4 +216,4 @@ Tests cover discovery, routing, schemas, duplicates, failure isolation, timeout,
 
 Notion's TUI flow was tested with controlled mocks; that is not a claim that a real personal Notion authorization was completed during these changes. External account permissions and service availability remain runtime conditions.
 
-Automatic disconnected-server recovery, arbitrary server registration, OAuth login for all services, rich image/audio results, and on-demand tool schemas remain future work.
+On-demand tool schemas are implemented in the shared conversation loop; see [the MCP catalog](08-mcp-fundamentals-and-connections.md#10-on-demand-model-catalog). A live read-only Codex/Microsoft Learn turn verified loading definitions before a documentation search and final sourced answer. Automatic disconnected-server recovery, arbitrary server registration, OAuth login for all services, and rich image/audio results remain future work.

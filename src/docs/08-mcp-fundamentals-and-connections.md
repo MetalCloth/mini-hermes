@@ -33,7 +33,7 @@ flowchart LR
     H --> U
 ```
 
-The model is not manually clicking a hidden `show_tools` button in Oryn. The harness starts connections and calls discovery before constructing the model's available tool list.
+The harness starts connections and calls discovery before constructing the model's available tool list. The model uses `load_mcp_tools` to select which discovered definitions it needs for the current user turn.
 
 ## 3. What happens first, step by step
 
@@ -45,9 +45,10 @@ The model is not manually clicking a hidden `show_tools` button in Oryn. The har
 6. Oryn calls `list_tools`, following pagination.
 7. The adapter validates each tool's name and object input schema.
 8. Accepted tools become namespaced model function schemas and local routing bindings.
-9. The next model request receives native schemas plus discovered MCP schemas.
-10. If the model requests one, the harness checks policy and calls the server's original tool name.
-11. The server result is converted to readable text, capped by the loop, and returned as a tool result.
+9. The first model request receives native schemas plus `load_mcp_tools` with a compact service directory.
+10. The model selects a connected server through `load_mcp_tools`; the next model request includes its full schemas.
+11. If the model requests an advertised MCP operation, the harness checks policy and calls the server's original tool name.
+12. The server result is converted to readable text, capped by the loop, and returned as a tool result.
 
 ```mermaid
 sequenceDiagram
@@ -64,10 +65,14 @@ sequenceDiagram
     C->>A: Convert usable definitions
     A-->>C: Namespaced schemas
     C-->>O: Status and discovered tools
-    O->>L: Advertise native plus MCP tools
+    O->>L: Advertise native tools and compact MCP directory
+    L->>O: load_mcp_tools with server name
+    O->>C: Read discovered definitions for that server
+    C-->>O: Full function schemas
+    O->>L: Next request includes selected server schemas
 ```
 
-Discovery occurs at connection startup and reconnect, not only when the model first decides it wants a company. On-demand discovery/tool loading is a proposed improvement; it is not the current catalog strategy.
+Discovery occurs at connection startup and reconnect. Loading definitions into a model request happens on demand and reuses that discovered inventory; it does not reconnect or rerun `list_tools` for every selection.
 
 ## 4. Concrete example: documentation lookup
 
@@ -94,7 +99,7 @@ Oryn exposes a corresponding model name:
 mcp__example_docs__lookup_docs
 ```
 
-The model emits:
+The model first calls `load_mcp_tools` with `{"server": "example_docs"}`. After the harness advertises the definition in the next request, the model emits:
 
 ```json
 {
@@ -206,8 +211,16 @@ A product can show “Linear” as an app/connector without the UI telling you i
 
 Official public MCP endpoints let compatible clients connect subject to authentication, supported protocol behavior, and service terms. They do not make proprietary accounts, private data, or another application's complete architecture public.
 
-## 10. Current discovery costs and future direction
+## 10. On-demand model catalog
 
-All accepted schemas from connected servers are advertised to each model request. Tool count is therefore variable: it depends on enabled connections, credentials, server versions, and filtering. A screenshot showing 81 tools is one observed inventory, not a permanent constant.
+All accepted schemas remain in the local inventory, and `/tools` can display them. The model initially receives the sixteen native schemas and one `load_mcp_tools` definition containing server names, short descriptions, states, and counts. Credentials and request headers are excluded from this directory. An empty configuration supplies no loader.
 
-This is simple and functional, but a large catalog adds request size and routing complexity. Future on-demand loading could first expose service summaries and load detailed schemas for relevant services. That proposal requires design and approval; it has not been implemented in `toolsets.py` or another hidden subsystem.
+```json
+{"name": "load_mcp_tools", "arguments": {"server": "github"}}
+```
+
+The loader validates the server, requires a connected configuration with usable tools, and returns its namespaced tool names. The next model request includes their full parameter schemas. No external operation or approval is performed merely by loading definitions. When the model subsequently calls an advertised tool, normal routing, cancellation, result caps, and approval policy apply.
+
+Definitions stay loaded for the current user turn, including across tool rounds, and reset on the next user turn. Repeated loads are deduplicated. Each request refreshes loaded schemas so disconnected servers are dropped. An unloaded call, unknown server, invalid loader argument, or disabled/unavailable server becomes an actionable tool error paired with its call ID. Tool names in older chat history do not automatically grant access to unloaded definitions.
+
+Tool count remains variable: it depends on enabled connections, credentials, server versions, filtering, and which services this turn loaded. A screenshot showing 81 tools is an observed UI inventory, not a constant number of schemas sent to each model request. A selected server's complete catalog still adds context; selecting individual functions within a very large server is not implemented. Startup connection cost and the eight-request turn limit remain in place.

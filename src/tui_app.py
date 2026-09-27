@@ -8,7 +8,9 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from itertools import groupby
+from math import isfinite
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from rich.markdown import Markdown
@@ -31,7 +33,7 @@ from src.mcp.discovery import save_enabled_servers
 from src.mcp.oauth import login_notion
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
-from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
+from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
 
@@ -50,6 +52,7 @@ COMMANDS = (
     ("exit", "Exit the app"),
 )
 COMMAND_ALIASES = {"model": "models", "mcp": "mcps", "quit": "exit", "q": "exit"}
+COMMANDS_DURING_TURN = {"help", "tools", "mcps"}
 
 
 class StreamChunk(Message):
@@ -67,11 +70,15 @@ class ToolActivity(Message):
 
 
 class TurnFinished(Message):
-    def __init__(self, answer: str | None, error: str | None, cancelled: bool = False) -> None:
+    def __init__(
+        self, answer: str | None, error: str | None, cancelled: bool = False,
+        elapsed_seconds: float | None = None,
+    ) -> None:
         super().__init__()
         self.answer = answer
         self.error = error
         self.cancelled = cancelled
+        self.elapsed_seconds = elapsed_seconds
 
 
 class MCPReady(Message):
@@ -99,10 +106,14 @@ class ApprovalRequest(Message):
 
 
 class MessageCard(Vertical):
-    def __init__(self, role: str, content: str = "", turn_status: str | None = None) -> None:
+    def __init__(
+        self, role: str, content: str = "", turn_status: str | None = None,
+        *, elapsed_seconds: float | None = None,
+    ) -> None:
         self.role = role
         self.content = content
         self.turn_status = turn_status if turn_status in {"cancelled", "failed"} else None
+        self.elapsed_seconds = elapsed_seconds
         super().__init__(classes=f"message-card {role}")
 
     def compose(self) -> ComposeResult:
@@ -116,7 +127,26 @@ class MessageCard(Vertical):
             yield status
             yield Static(self._renderable(), classes="message-copy")
             if self.role == "assistant":
-                yield Label("▣ Oryn", classes="message-meta")
+                yield Label(self._meta_label(), classes="message-meta")
+
+    def _meta_label(self) -> Text:
+        label = Text("▣ Oryn")
+        seconds = self.elapsed_seconds
+        if type(seconds) not in (int, float):
+            return label
+        try:
+            if seconds < 0 or not isfinite(seconds):
+                return label
+            minutes, seconds = divmod(round(seconds, 1), 60)
+        except (ValueError, OverflowError):
+            return label
+        duration = f"{int(minutes)}m {seconds:.1f}s" if minutes else f"{seconds:.1f}s"
+        label.append(f" · {duration}", style="#808080")
+        return label
+
+    def set_elapsed_seconds(self, elapsed_seconds: float | None) -> None:
+        self.elapsed_seconds = elapsed_seconds
+        self.query_one(".message-meta", Label).update(self._meta_label())
 
     def _renderable(self) -> Any:
         if not self.content:
@@ -361,7 +391,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._deleting = selected
             self._filter(self.query_one(Input).value, selected)
             return
-        self.store.delete_session(selected)
+        if self.store.delete_session(selected):
+            self.app.file_change_history.pop(selected, None)
         self._deleting = None
         if selected == self.current:
             self.dismiss("__new_session__")
@@ -704,7 +735,9 @@ class OrynTUI(App[None]):
         self._restore_model_settings()
         self.mcp_client = mcp_client
         self.tools = initial_tools
-        self.undo_history = undo_history if undo_history is not None else []
+        self.file_change_history: dict[str, list[FileChange]] = {
+            session_id: undo_history if undo_history is not None else [],
+        }
         self.mcp_statuses: list[str] = []
         self.mcp_ready = False
         self.mcp_servers = [
@@ -723,8 +756,13 @@ class OrynTUI(App[None]):
         self._reply_text = ""
         self._partial_reply_text = ""
         self._turn_start = 0
+        self._turn_started_at: float | None = None
         self._pending_approval: ApprovalRequest | None = None
         self._palette_draft: str | None = None
+
+    @property
+    def undo_history(self) -> list[FileChange]:
+        return self.file_change_history.setdefault(self.session_id, [])
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main-panel"):
@@ -740,6 +778,7 @@ class OrynTUI(App[None]):
                     for message in visible:
                         yield MessageCard(
                             message["role"], message.get("content", ""), message.get("turn_status"),
+                            elapsed_seconds=message.get("elapsed_seconds"),
                         )
                 else:
                     yield Welcome(id="welcome")
@@ -800,7 +839,7 @@ class OrynTUI(App[None]):
             self._pending_approval = None
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        if event.text_area.id != "composer" or self.turn_active:
+        if event.text_area.id != "composer":
             return
         value = event.text_area.text
         if value.startswith("/"):
@@ -833,6 +872,8 @@ class OrynTUI(App[None]):
 
     def on_turn_finished(self, event: TurnFinished) -> None:
         self.turn_active = False
+        self._turn_started_at = None
+        timing = {"elapsed_seconds": event.elapsed_seconds} if event.elapsed_seconds is not None else {}
         self._refresh_mcp_view()
         if event.error:
             self._set_activity(
@@ -849,13 +890,16 @@ class OrynTUI(App[None]):
                     "role": "assistant",
                     "content": self._partial_reply_text,
                     "turn_status": status,
+                    **timing,
                 })
             if self._current_reply:
                 self._current_reply.set_turn_status(status)
                 self._current_reply.update_content(self._reply_text)
         else:
-            self.history.append({"role": "assistant", "content": event.answer or ""})
+            self.history.append({"role": "assistant", "content": event.answer or "", **timing})
             self._set_activity("Ready", working=False)
+        if self._current_reply:
+            self._current_reply.set_elapsed_seconds(event.elapsed_seconds)
         self._current_reply = None
         self._reply_text = ""
         self._partial_reply_text = ""
@@ -864,7 +908,8 @@ class OrynTUI(App[None]):
             self.saved_count = len(self.history)
         except Exception as exc:
             self._set_activity(f"Could not save this session: {exc}", working=False, error=True)
-        self.query_one("#composer", TextArea).focus()
+        if len(self.screen_stack) == 1:
+            self.query_one("#composer", TextArea).focus()
 
     @on(MCPReady)
     def on_mcp_ready(self, event: MCPReady) -> None:
@@ -947,12 +992,6 @@ class OrynTUI(App[None]):
         )
 
     async def action_send_prompt(self) -> None:
-        if self.mcp_busy:
-            self._set_activity("MCP connections are updating. Your draft is safe; send it when they finish.", working=True)
-            return
-        if self.turn_active:
-            self._set_activity("Oryn is still working. Your draft is safe; send it when this turn finishes.", working=True)
-            return
         composer = self.query_one("#composer", TextArea)
         prompt = composer.text.strip()
         if not prompt:
@@ -970,6 +1009,14 @@ class OrynTUI(App[None]):
             self._select_palette_command(name, parts[1] if len(parts) > 1 else None)
             return
 
+        if self.mcp_busy:
+            self._set_activity("MCP connections are updating. Your draft is safe; send it when they finish.", working=True)
+            return
+        if self.turn_active:
+            self._set_activity("Oryn is still working. Your draft is safe; send it when this turn finishes.", working=True)
+            return
+
+        self._turn_started_at = monotonic()
         welcome = self.query("#welcome")
         if welcome:
             await welcome.remove()
@@ -998,8 +1045,7 @@ class OrynTUI(App[None]):
         self._turn_thread.start()
 
     def action_open_palette(self) -> None:
-        if self.turn_active:
-            self._set_activity("Finish the current turn before opening commands.", working=True)
+        if len(self.screen_stack) != 1:
             return
         composer = self.query_one("#composer", TextArea)
         if not composer.text.startswith("/"):
@@ -1075,6 +1121,9 @@ class OrynTUI(App[None]):
         composer.focus()
 
     def _select_palette_command(self, name: str, argument: str | None = None) -> None:
+        if self.turn_active and COMMAND_ALIASES.get(name, name) not in COMMANDS_DURING_TURN:
+            self._set_activity("Finish the current turn before changing sessions or settings.", working=True)
+            return
         if self._palette_draft is None:
             self.query_one("#composer", TextArea).clear()
         self._hide_palette()
@@ -1082,7 +1131,7 @@ class OrynTUI(App[None]):
 
     async def _execute_command(self, name: str, argument: str | None = None) -> None:
         name = COMMAND_ALIASES.get(name, name)
-        if self.turn_active and name not in {"help", "tools", "mcps"}:
+        if self.turn_active and name not in COMMANDS_DURING_TURN:
             self._set_activity("Finish the current turn before changing sessions or settings.", working=True)
             return
         if name in {"new", "clear"}:
@@ -1202,6 +1251,7 @@ class OrynTUI(App[None]):
             for message in visible:
                 await transcript.mount(MessageCard(
                     message["role"], message.get("content", ""), message.get("turn_status"),
+                    elapsed_seconds=message.get("elapsed_seconds"),
                 ))
         else:
             await transcript.mount(Welcome(id="welcome"))
@@ -1373,6 +1423,7 @@ class OrynTUI(App[None]):
         project_root: Path,
         cancel_event: threading.Event,
     ) -> None:
+        started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         confirm_terminal = lambda command: self._request_approval(
             "Run terminal command", command,
         )
@@ -1404,11 +1455,13 @@ class OrynTUI(App[None]):
                 confirm_mcp=confirm_mcp,
             )
         except TurnCancelled as exc:
-            self.post_message(TurnFinished(None, str(exc) or "Stopped by you", cancelled=True))
+            finished = TurnFinished(None, str(exc) or "Stopped by you", cancelled=True)
         except Exception as exc:
-            self.post_message(TurnFinished(None, str(exc)))
+            finished = TurnFinished(None, str(exc))
         else:
-            self.post_message(TurnFinished(answer, None))
+            finished = TurnFinished(answer, None)
+        finished.elapsed_seconds = max(0.0, monotonic() - started_at)
+        self.post_message(finished)
 
     def _connect_mcp(self) -> None:
         try:
@@ -1444,12 +1497,12 @@ def _base_history(project_root: Path) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Open Oryn's full-screen terminal chat.")
-    parser.add_argument("--model", help="Codex model slug (defaults to the saved session model)")
+    parser.add_argument("--model", help=f"Codex model slug (saved model when resuming, otherwise {DEFAULT_MODEL})")
     parser.add_argument("--effort", help="reasoning effort from the model catalog, or default")
     parser.add_argument("--speed", help="standard or fast, when supported by the selected model")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
     session_options = parser.add_mutually_exclusive_group()
-    session_options.add_argument("--new", action="store_true", help="start a new chat")
+    session_options.add_argument("--new", action="store_true", help="start a new chat (default)")
     session_options.add_argument("--list", action="store_true", help="list saved chats and exit")
     session_options.add_argument("--search", metavar="QUERY", help="search saved messages and exit")
     session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
@@ -1486,11 +1539,7 @@ def main(argv: list[str] | None = None) -> None:
                 store.bind_session_to_project(session_id, project_root)
         else:
             project_root = _resolve_project_root(args.project or Path("."))
-            if args.new or args.project is not None or project_root != APP_ROOT:
-                session_id = store.create_session(project_root)
-            else:
-                session_id = SESSION_ID
-                store.bind_session_to_project(session_id, project_root)
+            session_id = store.create_session(project_root)
         if args.model:
             store.set_session_model(session_id, args.model)
         model = args.model or store.session_model(session_id) or DEFAULT_MODEL

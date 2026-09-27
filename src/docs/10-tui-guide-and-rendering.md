@@ -57,6 +57,8 @@ Conceptual transcript view:
 
 The home screen and an active transcript have different layout needs. The home view presents Oryn's mark and a bounded composer; a chat expands the available transcript. Responsive sizing avoids reserving an excessive right margin or letting the composer float far above the bottom.
 
+Normal launches open this home screen with a fresh chat, including when launched from Oryn's own repository. Saved conversations remain available through `/sessions`, Ctrl+O, or an explicit `--resume SESSION_ID`. Previously, launching from the repository automatically loaded the legacy `main` conversation.
+
 This is still the OpenCode-inspired direction the user chose to keep. Alternative makeover concepts were discussed/generated, but were not adopted as the current theme.
 
 ## 4. Widget responsibilities
@@ -66,7 +68,7 @@ This is still the OpenCode-inspired direction the user chose to keep. Alternativ
 | Main app | Own active session/project/model, turn state, tools, draft, and workers |
 | `ChatComposer` | Multiline input with send/newline behavior and palette integration |
 | Transcript `VerticalScroll` | Message cards and tool activity |
-| Message rendering | Plain user text and Rich Markdown for assistant content |
+| Message rendering | Plain user text, Rich Markdown for assistant content, and elapsed time in the reply footer |
 | Attached command palette | Filter commands beside the active composer |
 | `ChoiceScreen` | Common searchable choice list, selection, details, and hints |
 | `ToolsScreen` | Grouped tool catalog with compact rows and full selected description |
@@ -130,17 +132,26 @@ Ctrl+P can temporarily insert/open slash command selection while remembering a p
 
 The composer is not disabled simply because a turn is active. You can draft the next message while the current answer streams. A second turn in the same active TUI conversation is blocked until the current one ends.
 
-This separates three concerns:
+Typing `/` or pressing Ctrl+P still opens the attached command menu during a tool operation. Filtering and arrow-key navigation remain available. `/help`, `/tools`, and `/mcps` can open their views; MCP connection changes remain disabled until the turn ends. Selecting a session, project, model, or setting command during the turn keeps the typed command and reports that it must wait. Esc restores a draft opened through Ctrl+P. If the turn finishes while a dialog is open, that dialog retains keyboard focus.
+
+The active-turn behavior is:
 
 | Concern | During active turn |
 | --- | --- |
 | Edit draft | Allowed |
+| Open and filter `/` commands | Allowed |
 | Submit another turn | Blocked |
 | Stop current turn | Available |
 | Change session/project/model/connection state | Guarded until safe |
-| Inspect help or available tools | Available where the action is read-only |
+| Inspect help, available tools, or MCP status | Available |
 
 An editable input is not a queued-message subsystem. Oryn retains a draft; it does not implement a general queue that automatically submits every draft after completion.
+
+### Elapsed reply time
+
+When the TUI accepts a prompt, it records `time.monotonic()`. The turn worker measures the elapsed seconds when it finishes, including model requests, tools, browser cleanup, and approval waits. This measures the complete turn, rather than time to the first token or model computation alone.
+
+The existing reply footer shows `▣ Oryn · 12.4s`, or `▣ Oryn · 2m 5.4s` for longer turns. Stopped and failed replies also show their elapsed time alongside their existing status. Saved assistant replies carry `elapsed_seconds` in their existing message JSON, so reopening or switching back restores the footer. Older messages and invalid timing values retain the plain Oryn footer. The context preparation step removes this UI metadata before sending the next model request.
 
 ## 8. Worker-to-UI messages
 
@@ -150,7 +161,7 @@ Network and tool operations must not block Textual's renderer. The turn worker p
 | --- | --- |
 | `StreamChunk` | Newly streamed text |
 | `ToolActivity` | Start/result phase, call, and result |
-| `TurnFinished` | Answer, error, or cancelled outcome |
+| `TurnFinished` | Answer, error, or cancelled outcome, plus elapsed seconds |
 | `MCPReady` | Startup status, schemas, and connection snapshots |
 | `ApprovalRequest` | Review title/preview and a decision event |
 

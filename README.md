@@ -36,7 +36,7 @@ To use a different project folder, start Oryn from that folder or pass `--projec
 
 ## Terminal chat
 
-By default, `./oryn` opens the full-screen Python TUI. Type `/` for commands. `Ctrl+P` opens the command palette, `Ctrl+N` starts a chat, `Ctrl+O` opens saved sessions, and `F2` changes the model. `Enter` sends a message; `Shift+Enter` adds a line. `Ctrl+C` stops a reply or quits when idle.
+By default, `./oryn` opens the full-screen Python TUI on its home page with a fresh chat. Open an existing chat through `/sessions`, `Ctrl+O`, or `--resume SESSION_ID`. Type `/` for commands. `Ctrl+P` opens the command palette, `Ctrl+N` starts a chat, and `F2` changes the model. `Enter` sends a message; `Shift+Enter` adds a line. `Ctrl+C` stops a reply or quits when idle.
 
 Click the effort or speed below the prompt, or use `/effort` (`F3`) and `/speed` (`F4`). Each picker reads the selected model's advertised options from `~/.codex/models_cache.json`; unsupported choices are rejected. Choices are saved separately for each model in each session and apply to the next turn. New chats inherit the current choices. Fast mode requests priority processing and can use more credits; availability depends on the account. Unknown models or a missing catalog keep provider defaults until the Codex CLI refreshes its catalog.
 
@@ -67,6 +67,8 @@ For a simple page read, Oryn uses `web_extract`. Browser interaction opens a sho
 ## MCP tools
 
 Oryn connects directly to nine official hosted MCP servers using the installed MCP Python SDK. GitHub and Context7 no longer need Docker or Node.js. Playwright remains a separate local, headless browser connection and needs Node.js 20+.
+
+MCP definitions load on demand in the REPL, TUI, and dashboard. Each model request includes native tools and `load_mcp_tools`, whose description contains a compact server directory. The model selects a server; its full schemas become callable in the next request and remain available for that user turn. A new turn starts with the small directory again. Connections and `list_tools` discovery still run at startup/reconnect; loading reuses those definitions and preserves action approvals. `/tools` shows the complete discovered inventory, including tools not yet loaded into a model request.
 
 | Connection | Official endpoint | Authentication |
 | --- | --- | --- |

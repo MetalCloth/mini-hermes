@@ -15,6 +15,7 @@ def _mark_incomplete_replies(messages: list[dict[str, Any]]) -> list[dict[str, A
     prepared = []
     for original in messages:
         message = dict(original)
+        message.pop("elapsed_seconds", None)
         status = message.pop("turn_status", None)
         if message.get("role") == "assistant" and status in notes:
             note = (

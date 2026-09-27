@@ -19,6 +19,7 @@ from src.mcp.discovery import (
     server_configs,
 )
 from src.providers.types import ModelResponse, ToolCall
+from src.tools.registry import tool_schemas
 
 
 class MCPTests(unittest.TestCase):
@@ -481,10 +482,19 @@ finally:
 
     def test_oversized_mcp_result_is_truncated_before_model_history(self):
         complete = Mock(side_effect=[
+            ModelResponse(tool_calls=[ToolCall("load-call", "load_mcp_tools", {"server": "context7"})]),
             ModelResponse(tool_calls=[ToolCall("mcp-call", "mcp__context7__lookup", {})]),
             ModelResponse("The result was safely shortened."),
         ])
         mcp = SimpleNamespace(
+            tool_directory=Mock(return_value=[{
+                "server": "context7", "description": "Library documentation.",
+                "state": "connected", "tool_count": 1,
+            }]),
+            tool_schemas=Mock(return_value=[{
+                "type": "function", "name": "mcp__context7__lookup", "description": "Look up docs.",
+                "parameters": {"type": "object", "properties": {}},
+            }]),
             requires_approval=Mock(return_value=False),
             call_tool=Mock(return_value="x" * 20_001),
         )
@@ -497,6 +507,118 @@ finally:
         self.assertLessEqual(len(result), 20_000)
         self.assertIn("original result was 20001 characters", result)
         mcp.call_tool.assert_called_once()
+
+    def test_on_demand_loading_keeps_requests_small_and_tools_scoped_to_the_turn(self):
+        configs = [
+            MCPServerConfig("github", access="Repositories, issues and pull requests.",
+                            headers={"Authorization": "Bearer never-send-this-secret"}),
+            MCPServerConfig("context7", access="Library documentation."),
+            MCPServerConfig("linear", access="Issue changes need approval."),
+            MCPServerConfig("notion", access="Workspace pages.", enabled=False),
+            MCPServerConfig("exa", access="Web search."),
+        ]
+        client = MCPClient(configs)
+        client._started = True  # Seed an already-discovered inventory; no network or processes.
+        client._status_by_name = {config.name: ("connected", "Connected.") for config in configs}
+        for server in ("github", "context7", "linear", "notion"):
+            count = 40 if server == "github" else 1
+            for index in range(count):
+                tool = SimpleNamespace(name=f"lookup_{index}", description="Detailed usage. " * 40,
+                                       input_schema={"type": "object", "properties": {}})
+                schema = provider_tool(server, tool)
+                client._schemas.append(schema)
+                client._bindings[schema["name"]] = (server, tool.name, None)
+        native = tool_schemas()
+        inventory = [*native, *client.tool_schemas()]
+        initial_inventory = list(inventory)
+        client.call_tool = Mock(return_value="Repository result")
+        history = [{"role": "user", "content": "Find my repositories"}]
+        requests = []
+        invalid = [{}, {"server": None}, {"server": []}, {"server": ""},
+                   {"server": "github", "extra": True}, {"server": "missing"},
+                   {"server": "notion"}, {"server": "exa"}]
+        responses = iter([
+            ModelResponse(tool_calls=[
+                *[ToolCall(f"invalid-{index}", "load_mcp_tools", args) for index, args in enumerate(invalid)],
+                ToolCall("unloaded", "mcp__github__lookup_0", {}),
+                ToolCall("load-1", "load_mcp_tools", {"server": "github"}),
+                ToolCall("too-early", "mcp__github__lookup_0", {}),
+            ]),
+            ModelResponse(tool_calls=[ToolCall("load-again", "load_mcp_tools", {"server": "github"})]),
+            ModelResponse(tool_calls=[ToolCall("lookup", "mcp__github__lookup_0", {})]),
+            ModelResponse("Found your repositories."),
+        ])
+
+        def complete(_messages, tools, **_kwargs):
+            requests.append(tools)
+            return next(responses)
+
+        try:
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                answer = run_turn(history, complete, inventory, root, Mock(), Mock(), mcp_client=client)
+                self.assertEqual(answer, "Found your repositories.")
+                self.assertEqual(inventory, initial_inventory)
+                self.assertEqual([tool["name"] for tool in requests[0]],
+                                 [tool["name"] for tool in native] + ["load_mcp_tools"])
+                self.assertIn("Repositories, issues", requests[0][-1]["description"])
+                self.assertNotIn("never-send-this-secret", json.dumps(requests))
+                self.assertNotIn("Detailed usage.", json.dumps(requests[0]))
+                self.assertLess(len(json.dumps(requests[0])), len(json.dumps(inventory)))
+                for tools in requests[1:]:
+                    names = [tool["name"] for tool in tools]
+                    self.assertEqual(len(names), len(set(names)))
+                    self.assertEqual(len([name for name in names if name.startswith("mcp__github__")]), 40)
+                    self.assertFalse(any(name.startswith("mcp__context7__") for name in names))
+                outputs = {message["tool_call_id"]: message["content"]
+                           for message in history if message["role"] == "tool"}
+                for call_id in [*(f"invalid-{index}" for index in range(len(invalid))), "unloaded", "too-early"]:
+                    self.assertTrue(outputs[call_id].startswith("Tool error:"), outputs[call_id])
+                self.assertEqual(outputs["lookup"], "Repository result")
+                call_ids = [call["id"] for message in history for call in message.get("tool_calls", [])]
+                self.assertEqual(call_ids, list(outputs))
+                client.call_tool.assert_called_once_with("mcp__github__lookup_0", {}, cancel_event=None)
+
+                # Saved tool names do not automatically load schemas in the next user turn.
+                history.append({"role": "user", "content": "Now something else"})
+                fresh = Mock(return_value=ModelResponse("Hello"))
+                run_turn(history, fresh, inventory, root, Mock(), Mock(), mcp_client=client)
+                self.assertEqual([tool["name"] for tool in fresh.call_args.args[1]],
+                                 [tool["name"] for tool in native] + ["load_mcp_tools"])
+
+                # Loading a write-capable server does not approve or execute its actions.
+                denied = Mock(return_value=False)
+                write = Mock(side_effect=[
+                    ModelResponse(tool_calls=[ToolCall("load-linear", "load_mcp_tools", {"server": "linear"})]),
+                    ModelResponse(tool_calls=[ToolCall("write", "mcp__linear__lookup_0", {})]),
+                    ModelResponse("The action was denied."),
+                ])
+                denied_history = [{"role": "user", "content": "Change a Linear issue"}]
+                run_turn(denied_history, write, inventory, root, Mock(), Mock(),
+                         mcp_client=client, confirm_mcp=denied)
+                denied.assert_called_once()
+                self.assertIn("denied", denied_history[-1]["content"])
+                self.assertEqual(client.call_tool.call_count, 1)
+
+                # A connection lost after loading removes its schemas from the next request.
+                def disconnect(_messages, tools, **_kwargs):
+                    self.assertFalse(any(tool["name"].startswith("mcp__github__") for tool in tools))
+                    return ModelResponse("Reconnect GitHub.")
+
+                lost_responses = iter(["load", "disconnect"])
+                def lost_complete(messages, tools, **kwargs):
+                    if next(lost_responses) == "load":
+                        return ModelResponse(tool_calls=[ToolCall("load-lost", "load_mcp_tools", {"server": "github"})])
+                    return disconnect(messages, tools, **kwargs)
+
+                def event(phase, call, _result):
+                    if phase == "result" and call.name == "load_mcp_tools":
+                        client._status_by_name["github"] = ("unavailable", "Disconnected.")
+
+                run_turn([{"role": "user", "content": "Look up GitHub"}], lost_complete,
+                         inventory, root, Mock(), Mock(), mcp_client=client, on_tool_event=event)
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

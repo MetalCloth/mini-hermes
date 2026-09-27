@@ -18,7 +18,7 @@ Sources: [Python tests](../tests), [Markdown tests](../../web/src/markdown.test.
 
 The user reported successful partial-reply continuation and a working Tavily migration. Those observations complement automated checks; they do not replace them.
 
-## 2. Existing Python suite: 86 test methods
+## 2. Existing Python suite: 91 test methods
 
 The source snapshot contains these test methods, counted from its test definitions:
 
@@ -27,12 +27,12 @@ The source snapshot contains these test methods, counted from its test definitio
 | [test_chat_demo.py](../tests/test_chat_demo.py) | 6 | REPL history, persistence, safe preview, approval EOF, interrupted tool pairing, search CLI |
 | [test_codex.py](../tests/test_codex.py) | 14 | Stream parsing/completion, function calls, payloads, orphaned calls, errors, cancellation, capabilities, version |
 | [test_conversation_loop.py](../tests/test_conversation_loop.py) | 6 | Tool rounds, multiple calls, result cap, tool errors, cancellation, callback failures |
-| [test_mcp.py](../tests/test_mcp.py) | 18 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout |
+| [test_mcp.py](../tests/test_mcp.py) | 19 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions |
 | [test_session_store.py](../tests/test_session_store.py) | 5 | Migration, metadata, ordered history, transaction behavior, empty DB, search |
 | [test_tools.py](../tests/test_tools.py) | 25 | File boundaries, read/search/write, atomic failure, terminal approval/isolation, Tavily, Firecrawl, browser validation/retry |
-| [test_tui_app.py](../tests/test_tui_app.py) | 5 | Effort/speed persistence, MCP controls/login, compact tools, model/session controls, attached palette layout |
+| [test_tui_app.py](../tests/test_tui_app.py) | 9 | Home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, compact tools, model/session controls, attached palette layout |
 | [test_web_app.py](../tests/test_web_app.py) | 7 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence |
-| **Total** | **86** | Mechanism regression coverage |
+| **Total** | **91** | Mechanism regression coverage |
 
 The count describes test methods, not code coverage percentage or benchmark score. Some methods exercise many scenarios internally.
 
@@ -82,6 +82,46 @@ The build runs TypeScript checking and Vite production compilation. A successful
 - The TUI Notion login workflow was exercised with controlled mocks. A real personal Notion login was not claimed by that test.
 
 These are historical verification results from the implementation work. Writing this handbook did not rerun live account mutations or repeat the whole application suite merely to edit Markdown. Documentation checks are reported separately in the task result.
+
+### Follow-up: on-demand MCP definitions
+
+All **87 Python tests** passed after the loader implementation. The new regression method covers the compact initial catalog, invalid arguments, unknown/disabled servers, empty catalogs, unloaded calls, repeated loading, per-turn isolation, dropped connections, approval denial, credentials excluded from requests, and call/output pairing. Existing oversized-result coverage now loads its MCP definition before calling it.
+
+A live read-only Codex/Microsoft Learn check also passed. The first request contained sixteen native schemas plus the loader (17 total, 11,109 serialized characters). The model called `load_mcp_tools`, received Microsoft Learn's three definitions (20 schemas, 15,140 characters), used `microsoft_docs_search`, and answered with a Microsoft Learn source link. This confirms one real discovery/use flow; it is not a formal task benchmark or an assertion that every server is currently available. Loading adds a model round, so a smaller initial catalog alone does not establish lower total task cost.
+
+The broader suite initially stalled during asyncio executor shutdown inside the restricted execution sandbox. The same checks passed outside it, including local dashboard sockets and MCP subprocess tests.
+
+### Follow-up: TUI undo isolation
+
+The focused undo regression passed with an offline model response through the TUI turn dispatcher. It covers separate histories for chats in the same folder, empty history in new chats/projects, returning to an earlier chat, denied undo, refusal over later user edits, and history cleanup when deleting a chat. This brings the available suite to 88 methods; the earlier full-suite result above records the 87 methods present after MCP loading.
+
+```bash
+.venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_undo_history_stays_with_its_chat_across_switches_and_deletion
+```
+
+### Follow-up: commands during active tools
+
+The focused active-command regression passed while a controlled read-file operation was paused in the actual turn worker. It covers slash suggestions and filtering, arrow navigation, Enter opening help/tools/MCP views, Ctrl+P draft restoration, blocked session/model changes retaining their input, prevention of a second turn, and dialog focus when the operation finishes. The available suite now contains 89 methods.
+
+```bash
+.venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_commands_work_during_a_tool_operation_and_preserve_drafts
+```
+
+### Follow-up: elapsed reply time
+
+The focused timing regression passed using a controlled monotonic clock and offline provider responses through the actual TUI turn worker. It checks a turn with a tool call, completion/failure/cancellation, reset between turns, seconds/minutes and rounding boundaries, invalid timing values, persistence through a new app/store, transcript refresh in a narrow terminal, and removal of UI timing metadata from model context. The available suite now contains 90 methods.
+
+```bash
+.venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_reply_duration_covers_the_turn_and_survives_reopening
+```
+
+### Follow-up: home-page startup
+
+The focused startup regression passed with an existing legacy `main` conversation. It exercises repeated default launches, `--new`, and `--project`, confirms fresh IDs and empty transcripts, preserves the old messages/model, and verifies explicit `--resume`. It also mounts the actual home layout and switches to the saved conversation. The available suite now contains 91 methods.
+
+```bash
+.venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_default_launch_opens_home_and_explicit_resume_keeps_saved_chats
+```
 
 ## 5. Diagnostic method: find the broken boundary
 
@@ -210,7 +250,7 @@ Read the error before retrying. Common reasons include an outside/private path, 
 
 The correct response to a stale match is to reread and construct a new focused proposal. The correct response to changed undo state is to leave the file untouched, not reconstruct an inverse operation from memory and overwrite user work.
 
-Remember that live undo lists are caller-owned. The dashboard keeps them by session; the TUI currently keeps one app-level list rather than partitioning it on every chat switch. This is a limitation to address before making a strong cross-session undo promise.
+Live undo lists are caller-owned and scoped by session in both the dashboard and TUI. A new chat or project has an empty list; switching back in the same process selects that chat's earlier records. Check the active session when undo is unavailable, and remember that restarting loses the live snapshots. Later changes to shared project files can still make an earlier undo refuse safely.
 
 ## 17. Search/command timeouts and oversized context
 

@@ -5,17 +5,326 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
+from src import tui_app
+from src.agent.context import select_context
+from src.agent.conversation_loop import TurnCancelled
 from src.mcp.client import MCPClient
 from src.providers.codex import CodexProvider
+from src.providers.types import ModelResponse, ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
+from src.tools.registry import execute_tool, tool_schemas
 from src.mcp.discovery import load_enabled_servers, save_enabled_servers
-from src.tui_app import ApprovalScreen, InfoScreen, MCPManagerScreen, MCPReady, OrynTUI, ToolsScreen
-from textual.widgets import Button, Input, OptionList, Static, TextArea
+from src.tui_app import ApprovalScreen, InfoScreen, MCPManagerScreen, MCPReady, MessageCard, OrynTUI, ToolsScreen
+from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_launch_opens_home_and_explicit_resume_keeps_saved_chats(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            store.bind_session_to_project("main", root)
+            old_messages = [
+                {"role": "user", "content": "An old question"},
+                {"role": "assistant", "content": "An old answer"},
+            ]
+            store.append_messages(old_messages, "main")
+            store.set_session_model("main", "gpt-6-sol")
+            with patch.object(tui_app, "SQLiteSessionStore", return_value=store), \
+                 patch.object(tui_app, "APP_ROOT", root), \
+                 patch.object(tui_app, "_resolve_project_root", return_value=root), \
+                 patch.object(tui_app, "CodexProvider", side_effect=lambda model: CodexProvider(model, root / "auth.json")), \
+                 patch.object(tui_app, "MCPClient", side_effect=lambda: MCPClient(configs=[])), \
+                 patch.object(OrynTUI, "run", autospec=True) as run:
+                fresh_ids = set()
+                for arguments in ([], [], ["--new"], ["--project", str(root)]):
+                    tui_app.main(arguments)
+                    app = run.call_args.args[0]
+                    self.assertNotEqual(app.session_id, "main")
+                    self.assertNotIn(app.session_id, fresh_ids)
+                    fresh_ids.add(app.session_id)
+                    self.assertEqual(store.load_messages(app.session_id), [])
+                    self.assertFalse(any(m["role"] in {"user", "assistant"} for m in app.history))
+                    self.assertEqual(store.session_project_root(app.session_id), str(root))
+                self.assertEqual(store.load_messages("main"), old_messages)
+                self.assertEqual(store.session_model("main"), "gpt-6-sol")
+                tui_app.main(["--resume", "main"])
+                resumed = run.call_args.args[0]
+                self.assertEqual(resumed.session_id, "main")
+                self.assertEqual(resumed.model, "gpt-6-sol")
+                self.assertEqual(resumed.history[-2:], old_messages)
+
+            # Exercise the real home layout and session switch with local MCP disabled.
+            app.mcp_client = MCPClient(configs=[])
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    self.assertTrue(app.query_one("#main-panel").has_class("home"))
+                    self.assertEqual(len(app.query("#welcome")), 1)
+                    self.assertEqual(len(app.query(MessageCard)), 0)
+                    self.assertTrue(app.query_one("#composer", TextArea).has_focus)
+                    await app._load_session("main")
+                    self.assertFalse(app.query_one("#main-panel").has_class("home"))
+                    self.assertEqual([card.content for card in app.query(MessageCard)],
+                                     [m["content"] for m in old_messages])
+                    await pilot.pause()
+            finally:
+                app.mcp_client.close()
+
+    async def test_undo_history_stays_with_its_chat_across_switches_and_deletion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "app.py").write_text("a = 1\n")
+            (root / "notes.txt").write_text("Old note\n")
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session_a = store.create_session(root)
+            initial_undo = []
+            client = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id=session_a, project_root=root,
+                model="gpt-5.6-luna", history=[], provider=CodexProvider("gpt-5.6-luna", root / "auth.json"),
+                mcp_client=client, initial_tools=tool_schemas(), undo_history=initial_undo,
+            )
+
+            def call(name, arguments, approved=True):
+                return execute_tool(
+                    name, arguments, app.project_root, lambda _: False, lambda *_: approved,
+                    confirm_edit=lambda *_: approved, confirm_undo=lambda *_: approved,
+                    undo_history=app.undo_history,
+                )
+
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    call("edit_file", {"path": "app.py", "old_text": "a = 1", "new_text": "a = 2"})
+                    self.assertIs(app.undo_history, initial_undo)
+                    await app._new_session()
+                    session_b = app.session_id
+                    store.rename_session(session_b, "Chat B")
+                    history_b = app.undo_history
+                    self.assertEqual(history_b, [])
+                    self.assertIsNot(history_b, initial_undo)
+                    self.assertIn("no recent", call("undo_file_change", {}))
+                    self.assertEqual((root / "app.py").read_text(), "a = 2\n")
+                    call("write_file", {"path": "notes.txt", "content": "New note\n"})
+
+                    await app._load_session(session_a)
+                    self.assertIs(app.undo_history, initial_undo)
+                    # Exercise the TUI's actual turn dispatcher with an offline model response.
+                    with patch.object(app.provider, "complete", side_effect=[
+                        ModelResponse(tool_calls=[ToolCall("undo_a", "undo_file_change", {})]),
+                        ModelResponse("Undone."),
+                    ]), patch.object(app, "_request_approval", return_value=True) as approval:
+                        app._run_turn(app.history, app.provider, app.tools, app.project_root, Event())
+                        await pilot.pause()
+                        approval.assert_called_once()
+                        self.assertEqual(approval.call_args.args[0], "Undo change to app.py")
+                    self.assertEqual((root / "app.py").read_text(), "a = 1\n")
+                    self.assertEqual((root / "notes.txt").read_text(), "New note\n")
+                    self.assertEqual(initial_undo, [])
+                    self.assertEqual(len(history_b), 1)
+
+                    await app._load_session(session_b)
+                    self.assertIs(app.undo_history, history_b)
+                    self.assertIn("cancelled", call("undo_file_change", {}, approved=False))
+                    self.assertEqual(len(history_b), 1)
+                    (root / "notes.txt").write_text("User's later edit\n")
+                    with self.assertRaisesRegex(RuntimeError, "changed after Oryn"):
+                        call("undo_file_change", {})
+                    self.assertEqual((root / "notes.txt").read_text(), "User's later edit\n")
+                    self.assertEqual(len(history_b), 1)
+
+                    other_root = root / "other-project"
+                    other_root.mkdir()
+                    (other_root / "notes.txt").write_text("Other project's note\n")
+                    app._switch_project(str(other_root))
+                    await app.workers.wait_for_complete()
+                    self.assertEqual(app.undo_history, [])
+                    self.assertIn("no recent", call("undo_file_change", {}))
+                    self.assertEqual((other_root / "notes.txt").read_text(), "Other project's note\n")
+                    await app._load_session(session_a)
+                    await pilot.press("ctrl+o")
+                    await pilot.pause()
+                    app.screen.query_one(Input).value = "Chat B"
+                    await pilot.pause()
+                    await pilot.press("ctrl+d", "ctrl+d")
+                    self.assertFalse(store.session_exists(session_b))
+                    self.assertNotIn(session_b, app.file_change_history)
+                    self.assertIs(app.undo_history, initial_undo)
+                    self.assertEqual((root / "notes.txt").read_text(), "User's later edit\n")
+                    await pilot.press("escape")
+            finally:
+                client.close()
+
+    async def test_commands_work_during_a_tool_operation_and_preserve_drafts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "notes.txt").write_text("Example note\n")
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session = store.create_session(root)
+            client = MCPClient(configs=[])
+            provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
+            app = OrynTUI(
+                store=store, session_id=session, project_root=root, model=provider.model,
+                history=[], provider=provider, mcp_client=client, initial_tools=tool_schemas(),
+            )
+            started, release = Event(), Event()
+
+            def paused_tool(*args, **kwargs):
+                started.set()
+                if not release.wait(20):
+                    raise RuntimeError("Timed out waiting to finish the example tool operation.")
+                return execute_tool(*args, **kwargs)
+
+            try:
+                with patch.object(provider, "complete", side_effect=[
+                    ModelResponse(tool_calls=[ToolCall("read_note", "read_file", {"path": "notes.txt"})]),
+                    ModelResponse("Read the note."),
+                ]), patch("src.agent.conversation_loop.execute_tool", side_effect=paused_tool):
+                    async with app.run_test(size=(100, 32)) as pilot:
+                        try:
+                            composer = app.query_one("#composer", TextArea)
+                            palette = app.query_one("#palette-overlay")
+                            composer.load_text("Read notes.txt")
+                            await pilot.press("enter")
+                            await pilot.pause()
+                            self.assertTrue(started.is_set())
+                            self.assertTrue(app.turn_active)
+                            composer.load_text("/")
+                            await pilot.pause()
+                            self.assertTrue(palette.display)
+                            await pilot.press("down")
+                            self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "help")
+                            for command, screen_type in [("/help", InfoScreen), ("/to", ToolsScreen)]:
+                                composer.load_text(command)
+                                await pilot.pause()
+                                await pilot.press("enter")
+                                await pilot.pause()
+                                self.assertIsInstance(app.screen, screen_type)
+                                self.assertTrue(app.turn_active)
+                                await pilot.press("ctrl+p")
+                                self.assertFalse(palette.display)
+                                await pilot.press("escape")
+                            composer.load_text("Keep my next message")
+                            await pilot.press("enter")
+                            self.assertEqual(composer.text, "Keep my next message")
+                            self.assertEqual(sum(m.get("role") == "user" for m in app.history), 1)
+                            await pilot.press("ctrl+p")
+                            await pilot.pause()
+                            self.assertTrue(palette.display)
+                            self.assertEqual(composer.text, "/")
+                            await pilot.press("escape")
+                            self.assertEqual(composer.text, "Keep my next message")
+                            for command in ("/models", "/new"):
+                                composer.load_text(command)
+                                await pilot.pause()
+                                await pilot.press("enter")
+                                self.assertEqual(composer.text, command)
+                                self.assertTrue(palette.display)
+                                self.assertEqual(app.session_id, session)
+                                self.assertEqual(app.model, "gpt-5.6-luna")
+                                self.assertIn("Finish the current turn", str(app.query_one("#activity-label", Static).content))
+                            composer.load_text("/mcps")
+                            await pilot.pause()
+                            await pilot.press("enter")
+                            await pilot.pause()
+                            self.assertIsInstance(app.screen, MCPManagerScreen)
+                            self.assertTrue(app.screen.query_one("#mcp-toggle", Button).disabled)
+                            release.set()
+                            app._turn_thread.join(timeout=2)
+                            await pilot.pause()
+                            self.assertFalse(app.turn_active)
+                            self.assertIsInstance(app.screen, MCPManagerScreen)
+                            self.assertTrue(app.screen.query_one(Input).has_focus)
+                            await pilot.press("escape")
+                            self.assertTrue(composer.has_focus)
+                        finally:
+                            release.set()
+                            if hasattr(app, "_turn_thread"):
+                                app._turn_thread.join(timeout=2)
+            finally:
+                client.close()
+
+    async def test_reply_duration_covers_the_turn_and_survives_reopening(self):
+        for seconds, expected in [(0, "0.0s"), (12.36, "12.4s"), (59.96, "1m 0.0s"), (125.37, "2m 5.4s")]:
+            self.assertEqual(MessageCard("assistant", elapsed_seconds=seconds)._meta_label().plain,
+                             f"▣ Oryn · {expected}")
+        for invalid in (None, True, "bad", -1, float("nan"), float("inf"), 10 ** 500):
+            self.assertEqual(MessageCard("assistant", elapsed_seconds=invalid)._meta_label().plain, "▣ Oryn")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "notes.txt").write_text("Example note\n")
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session = store.create_session(root)
+            store.append_messages([{"role": "assistant", "content": "Older reply without timing."}], session)
+            client = MCPClient(configs=[])
+            provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
+            app = OrynTUI(
+                store=store, session_id=session, project_root=root, model=provider.model,
+                history=store.load_messages(session), provider=provider, mcp_client=client,
+                initial_tools=tool_schemas(),
+            )
+            cases = [
+                (None, 12.36, "12.4s", None),
+                (ConnectionError("Example failure"), 65.44, "1m 5.4s", "failed"),
+                (TurnCancelled("Stopped by you"), 1.24, "1.2s", "cancelled"),
+            ]
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    self.assertEqual(str(app.query_one(".message-meta", Label).content), "▣ Oryn")
+                    for index, (error, duration, label, status) in enumerate(cases):
+                        def partial_reply(*args, **kwargs):
+                            kwargs["on_text_delta"]("Partial reply.")
+                            raise error
+
+                        responses = partial_reply if error else [
+                            ModelResponse(tool_calls=[ToolCall("read_note", "read_file", {"path": "notes.txt"})]),
+                            ModelResponse("Finished reply."),
+                        ]
+                        with patch("src.tui_app.monotonic", side_effect=[1000.0, 1000.0 + duration]), \
+                             patch.object(provider, "complete", side_effect=responses):
+                            app.query_one("#composer", TextArea).load_text(f"Request {index}")
+                            await pilot.press("enter")
+                            app._turn_thread.join(timeout=2)
+                            await pilot.pause()
+                        self.assertFalse(app.turn_active)
+                        self.assertIsNone(app._turn_started_at)
+                        card = list(app.query(MessageCard))[-1]
+                        self.assertEqual(str(card.query_one(".message-meta", Label).content), f"▣ Oryn · {label}")
+                        self.assertEqual(card.turn_status, status)
+                        self.assertAlmostEqual(card.elapsed_seconds, duration)
+                        saved = store.load_messages(session)[-1]
+                        self.assertAlmostEqual(saved["elapsed_seconds"], duration)
+                        self.assertEqual(saved.get("turn_status"), status)
+                    prepared = select_context(app.history)
+                    self.assertTrue(any("elapsed_seconds" in m for m in app.history))
+                    self.assertTrue(all("elapsed_seconds" not in m for m in prepared))
+            finally:
+                client.close()
+
+            reopened_store = SQLiteSessionStore(store.db_path)
+            reopened_client = MCPClient(configs=[])
+            reopened = OrynTUI(
+                store=reopened_store, session_id=session, project_root=root, model=provider.model,
+                history=reopened_store.load_messages(session), provider=CodexProvider(provider.model, root / "auth.json"),
+                mcp_client=reopened_client, initial_tools=tool_schemas(),
+            )
+            try:
+                async with reopened.run_test(size=(64, 24)) as pilot:
+                    for refresh in (False, True):
+                        if refresh:
+                            await reopened._load_session(session)
+                        labels = [
+                            str(card.query_one(".message-meta", Label).content)
+                            for card in reopened.query(MessageCard) if card.elapsed_seconds is not None
+                        ]
+                        self.assertEqual(labels, [f"▣ Oryn · {case[2]}" for case in cases])
+                        await pilot.pause()
+            finally:
+                reopened_client.close()
+
     async def test_effort_and_speed_pickers_persist_per_model_and_keep_the_draft(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -33,16 +33,19 @@ Actual callers also supply edit/undo/MCP approval handlers, cancellation, undo h
 flowchart TD
     A["User message added to history"] --> B["Create per-turn browser session"]
     B --> C["Check cancellation and select context"]
-    C --> D["Call provider with tool schemas"]
+    C --> D["Call provider with native tools, MCP directory, and loaded schemas"]
     D --> E{"Response has tool calls?"}
     E -->|"No"| F["Return final response text"]
     E -->|"Yes"| G["For each call, sequentially"]
     G --> H["Emit tool-start event"]
-    H --> I{"MCP-prefixed name?"}
-    I -->|"Yes"| J["Check MCP approval policy and call server"]
+    H --> LOAD{"load_mcp_tools?"}
+    LOAD -->|"Yes"| DEF["Validate server and load definitions for next request"]
+    LOAD -->|"No"| I{"MCP-prefixed name?"}
+    I -->|"Yes"| J["Require advertised definition, check approval, call server"]
     I -->|"No"| K["Dispatch native tool and its approval callback"]
     J --> L["Convert result or caught tool error to text"]
     K --> L
+    DEF --> L
     L --> M["Cap result, emit result event, record completed pair"]
     M --> N{"More calls in this response?"}
     N -->|"Yes"| G
@@ -55,6 +58,8 @@ flowchart TD
 ```
 
 Exceptions and cancellation also pass through browser cleanup. A cleanup error produces a warning; it does not fabricate a successful browser close.
+
+The loop filters full MCP schemas out of the initial model catalog, even when a caller supplies them for its UI inventory. It advertises `load_mcp_tools` with short server descriptions, connection states, and tool counts. A successful load makes that server's definitions available starting with the next model request. Definitions remain available within the user turn; a new `run_turn` starts with no loaded servers. Each request refreshes loaded definitions from the MCP client, removing a server that is no longer connected. Repeated loads do not duplicate schemas. An MCP call must have been advertised in the request that produced it, so a load and a previously unavailable tool call in the same response cannot skip discovery.
 
 ## 3. Sequential execution and why call IDs matter
 
@@ -98,7 +103,7 @@ Errors from the provider or context selector are different: they can fail the tu
 | MCP approval argument preview | 12,000 characters | Reviewable JSON arguments |
 | Root `AGENTS.md` content | 20,000 characters | Project instructional content |
 
-Eight rounds means eight model requests, not eight total tool calls. A response can contain several calls. If the eighth response still asks for tools, those calls are handled, then the loop raises the limit error rather than making a ninth request.
+Eight rounds means eight model requests, not eight total tool calls. A response can contain several calls. Loading MCP definitions uses a normal tool round and counts toward this limit. If the eighth response still asks for tools, those calls are handled, then the loop raises the limit error rather than making a ninth request.
 
 Large tool results are sliced before being appended to history, with a marker showing the original size. The marker is part of the cap. The full original output is not transparently saved in a separate file by this implementation.
 

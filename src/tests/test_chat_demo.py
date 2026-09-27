@@ -20,6 +20,7 @@ class ChatDemoTests(unittest.TestCase):
         self.mcp_client_type = mcp_patcher.start()
         self.mcp_client_type.return_value.start.return_value = []
         self.mcp_client_type.return_value.tool_schemas.return_value = []
+        self.mcp_client_type.return_value.tool_directory.return_value = []
         self.addCleanup(mcp_patcher.stop)
 
     def test_write_confirmation_shows_target_and_content_and_eof_denies(self):

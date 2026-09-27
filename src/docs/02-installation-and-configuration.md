@@ -83,6 +83,8 @@ The placeholder paths in examples should be replaced with real directories. The 
 ./oryn --model gpt-5.6-luna
 ```
 
+Normal TUI launches open the home page with a fresh chat in the selected project. `--new` remains an explicit spelling of that default. To return to saved messages, use `/sessions`, Ctrl+O, or `--resume SESSION_ID`.
+
 The TUI also accepts effort and speed flags. Their values must be supported by the selected model's local catalog entry:
 
 ```bash

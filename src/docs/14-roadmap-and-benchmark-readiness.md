@@ -25,7 +25,7 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | Generic automatic retries/recovery | Partial | Native browser safe read/cleanup retry; provider/MCP supervisor absent |
 | Token-aware budgeting/compression | Partial/absent | Character budget exists; compression placeholder empty |
 | Persistent file undo | Not implemented | Live snapshots only |
-| On-demand MCP schemas | Not implemented | All connected accepted schemas advertised |
+| On-demand MCP schemas | Implemented | Compact service directory, per-turn loading, existing approvals |
 | Read-only Git tools | Not implemented | Terminal can inspect Git with approval |
 | Subagents | Not implemented | Empty files |
 | General skills/plugins | Not implemented | No working loader/registry/hooks |
@@ -53,9 +53,9 @@ These issues organize future work. This documentation task did not close them, a
 
 ## 3. Five practical next targets
 
-The latest discussion emphasized consolidating the core before adding uncontrolled complexity. These are recommended implementation targets, not started subsystems:
+The latest discussion emphasized consolidating the core before adding uncontrolled complexity. The first target below is now implemented; the others remain proposals:
 
-1. **Load MCP tool details on demand.** Reduce schema payload and improve routing.
+1. **Load MCP tool details on demand — implemented.** Measure task completion and schema payload on representative workloads.
 2. **Recover from eligible transient failures.** Separate safe retries from uncertain side effects.
 3. **Package an installable `oryn` command.** Remove dependence on a specific repository `.venv` launcher.
 4. **Add first-run configuration.** Guide a new user through model login, project selection, and optional connections.
@@ -63,21 +63,21 @@ The latest discussion emphasized consolidating the core before adding uncontroll
 
 Persistent undo, clear traces, and context limits remain important alongside this list. Priority should follow observed failures and the user's chosen milestone rather than a fixed feature checklist.
 
-## 4. Proposal: on-demand tool catalog
+## 4. Implemented: on-demand tool catalog
 
-**Proposed, not implemented.**
+The shared conversation loop now advertises native tools plus `load_mcp_tools` with a compact server directory. Full definitions for a selected connected server become available in the next request and remain loaded for that user turn. A new user turn resets selection. The UI still displays the full discovered inventory.
 
 ```mermaid
 flowchart TD
     U["User task"] --> S["Small native catalog plus service summaries"]
     S --> M["Model chooses relevant service"]
-    M --> D["Harness loads that service's detailed schemas"]
+    M --> D["load_mcp_tools loads that service's detailed schemas"]
     D --> R["Next request includes relevant tool subset"]
     R --> C["Normal policy-controlled call"]
     C --> O["Result returned to main turn"]
 ```
 
-A first version should reuse existing bindings/schemas rather than reconnecting a server for each call. It needs a clear selection operation, size accounting, and tests that a model can discover the needed tool without hiding all useful capabilities.
+The implementation reuses discovered bindings/schemas and the existing action approval path. Regression checks cover the smaller initial catalog, invalid selections, no duplicate schemas, no credentials in the directory, new-turn isolation, disconnected definitions, and denied actions. A live read-only Codex/Microsoft Learn flow verified load, search, and a sourced answer. Loading consumes a normal tool round. Individual function selection within a large server and a formal task-level evaluation suite remain future work.
 
 Success measures: fewer schema bytes/tokens per turn, unchanged ability to complete representative tasks, and no stale/disconnected bindings advertised.
 
@@ -176,7 +176,7 @@ flowchart TD
     G --> H["Restore and mark undone"]
 ```
 
-The design must account for crashes between journal writes and filesystem mutation. Merely saving a Python list to JSON after the fact does not establish a durable transaction. It should also partition snapshots by session/project; the current TUI uses one app-level live list and should not be presented as a complete per-session journal.
+The design must account for crashes between journal writes and filesystem mutation. Merely saving a Python list to JSON after the fact does not establish a durable transaction. The dashboard and TUI already partition their live snapshots by session, with each session bound to a project. A persistent journal must preserve that ownership across restarts.
 
 ## 10. Benchmark ambition: what is missing today
 
@@ -195,7 +195,7 @@ flowchart TD
     FIX --> RUN
 ```
 
-This is a proposed evaluation workflow. The present 86 tests exercise mechanisms; they are not an implementation of this runner.
+This is a proposed evaluation workflow. The present 91 tests exercise mechanisms; they are not an implementation of this runner.
 
 Useful first tasks can be small and local: fix a known bug, find a symbol, make a guarded edit, recover a partial answer, or use a documentation tool correctly. Public benchmark integration can follow once task execution and scoring are reliable.
 
