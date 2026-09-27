@@ -1,9 +1,11 @@
 """SQLite-backed chat sessions and transcripts."""
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
+import stat
 import uuid
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,34 @@ class SQLiteSessionStore:
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS sessions "
                     "(id TEXT PRIMARY KEY, project_root TEXT, title TEXT)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS context_summaries "
+                    "(session_id TEXT PRIMARY KEY, summary TEXT NOT NULL, "
+                    "covered_messages INTEGER NOT NULL, covered_digest TEXT NOT NULL, "
+                    "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS file_changes ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, "
+                    "project_root TEXT NOT NULL, path TEXT NOT NULL, "
+                    "previous_content BLOB, previous_mode INTEGER, result_digest BLOB NOT NULL, "
+                    "result_mode INTEGER NOT NULL, state TEXT NOT NULL, "
+                    "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS file_changes_session "
+                    "ON file_changes(session_id, id DESC)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS diagnostic_events ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, "
+                    "turn_id TEXT NOT NULL, event_json TEXT NOT NULL, "
+                    "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS diagnostic_events_session "
+                    "ON diagnostic_events(session_id, id DESC)"
                 )
                 columns = {
                     row[1] for row in connection.execute("PRAGMA table_info(sessions)")
@@ -256,10 +286,231 @@ class SQLiteSessionStore:
         try:
             with connection:
                 connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+                connection.execute("DELETE FROM context_summaries WHERE session_id = ?", (session_id,))
+                connection.execute("DELETE FROM file_changes WHERE session_id = ?", (session_id,))
+                connection.execute("DELETE FROM diagnostic_events WHERE session_id = ?", (session_id,))
                 cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                 return cursor.rowcount == 1
         finally:
             connection.close()
+
+    def load_context_summary(self, session_id: str) -> tuple[str, int, str] | None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT summary, covered_messages, covered_digest FROM context_summaries WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if not row:
+            return None
+        summary, covered_messages, digest = row
+        if (not isinstance(summary, str) or not isinstance(covered_messages, int)
+                or covered_messages < 1 or not re.fullmatch(r"[0-9a-f]{64}", digest or "")):
+            return None
+        return summary, covered_messages, digest
+
+    def save_context_summary(
+        self, session_id: str, summary: str, covered_messages: int, covered_digest: str,
+    ) -> None:
+        if (not isinstance(summary, str) or not summary or len(summary) > 50_000
+                or type(covered_messages) is not int or covered_messages < 1
+                or not re.fullmatch(r"[0-9a-f]{64}", covered_digest or "")):
+            raise ValueError("Invalid context summary checkpoint.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT INTO sessions (id) VALUES (?) ON CONFLICT(id) DO NOTHING", (session_id,),
+                )
+                connection.execute(
+                    "INSERT INTO context_summaries (session_id, summary, covered_messages, covered_digest, updated_at) "
+                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(session_id) DO UPDATE SET "
+                    "summary = excluded.summary, covered_messages = excluded.covered_messages, "
+                    "covered_digest = excluded.covered_digest, updated_at = CURRENT_TIMESTAMP",
+                    (session_id, summary, covered_messages, covered_digest),
+                )
+        finally:
+            connection.close()
+
+    def record_file_change(self, session_id: str, project_root: Path, phase: str, change) -> int | None:
+        """Durably journal approved file writes and undo transitions."""
+        root = str(project_root.resolve())
+        if phase not in {"prepared", "applied", "undoing", "undone"}:
+            raise ValueError("Invalid file-change journal transition.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                if phase == "prepared":
+                    connection.execute("BEGIN IMMEDIATE")
+                    row = connection.execute(
+                        "SELECT project_root FROM sessions WHERE id = ?", (session_id,),
+                    ).fetchone()
+                    if not row or row[0] != root:
+                        raise ValueError("File-change journal does not match this chat's project folder.")
+                    cursor = connection.execute(
+                        "INSERT INTO file_changes (session_id, project_root, path, previous_content, "
+                        "previous_mode, result_digest, result_mode, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'prepared')",
+                        (session_id, root, change.path, change.previous_content, change.previous_mode,
+                         change.result_digest, change.result_mode),
+                    )
+                    return cursor.lastrowid
+                if type(change.change_id) is not int:
+                    raise ValueError("File-change journal record is missing its ID.")
+                expected, target = {
+                    "applied": ("prepared", "applied"),
+                    "undoing": ("applied", "undoing"),
+                    "undone": ("undoing", "undone"),
+                }[phase]
+                cursor = connection.execute(
+                    "UPDATE file_changes SET state = ? WHERE id = ? AND session_id = ? "
+                    "AND project_root = ? AND state = ?",
+                    (target, change.change_id, session_id, root, expected),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError("File-change journal state changed unexpectedly.")
+                if phase == "applied":
+                    connection.execute(
+                        "DELETE FROM file_changes WHERE session_id = ? AND id NOT IN "
+                        "(SELECT id FROM file_changes WHERE session_id = ? AND state = 'applied' "
+                        "ORDER BY id DESC LIMIT 20) AND state IN ('applied','undone','aborted','conflict')",
+                        (session_id, session_id),
+                    )
+        finally:
+            connection.close()
+
+    def load_file_change_history(self, session_id: str, project_root: Path):
+        """Reconcile crash-interrupted edits, then return up to 20 safe undo records."""
+        from src.tools.file_tools import FileChange
+
+        root = project_root.resolve()
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            rows = connection.execute(
+                "SELECT * FROM file_changes WHERE session_id = ? AND project_root = ? "
+                "AND state IN ('prepared','undoing') ORDER BY id",
+                (session_id, str(root)),
+            ).fetchall()
+            with connection:
+                for row in rows:
+                    candidate = root / row["path"]
+                    try:
+                        target = candidate.resolve(strict=False)
+                        safe = target.is_relative_to(root) and target == candidate and not candidate.is_symlink()
+                    except (OSError, ValueError):
+                        safe = False
+                    if not safe:
+                        connection.execute("UPDATE file_changes SET state = 'conflict' WHERE id = ?", (row["id"],))
+                        continue
+                    try:
+                        current = candidate.read_bytes() if candidate.is_file() else None
+                        current_mode = stat.S_IMODE(candidate.stat().st_mode) if current is not None else None
+                    except OSError:
+                        current, current_mode = None, None
+                    result_matches = (
+                        current is not None and hashlib.sha256(current).digest() == row["result_digest"]
+                        and current_mode == row["result_mode"]
+                    )
+                    previous_matches = current == row["previous_content"] and current_mode == row["previous_mode"]
+                    if result_matches:
+                        state = "applied"
+                    elif previous_matches:
+                        state = "aborted" if row["state"] == "prepared" else "undone"
+                    else:
+                        state = "conflict"
+                    connection.execute("UPDATE file_changes SET state = ? WHERE id = ?", (state, row["id"]))
+            records = connection.execute(
+                "SELECT * FROM file_changes WHERE session_id = ? AND project_root = ? AND state = 'applied' "
+                "ORDER BY id DESC LIMIT 20",
+                (session_id, str(root)),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [FileChange(
+            path=row["path"], previous_content=row["previous_content"],
+            previous_mode=row["previous_mode"], result_digest=row["result_digest"],
+            result_mode=row["result_mode"], change_id=row["id"],
+        ) for row in reversed(records)]
+
+    def append_diagnostic(self, session_id: str, turn_id: str, event: dict[str, Any]) -> None:
+        """Append allowlisted metadata only; prompts, tool arguments, and outputs are rejected."""
+        fields = {
+            "turn_start": set(),
+            "model_request": {"round", "estimated_tokens", "tool_count", "loaded_tool_count"},
+            "retry": {"retry_attempt", "delay_ms"},
+            "tool_start": {"tool_name"},
+            "tool_end": {"tool_name", "success", "elapsed_ms", "error_class"},
+            "compaction": {"estimated_tokens", "summary_tokens"},
+            "turn_end": {"elapsed_ms", "tool_count", "model_requests"},
+            "turn_error": {"elapsed_ms", "tool_count", "model_requests", "error_class"},
+        }
+        if (not isinstance(session_id, str) or not session_id or len(session_id) > 128
+                or not isinstance(turn_id, str) or not re.fullmatch(r"[0-9a-f]{32}", turn_id)
+                or not isinstance(event, dict) or not isinstance(event.get("type"), str)):
+            raise ValueError("Diagnostic event contains unsupported fields.")
+        event_type = event.get("type")
+        expected_fields = fields.get(event_type)
+        if expected_fields is None:
+            raise ValueError("Invalid diagnostic event type.")
+        required_fields = (
+            expected_fields - ({"error_class"} if event_type == "tool_end" else set())
+        )
+        if set(event) - (expected_fields | {"type"}):
+            raise ValueError("Diagnostic event contains unsupported fields.")
+        if not required_fields <= set(event):
+            raise ValueError("Invalid diagnostic event type.")
+        for key, value in event.items():
+            if key == "type":
+                continue
+            if key in {"tool_name", "error_class"}:
+                pattern = r"[A-Za-z_][A-Za-z0-9_:-]{0,159}" if key == "tool_name" else r"[A-Za-z_][A-Za-z0-9_]{0,63}"
+                if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "success":
+                if type(value) is not bool:
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif type(value) is not int or value < 0 or value > 10**9:
+                raise ValueError("Diagnostic event contains invalid metadata.")
+        encoded = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+        if len(encoded) > 2000:
+            raise ValueError("Diagnostic event is too large.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                if not connection.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+                    raise ValueError("Diagnostics must belong to a saved chat.")
+                connection.execute(
+                    "INSERT INTO diagnostic_events (session_id, turn_id, event_json) VALUES (?, ?, ?)",
+                    (session_id, turn_id, encoded),
+                )
+                connection.execute(
+                    "DELETE FROM diagnostic_events WHERE id NOT IN "
+                    "(SELECT id FROM diagnostic_events ORDER BY id DESC LIMIT 5000)"
+                )
+        finally:
+            connection.close()
+
+    def recent_diagnostics(self, session_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("Diagnostic limit must be between 1 and 500.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            if session_id is None:
+                rows = connection.execute(
+                    "SELECT session_id, turn_id, event_json, created_at FROM diagnostic_events "
+                    "ORDER BY id DESC LIMIT ?", (limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT session_id, turn_id, event_json, created_at FROM diagnostic_events "
+                    "WHERE session_id = ? ORDER BY id DESC LIMIT ?", (session_id, limit),
+                ).fetchall()
+        finally:
+            connection.close()
+        return [{"session_id": row[0], "turn_id": row[1], "event": json.loads(row[2]), "created_at": row[3]}
+                for row in rows]
 
     def bind_session_to_project(self, session_id: str, project_root: Path) -> None:
         root = str(project_root)

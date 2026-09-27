@@ -107,7 +107,8 @@ Eligible provider failures get at most three attempts before any response output
 | Tool calls in `run_turn` | 200 by default; configurable 1–2,000 | One user turn, including loads, denials, and tool errors |
 | Turn time allowance | 1,200 seconds by default; configurable 1–7,200 | One user turn, checked at execution boundaries |
 | Tool result retained by loop | 20,000 characters | Each result, including truncation marker |
-| History selection budget | 80,000 serialized characters | Selected transcript and pinned instructions |
+| Context compaction trigger | 200,000 estimated tokens | Instructions, selected transcript, active tool schemas, and image estimates |
+| Post-compaction target | 180,000 estimated tokens | Leaves room for the next request and reduces repeated prompt size |
 | Image history budget | 20 MiB total; 5 MiB per image; four images per message | Image bytes in selected conversation context |
 | MCP approval argument preview | 12,000 characters | Reviewable JSON arguments |
 | Root `AGENTS.md` content | 20,000 characters | Project instructional content |
@@ -158,55 +159,33 @@ It does not walk every nested directory looking for instruction files. Therefore
 
 The project guide asks us to keep responsibilities separate, prefer the simplest suitable design, and describe placeholders honestly. This handbook follows those rules by documenting actual implementations without filling speculative subsystems.
 
-## 8. How context selection works
+## 8. Token counting and the 200k compaction trigger
 
-`select_context` has four main steps:
+`estimate_context_tokens` counts compact JSON message text and tool schemas with `tiktoken` when its vocabulary is available. It uses the selected model's known encoding, or `o200k_base` for an unknown model. If Oryn is offline before the vocabulary is cached, it falls back to UTF-8 byte count, which is a conservative upper bound and can compact earlier than a real tokenizer would. Counts include small per-message/tool overhead and an 8% margin. They are estimates, not provider billing or an exact guarantee of the remote tokenizer's count.
 
-1. Extract and pin every system/developer message.
-2. Group remaining messages into turns beginning at user messages.
-3. Start with the newest turn and add earlier whole turns while the budget allows.
-4. Restore chronological order and prepare incomplete-reply annotations.
-
-Serialized size is measured using compact JSON with `ensure_ascii=False`, plus a small separator allowance. Base64 image bytes are excluded from that character count and bounded separately by the 20 MiB image limit. Both limits are character/byte safeguards, not a tokenizer estimate.
-
-Example sizes are hypothetical:
-
-| Item | Characters | Kept? |
-| --- | ---: | --- |
-| Pinned instructions | 10,000 | Always, if within budget |
-| Current turn | 25,000 | Yes |
-| Previous turn | 30,000 | Yes; total 65,000 |
-| Turn before that | 20,000 | No; would total 85,000 |
-| Still older turn | 2,000 | No; selector stops at first older turn that does not fit |
+Text and function schemas count toward the same budget. Images are counted separately from their base64 bytes with a conservative high-detail 512-pixel tile estimate; the existing 20 MiB image-byte cap still applies. If older attachments exceed that cap in aggregate, Oryn summarizes old complete turns before checking the final request, preserving the newest images. The target is **200,000 estimated tokens before compaction**. When the complete request would exceed it, Oryn summarizes older complete turns until the assembled context is estimated at or below **180,000 tokens**, then selects the newest whole turns that fit.
 
 ```mermaid
-flowchart LR
-    ALL["Complete saved transcript"] --> PIN["Pin instructions"]
-    ALL --> GROUP["Group user-led turns"]
-    GROUP --> NEW["Visit newest to oldest"]
-    NEW --> FIT{"Next whole turn fits?"}
-    FIT -->|"Yes"| KEEP["Keep it and continue"]
-    KEEP --> NEW
-    FIT -->|"No"| STOP["Stop selecting older turns"]
-    PIN --> OUT["Pinned instructions plus selected turns in order"]
-    STOP --> OUT
+flowchart TD
+    A["System/project instructions + transcript + active schemas/images"] --> B["Estimate serialized request tokens"]
+    B --> C{"At or below 200k?"}
+    C -->|"Yes"| D["Select newest complete turns and send"]
+    C -->|"No"| E["Choose old completed turns, keeping current turn intact"]
+    E --> F["Tool-free summary request"]
+    F --> G["Save checkpoint and transcript digest in SQLite"]
+    G --> H{"Estimated context at or below 180k?"}
+    H -->|"No"| E
+    H -->|"Yes"| D
+    E --> X["If active turn/instructions alone are too large: stop with a clear error"]
 ```
 
-### Why whole turns?
+Summaries run as separate model requests with no tools. The prompt treats prior messages and tool output as untrusted source data, follows the latest user corrections, retains approvals and side effects, marks incomplete replies as incomplete, redacts secrets, and asks for concise labeled continuation notes. It permits up to 80,000 estimated tokens of source plus prompt and rejects a summary above 6,000 estimated tokens. These are local bounds; the model can still omit a detail, so the original transcript is never deleted.
 
-Cutting a transcript at an arbitrary message can retain a tool output without its call or a call without its output. Whole-turn selection reduces that risk and preserves the local sequence the model needs to interpret evidence.
+Each chat has one rolling checkpoint in `context_summaries`, separate from `messages`. It stores the summary, covered message count, and SHA-256 digest of the covered transcript prefix. Appending new turns keeps that prefix valid. If covered history changes, Oryn discards the stale checkpoint rather than letting a summary hide edited or replaced history. Summary checkpoints and selected recent turns are combined only in the request copy. The original chat remains available for review and evaluation.
 
-### If the current turn itself is too large
+Public prompt-writing guidance informed the structure: direct task framing, explicit untrusted-source boundaries, and labeled sections are common documented techniques. Oryn's summary prompt is written for this application and does not copy a vendor's private prompt. See [Anthropic's public prompt-template guidance](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/prompt-templates-and-variables), [OpenAI's input-token example](https://github.com/openai/openai-python/blob/main/examples/responses_input_tokens.py), and [tiktoken's model-to-encoding mapping](https://github.com/openai/tiktoken/blob/main/tiktoken/model.py).
 
-The selector raises an explicit error asking for a shorter message or reduced output. It does not silently drop the current request or automatically summarize it. If pinned instructions alone exceed the limit, that also raises an error.
-
-### Important limitations
-
-- Tool schemas are outside this history calculation.
-- Character count differs from tokens, especially across writing systems and code.
-- Incomplete-reply notes are added after selection, so they introduce small extra overhead.
-- Older turns remain in SQLite but are absent from this model request.
-- There is no automatic compression, semantic retrieval, or summary memory.
+Whole-turn selection keeps tool calls paired with their results. The selector starts at the newest turn and stops when the next older whole turn will not fit. If the system/project instructions and current turn cannot fit under the limit, Oryn fails before sending the request; it does not silently drop the current message or split a tool exchange.
 
 ## 9. Incomplete replies in future model context
 

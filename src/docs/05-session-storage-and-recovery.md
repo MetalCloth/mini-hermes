@@ -27,6 +27,9 @@ The default parent directory is owner-only (`0700`) and the database is set to o
 ```mermaid
 erDiagram
     sessions ||--o{ messages : "associated by session_id"
+    sessions ||--o| context_summaries : "rolling checkpoint"
+    sessions ||--o{ file_changes : "undo journal"
+    sessions ||--o{ diagnostic_events : "redacted metadata"
     sessions {
         TEXT id PK
         TEXT project_root
@@ -40,6 +43,25 @@ erDiagram
         INTEGER id PK
         TEXT session_id
         TEXT message_json
+    }
+    context_summaries {
+        TEXT session_id PK
+        TEXT summary
+        INTEGER covered_messages
+        TEXT covered_digest
+    }
+    file_changes {
+        INTEGER id PK
+        TEXT session_id
+        BLOB previous_content
+        BLOB result_digest
+        TEXT state
+    }
+    diagnostic_events {
+        INTEGER id PK
+        TEXT session_id
+        TEXT turn_id
+        TEXT event_json
     }
 ```
 
@@ -104,6 +126,8 @@ history = store.load_messages(session_id)
 
 The UI callers append the new portion of a turn rather than saving the entire loaded transcript again. Base instructions are assembled separately for the active project; a transcript is not a frozen copy of every future prompt configuration.
 
+If Ctrl-C interrupts an active REPL turn, the REPL now saves the user message, completed tool-call/result pairs, and any streamed partial assistant text with a `cancelled` status. It then returns to the prompt. On a later request, context selection keeps the partial text and adds a note that the reply stopped before finishing; the harness does not replay completed tools. Ctrl-C at the idle prompt exits cleanly. These paths handle caught keyboard interrupts, not a hard process kill or power loss.
+
 ## 6. Project binding and why it matters
 
 `bind_session_to_project` fills an unset legacy root once. It refuses to move an already bound session to another root.
@@ -133,13 +157,13 @@ For example, a conversation that inspected `/projects/shop` should not silently 
 | Search limit | 1–100 results, default 20 |
 | Search text | User and assistant content; tool output is skipped |
 | Search snippet | Nearby text around the match, whitespace normalized, ellipses for omitted ends |
-| Delete | Delete messages and session in one transaction |
+| Delete | Delete messages, summary, undo journal, diagnostics, and session in one transaction |
 
 Search scans recent transcript rows rather than using SQLite FTS. That simple implementation is suitable while local history is small; the source explicitly marks FTS as a later optimization if it becomes slow.
 
 The TUI provides pin, rename, and two-step deletion shortcuts. The dashboard supports rename/delete and groups/searches sessions through its frontend behavior. UI controls and backend store capabilities are related but not identical.
 
-Deleting a conversation does not undo its file edits, revoke external account permissions, or delete a remote GitHub repository. It removes local chat records; the dashboard and TUI also discard that session's live undo list.
+Deleting a conversation does not undo its file edits, revoke external account permissions, or delete a remote GitHub repository. It removes local chat records and that chat's undo journal; project files remain as they are.
 
 ## 8. Model settings are stored per model inside each session
 
@@ -232,12 +256,15 @@ Tool call/results already completed remain in the turn history where recorded. A
 | Live provider stream | No |
 | Pending approval | No |
 | Current Firecrawl browser lifetime | No reliable resumption mechanism |
-| Approved file-change undo snapshots | No; currently in memory |
+| Rolling context summary checkpoint | Yes; transcript remains intact |
+| Approved file-change undo snapshots | Yes; latest 20 changes per chat, guarded by content/mode checks |
+| Redacted diagnostic events | Yes; bounded local metadata only |
+| Running terminal jobs | No; stopped when that chat/app closes |
 | Semantic long-term memory | Not implemented |
 
-A persisted transcript is not a resumable transaction log. If the entire machine crashes during a side effect, the current implementation cannot promise an exact replay or rollback of all work. Durable file snapshots and per-turn traces are open issues.
+A persisted transcript is not a resumable transaction log. Terminal processes and pending approvals do not survive restart. For approved `write_file` and `edit_file` changes, the SQLite journal records the old bytes and intended result before changing the file. On reopen, Oryn fingerprints the current file and reconciles an interrupted `prepared` or `undoing` record as applied, aborted/undone, or conflict. It refuses an ambiguous state rather than guessing. Undo still covers only these file tools; it does not reverse terminal or remote MCP effects.
 
-The dashboard and TUI keep a separate live undo list for each session. Switching back to a chat restores its list within the same process; a new chat or project starts with an empty list. These lists remain memory-only. Sessions that share a project share its actual files, so the current-result checks still refuse undo over later edits.
+The dashboard and TUI load a distinct latest-20 undo list for each chat. Chats that share a project still share its files, so a later edit by another chat or an editor causes the digest/mode guard to refuse undo. Removing a chat deletes its local summary, diagnostic records, and undo snapshots without changing project files.
 
 ## 12. Reading the database safely for learning
 

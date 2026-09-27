@@ -18,22 +18,27 @@ Sources: [Python tests](../tests), [Markdown tests](../../web/src/markdown.test.
 
 The user reported successful partial-reply continuation and a working Tavily migration. Those observations complement automated checks; they do not replace them.
 
-## 2. Existing Python suite: 104 test methods
+## 2. Python regression suite and offline evaluations
+
+The suite is run locally and by `.github/workflows/tests.yml`. Latest verification for this snapshot: **126 tests passed on Python 3.14**. The method count is test evidence, not a quality score.
 
 The source snapshot contains these test methods, counted from its test definitions:
 
 | File | Count | Main coverage |
 | --- | ---: | --- |
-| [test_chat_demo.py](../tests/test_chat_demo.py) | 7 | REPL history, persistence, safe preview, approval EOF, interrupted tool pairing, search CLI, budget pause/continue |
+| [test_chat_demo.py](../tests/test_chat_demo.py) | 9 | REPL history, persistence, safe preview, approval EOF, idle/active Ctrl-C, interrupted tool pairing, search CLI, budget pause/continue, diagnostics |
 | [test_codex.py](../tests/test_codex.py) | 16 | Stream parsing/completion, function calls, payloads, image inputs, orphaned calls, failure classification, partial-stream protection, error redaction, Retry-After, cancellation, capabilities, version |
-| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 8 | Longer turns, bounded retries, tool/time/round pauses, continuation without replay, result caps, cancellation, completed pairs surviving callback failure |
+| [test_compression.py](../tests/test_compression.py) | 5 | Summary prompt guardrails, complete-turn compaction, stale checkpoint invalidation, older-image compaction, oversized active-turn refusal |
+| [test_context.py](../tests/test_context.py) | 4 | 200k trigger/180k target, whole-turn selection with tool-schema costs, clear overflow, image/non-Latin estimation |
+| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 10 | Longer turns, bounded retries, tool/time/round pauses, continuation, cancellation, call pairing, schema selection, redacted diagnostics |
+| [test_evaluation.py](../tests/test_evaluation.py) | 1 | Deterministic offline tasks cover a direct answer, file read, and denied write |
 | [test_images.py](../tests/test_images.py) | 4 | Clipboard detection, image validation, metadata removal, request formatting, and multimodal context limits |
 | [test_mcp.py](../tests/test_mcp.py) | 20 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions, read-only transient retries |
-| [test_session_store.py](../tests/test_session_store.py) | 5 | Migration, metadata, ordered history, transaction behavior, empty DB, search |
-| [test_tools.py](../tests/test_tools.py) | 25 | File boundaries, read/search/write, atomic failure, terminal approval/isolation, Tavily, Firecrawl, browser validation/retry |
+| [test_session_store.py](../tests/test_session_store.py) | 9 | Migration, metadata, ordered history, summary checkpoint, durable undo/recovery, redacted diagnostics, transaction behavior, search |
+| [test_tools.py](../tests/test_tools.py) | 29 | File boundaries, read/search/write, atomic failure, terminal approval/isolation/jobs/cancellation, Tavily, Firecrawl, browser validation/retry |
 | [test_tui_app.py](../tests/test_tui_app.py) | 11 | Budget pause/continue and expired approvals, home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
 | [test_web_app.py](../tests/test_web_app.py) | 8 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence, budget pause/continue and expired approvals |
-| **Total** | **104** | Mechanism regression coverage |
+| **Total** | **126** | Mechanism regression coverage; not a model benchmark |
 
 The count describes test methods, not code coverage percentage or benchmark score. Some methods exercise many scenarios internally.
 
@@ -41,6 +46,9 @@ The count describes test methods, not code coverage percentage or benchmark scor
 
 ```bash
 .venv/bin/python -m unittest discover -s src/tests
+./oryn repl --diagnostics
+./oryn repl --diagnostics SESSION_ID
+./.venv/bin/python -m src.evaluation.run
 ```
 
 Focused suites:
@@ -52,7 +60,13 @@ Focused suites:
 .venv/bin/python -m unittest src.tests.test_web_app
 ```
 
-The `.venv` matters: MCP SDK major-version differences and Textual versions can alter imports or rendering behavior.
+The `.venv` matters: MCP SDK major-version differences and Textual versions can alter imports or rendering behavior. The evaluation command uses a scripted fake provider, temporary project folders, and real loop/tool dispatch; it makes no network call and needs no credentials. It reports each task's checks, latency, model-request count, tool-call count, and estimated context size. It is a deterministic smoke baseline, not a real-model ability measurement.
+
+### Local diagnostic data
+
+All three launchers write allowlisted per-turn metadata to the private local SQLite database: event category, turn ID, elapsed milliseconds, token estimates, request/tool counts, a fixed native tool label or generic `mcp_tool`, and exception class names. The diagnostic schema rejects arbitrary fields. It does not store prompts, file paths, tool arguments/results, error messages, or provider response bodies. Inspect the most recent records with `./oryn repl --diagnostics`, or pass a saved ID to filter one chat. Events are local metadata, not an encrypted store; the database permission and privacy limits still apply.
+
+The GitHub Actions workflow installs `requirements.txt`, runs the full Python suite, and runs the offline task set. It needs no personal API keys or OAuth credentials. External-service behavior remains covered by mocks in CI and requires separate live checks.
 
 ## 3. Frontend checks
 
@@ -94,7 +108,7 @@ The broader suite initially stalled during asyncio executor shutdown inside the 
 
 ### Follow-up: TUI undo isolation
 
-The focused undo regression passed with an offline model response through the TUI turn dispatcher. It covers separate histories for chats in the same folder, empty history in new chats/projects, returning to an earlier chat, denied undo, refusal over later user edits, and history cleanup when deleting a chat. This brings the available suite to 88 methods; the earlier full-suite result above records the 87 methods present after MCP loading.
+The focused undo regression passed with an offline model response through the TUI turn dispatcher. It covers separate histories for chats in the same folder, empty history in new chats/projects, returning to an earlier chat, denied undo, refusal over later user edits, and history cleanup when deleting a chat. At that point in the project the suite had 88 methods; the earlier full-suite run recorded the 87 methods present after MCP loading.
 
 ```bash
 .venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_undo_history_stays_with_its_chat_across_switches_and_deletion
@@ -102,7 +116,7 @@ The focused undo regression passed with an offline model response through the TU
 
 ### Follow-up: commands during active tools
 
-The focused active-command regression passed while a controlled read-file operation was paused in the actual turn worker. It covers slash suggestions and filtering, arrow navigation, Enter opening help/tools/MCP views, Ctrl+P draft restoration, blocked session/model changes retaining their input, prevention of a second turn, and dialog focus when the operation finishes. The available suite now contains 89 methods.
+The focused active-command regression passed while a controlled read-file operation was paused in the actual turn worker. It covers slash suggestions and filtering, arrow navigation, Enter opening help/tools/MCP views, Ctrl+P draft restoration, blocked session/model changes retaining their input, prevention of a second turn, and dialog focus when the operation finishes. At that point in the project the suite had 89 methods.
 
 ```bash
 .venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_commands_work_during_a_tool_operation_and_preserve_drafts
@@ -110,7 +124,7 @@ The focused active-command regression passed while a controlled read-file operat
 
 ### Follow-up: elapsed reply time
 
-The focused timing regression passed using a controlled monotonic clock and offline provider responses through the actual TUI turn worker. It checks a turn with a tool call, completion/failure/cancellation, reset between turns, seconds/minutes and rounding boundaries, invalid timing values, persistence through a new app/store, transcript refresh in a narrow terminal, and removal of UI timing metadata from model context. The available suite now contains 90 methods.
+The focused timing regression passed using a controlled monotonic clock and offline provider responses through the actual TUI turn worker. It checks a turn with a tool call, completion/failure/cancellation, reset between turns, seconds/minutes and rounding boundaries, invalid timing values, persistence through a new app/store, transcript refresh in a narrow terminal, and removal of UI timing metadata from model context. At that point in the project the suite had 90 methods.
 
 ```bash
 .venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_reply_duration_covers_the_turn_and_survives_reopening
@@ -118,7 +132,7 @@ The focused timing regression passed using a controlled monotonic clock and offl
 
 ### Follow-up: home-page startup
 
-The focused startup regression passed with an existing legacy `main` conversation. It exercises repeated default launches, `--new`, and `--project`, confirms fresh IDs and empty transcripts, preserves the old messages/model, and verifies explicit `--resume`. It also mounts the actual home layout and switches to the saved conversation. The available suite now contains 91 methods.
+The focused startup regression passed with an existing legacy `main` conversation. It exercises repeated default launches, `--new`, and `--project`, confirms fresh IDs and empty transcripts, preserves the old messages/model, and verifies explicit `--resume`. It also mounts the actual home layout and switches to the saved conversation. At that point in the project the suite had 91 methods.
 
 ```bash
 .venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_default_launch_opens_home_and_explicit_resume_keeps_saved_chats
@@ -261,15 +275,15 @@ Read the error before retrying. Common reasons include an outside/private path, 
 
 The correct response to a stale match is to reread and construct a new focused proposal. The correct response to changed undo state is to leave the file untouched, not reconstruct an inverse operation from memory and overwrite user work.
 
-Live undo lists are caller-owned and scoped by session in both the dashboard and TUI. A new chat or project has an empty list; switching back in the same process selects that chat's earlier records. Check the active session when undo is unavailable, and remember that restarting loses the live snapshots. Later changes to shared project files can still make an earlier undo refuse safely.
+Durable undo records are scoped by chat and project. A new chat has an empty undo list; switching back or reopening the app restores its latest 20 records. Check the active chat when undo is unavailable. Later changes to a shared project file can still make an earlier undo refuse safely.
 
 ## 17. Search/command timeouts and oversized context
 
-Narrow the path, pattern, result count, or task. The current system reports bounded failures rather than automatically splitting a huge task into subagents. Character limits are explicit; automatic compression is not implemented.
+Narrow the path, pattern, result count, or task. The current system reports bounded failures rather than automatically splitting a huge task into subagents. At 200,000 estimated request tokens it summarizes older complete turns toward a 180,000-token target. A current turn or pinned instructions that remain too large fail clearly; outputs above the per-tool result cap remain truncated rather than archived.
 
 A turn reaching its round/tool/time allowance is now marked paused, with retained completed pairs and partial text. Ask to continue for a fresh budget, or choose the shared `--max-rounds`, `--max-tool-calls`, and `--max-turn-seconds` launch options within their validated ranges. A pause does not undo work or automatically replay completed actions. A blocking operation may finish after the nominal time allowance; late approvals cannot authorize new actions after it expires.
 
-If history selection rejects the current turn, restarting into a shorter/new conversation can reduce input, but do not confuse this with a fix to token-aware budgeting. The tool schema catalog can still consume additional context.
+If history selection rejects the current turn, shorten the current request or reduce attached images. Tool schemas count toward the estimate. When the tokenizer vocabulary has not been cached and Oryn is offline, the byte-count fallback can compact sooner than necessary.
 
 ## 18. Safe operational checks
 
@@ -290,6 +304,6 @@ Avoid pasting complete auth files, all environment variables, or raw database tr
 
 ## 19. What the suite still lacks
 
-There is no complete production benchmark harness, comprehensive multilingual UI suite, full cross-platform terminal matrix, durable crash/replay journal, or exhaustive external-account integration suite. Persistent undo and dedicated edit/undo edge-case coverage deserve further work; existing write/atomic tests do not prove every undo scenario.
+There is no complete public benchmark harness, comprehensive multilingual UI suite, full cross-platform terminal matrix, or exhaustive external-account integration suite. The durable undo journal and offline three-task evaluator cover important cases, but race conditions, varied projects, model quality, and terminal/platform combinations need broader evaluation.
 
 Future checks should follow demonstrated risks: context overflow, uncertain side effects, race conditions, large tool catalogs, unsupported terminals, and actual task completion. Increasing test count alone is not a performance strategy.

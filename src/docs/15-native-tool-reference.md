@@ -2,7 +2,7 @@
 
 [Handbook index](README.md) · [Previous: roadmap](14-roadmap-and-benchmark-readiness.md)
 
-This reference was generated from the actual `tool_schemas()` output in [registry.py](../tools/registry.py) at the documented application snapshot. It lists the 16 native model-facing functions. MCP names and arguments are discovered dynamically and cannot be frozen into one permanent list.
+This reference was generated from the actual `tool_schemas()` output in [registry.py](../tools/registry.py). It lists the 19 native model-facing functions. MCP names and arguments are discovered dynamically and cannot be frozen into one permanent list.
 
 ## Reading a schema
 
@@ -15,6 +15,9 @@ Example argument objects are explanatory and do not execute the tools. Browser r
 | Tool | Required arguments |
 | --- | --- |
 | [`terminal`](#terminal) | `command` |
+| [`terminal_read`](#terminal-read) | `job_id`, `wait_seconds` |
+| [`terminal_input`](#terminal-input) | `job_id`, `text` |
+| [`terminal_stop`](#terminal-stop) | `job_id` |
 | [`read_file`](#read-file) | `path` |
 | [`search_files`](#search-files) | `pattern`, `path`, `include`, `exclude`, `literal`, `case_sensitive`, `max_results` |
 | [`write_file`](#write-file) | `path`, `content` |
@@ -37,7 +40,7 @@ Model-facing name: `terminal`.
 
 ### Advertised description
 
-Run a shell command from the project folder when the user asks you to inspect or change this project. The user must approve every command. Bubblewrap limits writes to the project folder and hides the user's home; network access remains enabled. Returns stdout/stderr and exit code; commands time out after 30 seconds.
+Start a shell command from the project folder when the user asks you to inspect or change it. The user must approve every command. Bubblewrap limits writes to the project folder and hides the user's home; network access remains enabled. Returns a session-local job ID and initial output. Use terminal_read to check output, terminal_input for approved interactive input, and terminal_stop to cancel.
 
 ### Arguments
 
@@ -67,6 +70,85 @@ Run a shell command from the project folder when the user asks you to inspect or
   "required": [
     "command"
   ],
+  "additionalProperties": false
+}
+```
+
+## terminal-read
+
+Model-facing name: `terminal_read`.
+
+### Advertised description
+
+Read new output from a running terminal job in this chat. Waits at most 10 seconds. Use the exact job ID returned by terminal; output is incremental and session-local.
+
+### Arguments and exact schema
+
+| Field | JSON type | Required | Meaning |
+| --- | --- | --- | --- |
+| `job_id` | `string` | Yes | The 12-character job ID returned by `terminal`. |
+| `wait_seconds` | `number` | Yes | Wait from 0 to 10 seconds for new output. |
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {"type": "string", "description": "12-character ID returned by terminal."},
+    "wait_seconds": {"type": "number", "description": "How long to wait for new output, from 0 to 10."}
+  },
+  "required": ["job_id", "wait_seconds"],
+  "additionalProperties": false
+}
+```
+
+## terminal-input
+
+Model-facing name: `terminal_input`.
+
+### Advertised description
+
+Send up to 4,096 UTF-8 bytes to an interactive terminal job. Oryn asks the user to approve the exact input. A newline is added when missing.
+
+### Arguments and exact schema
+
+| Field | JSON type | Required | Meaning |
+| --- | --- | --- | --- |
+| `job_id` | `string` | Yes | The 12-character job ID returned by `terminal`. |
+| `text` | `string` | Yes | Input to send to the running process. |
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {"type": "string", "description": "12-character ID returned by terminal."},
+    "text": {"type": "string", "description": "Input to send to the running process."}
+  },
+  "required": ["job_id", "text"],
+  "additionalProperties": false
+}
+```
+
+## terminal-stop
+
+Model-facing name: `terminal_stop`.
+
+### Advertised description
+
+Stop a running terminal job owned by this chat. It sends TERM, then KILL if needed.
+
+### Arguments and exact schema
+
+| Field | JSON type | Required | Meaning |
+| --- | --- | --- | --- |
+| `job_id` | `string` | Yes | The 12-character job ID returned by `terminal`. |
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "job_id": {"type": "string", "description": "12-character ID returned by terminal."}
+  },
+  "required": ["job_id"],
   "additionalProperties": false
 }
 ```
@@ -300,7 +382,7 @@ Model-facing name: `undo_file_change`.
 
 ### Advertised description
 
-Undo the most recent approved write_file or edit_file change made by Oryn in this chat session. Restores previous bytes and permissions, or deletes a file Oryn created. The user must approve the undo. It refuses if the file changed afterward. The 20 most recent changes are kept in memory until this Oryn process exits. Changes to existing files over 1 MB are refused so Oryn can keep a safe snapshot.
+Undo the most recent approved write_file or edit_file change made by Oryn in this chat session. Restores previous bytes and permissions, or deletes a file Oryn created. The user must approve the undo. It refuses if the file changed afterward. The 20 most recent changes are saved per chat and can be undone after reopening Oryn. Changes to existing files over 1 MB are refused so Oryn can keep a safe snapshot.
 
 ### Arguments
 

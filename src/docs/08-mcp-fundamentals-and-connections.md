@@ -213,7 +213,7 @@ Official public MCP endpoints let compatible clients connect subject to authenti
 
 ## 10. On-demand model catalog
 
-All accepted schemas remain in the local inventory, and `/tools` can display them. The model initially receives the sixteen native schemas and one `load_mcp_tools` definition containing server names, short descriptions, states, and counts. Credentials and request headers are excluded from this directory. An empty configuration supplies no loader.
+All accepted schemas remain in the local inventory, and `/tools` can display them. The model initially receives the nineteen native schemas and one `load_mcp_tools` definition containing server names, short descriptions, states, and counts. Credentials and request headers are excluded from this directory. An empty configuration supplies no loader.
 
 ```json
 {"name": "load_mcp_tools", "arguments": {"server": "github"}}

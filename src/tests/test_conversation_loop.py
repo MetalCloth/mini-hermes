@@ -9,6 +9,41 @@ from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 
 
 class ConversationLoopTests(unittest.TestCase):
+    def test_tool_schemas_are_passed_into_context_budgeting(self):
+        from src.agent import context
+
+        complete = Mock(return_value=ModelResponse("Done"))
+        tools = [{"name": "large_tool", "description": "schema " * 40}]
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(context, "MAX_CONTEXT_TOKENS", 100):
+                with self.assertRaisesRegex(ValueError, "tool definitions"):
+                    run_turn(
+                        [{"role": "system", "content": "Rules"}, {"role": "user", "content": "Hi"}],
+                        complete, tools, Path(folder), Mock(), Mock(),
+                    )
+        complete.assert_not_called()
+
+    def test_diagnostics_record_counts_and_timing_without_tool_content(self):
+        history = [{"role": "user", "content": "Read private-looking file"}]
+        secret = "do-not-record-this-content"
+        complete = Mock(side_effect=[
+            ModelResponse(tool_calls=[ToolCall("call_1", "read_file", {"path": secret})]),
+            ModelResponse("Done."),
+        ])
+        events = []
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.agent.conversation_loop.execute_tool", return_value=secret):
+                self.assertEqual(run_turn(
+                    history, complete, [{"name": "read_file"}], Path(folder), Mock(), Mock(),
+                    on_diagnostic=lambda turn_id, event: events.append((turn_id, event)),
+                ), "Done.")
+        self.assertTrue(all(turn_id == events[0][0] for turn_id, _ in events))
+        self.assertEqual([event["type"] for _, event in events], [
+            "turn_start", "model_request", "tool_start", "tool_end", "model_request", "turn_end",
+        ])
+        self.assertNotIn(secret, repr(events))
+        self.assertEqual(events[-1][1]["tool_count"], 1)
+
     def test_executes_tool_then_returns_final_model_text(self):
         history = [{"role": "user", "content": "Read README"}]
         complete = Mock(side_effect=[

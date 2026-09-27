@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 
@@ -24,24 +24,43 @@ class FileChange:
     previous_mode: int | None
     result_digest: bytes
     result_mode: int
+    change_id: int | None = None
 
 
-def _remember_file_change(
-    history: list[FileChange] | None,
+def _prepare_file_change(
     path: str,
     previous_content: bytes | None,
     previous_mode: int | None,
     result_content: bytes,
-    target: Path,
-) -> None:
-    if history is None or previous_content == result_content:
-        return
-    history.append(FileChange(
+    result_mode: int,
+    journal: Callable[[str, FileChange], int | None] | None,
+) -> FileChange | None:
+    if previous_content == result_content:
+        return None
+    change = FileChange(
         path, previous_content, previous_mode,
-        hashlib.sha256(result_content).digest(), stat.S_IMODE(target.stat().st_mode),
-    ))
-    # ponytail: keep 20 in-memory snapshots per session; persist only if restart recovery is needed.
-    del history[:-MAX_UNDO_HISTORY]
+        hashlib.sha256(result_content).digest(), result_mode,
+    )
+    if journal:
+        change_id = journal("prepared", change)
+        if type(change_id) is not int:
+            raise RuntimeError("Could not prepare a durable file-change record; the file was not changed.")
+        change = replace(change, change_id=change_id)
+    return change
+
+
+def _remember_file_change(
+    history: list[FileChange] | None,
+    change: FileChange | None,
+    journal: Callable[[str, FileChange], int | None] | None,
+) -> None:
+    if change is None:
+        return
+    if history is not None:
+        history.append(change)
+        del history[:-MAX_UNDO_HISTORY]
+    if journal:
+        journal("applied", change)
 
 
 def _is_private_path(target: Path, root: Path) -> bool:
@@ -188,6 +207,7 @@ def write_file(
     project_root: Path,
     confirm: Callable[[str, str, bool], bool],
     undo_history: list[FileChange] | None = None,
+    journal: Callable[[str, FileChange], int | None] | None = None,
 ) -> str:
     if not path.strip() or Path(path).is_absolute():
         raise ValueError("Give a non-empty project-relative file path, such as 'notes.txt'.")
@@ -208,7 +228,7 @@ def write_file(
     if exists and not target.is_file():
         raise ValueError(f"'{path}' is not a regular file.")
     mode = stat.S_IMODE(target.stat().st_mode) if exists else None
-    if undo_history is not None and exists and target.stat().st_size > MAX_UNDO_SNAPSHOT_BYTES:
+    if (undo_history is not None or journal is not None) and exists and target.stat().st_size > MAX_UNDO_SNAPSHOT_BYTES:
         raise ValueError("The existing file is too large for a safe undo snapshot (1 MB maximum).")
     previous_content = target.read_bytes() if exists else None
     relative_path = target.relative_to(root).as_posix()
@@ -223,10 +243,13 @@ def write_file(
     elif target.exists():
         raise RuntimeError(f"'{relative_path}' appeared while approval was pending. Read it again before writing.")
 
+    result_content = content.encode("utf-8")
+    change = _prepare_file_change(
+        relative_path, previous_content, mode, result_content,
+        mode if mode is not None else 0o600, journal,
+    ) if undo_history is not None or journal is not None else None
     _atomic_write_text(target, content, mode)
-    _remember_file_change(
-        undo_history, relative_path, previous_content, mode, content.encode("utf-8"), target,
-    )
+    _remember_file_change(undo_history, change, journal)
     return f"Wrote {len(content)} characters to '{relative_path}'."
 
 
@@ -237,6 +260,7 @@ def edit_file(
     project_root: Path,
     confirm: Callable[[str, str], bool],
     undo_history: list[FileChange] | None = None,
+    journal: Callable[[str, FileChange], int | None] | None = None,
 ) -> str:
     """Replace one exact, unique text match after the user approves its diff."""
     if not isinstance(path, str) or not path.strip() or "\0" in path or Path(path).is_absolute():
@@ -254,7 +278,7 @@ def edit_file(
         raise ValueError("That project path is excluded from editing.")
     if not target.is_file():
         raise ValueError(f"No file found at '{path}'. Give a path to an existing project file.")
-    if undo_history is not None and target.stat().st_size > MAX_UNDO_SNAPSHOT_BYTES:
+    if (undo_history is not None or journal is not None) and target.stat().st_size > MAX_UNDO_SNAPSHOT_BYTES:
         raise ValueError("The existing file is too large for a safe undo snapshot (1 MB maximum).")
     try:
         original_bytes = target.read_bytes()
@@ -301,10 +325,11 @@ def edit_file(
         raise RuntimeError(f"Permissions for '{relative_path}' changed after approval. Read it again before editing.")
     stored_text = updated.replace("\n", line_ending)
     result_content = stored_text.encode("utf-8")
+    change = _prepare_file_change(
+        relative_path, original_bytes, original_mode, result_content, original_mode, journal,
+    ) if undo_history is not None or journal is not None else None
     _atomic_write_bytes(target, result_content, original_mode)
-    _remember_file_change(
-        undo_history, relative_path, original_bytes, original_mode, result_content, target,
-    )
+    _remember_file_change(undo_history, change, journal)
     return f"Edited '{relative_path}' by replacing one exact match."
 
 
@@ -312,6 +337,7 @@ def undo_file_change(
     project_root: Path,
     history: list[FileChange],
     confirm: Callable[[str, str, bool], bool],
+    journal: Callable[[str, FileChange], int | None] | None = None,
 ) -> str:
     """Restore Oryn's latest recorded file change if the file is still untouched."""
     if not history:
@@ -348,11 +374,15 @@ def undo_file_change(
         raise RuntimeError(f"'{change.path}' changed while undo approval was pending; leaving it untouched.")
     if stat.S_IMODE(target.stat().st_mode) != current_mode:
         raise RuntimeError(f"Permissions for '{change.path}' changed while approval was pending; leaving it untouched.")
+    if journal and change.change_id is not None:
+        journal("undoing", change)
     if change.previous_content is None:
         target.unlink()
     else:
         _atomic_write_bytes(target, change.previous_content, change.previous_mode)
     history.pop()
+    if journal and change.change_id is not None:
+        journal("undone", change)
     return f"Undid Oryn's most recent file change to '{change.path}'."
 
 

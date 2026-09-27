@@ -26,7 +26,7 @@ from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
-from src.tools.terminal_tool import validate_project_root
+from src.tools.terminal_tool import TerminalJobManager, validate_project_root
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -69,9 +69,12 @@ class DashboardServer(ThreadingHTTPServer):
         self.mcp_reconfiguring = False
         self.approvals: dict[str, Approval] = {}
         self.file_change_history: dict[str, list[FileChange]] = {}
+        self.terminal_jobs: dict[str, TerminalJobManager] = {}
 
     def server_close(self) -> None:
         try:
+            for terminal_jobs in self.terminal_jobs.values():
+                terminal_jobs.close()
             if self.mcp_client:
                 self.mcp_client.close()
         finally:
@@ -309,6 +312,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = "missing"
             else:
                 self.server.file_change_history.pop(session_id, None)
+                terminal_jobs = self.server.terminal_jobs.pop(session_id, None)
+                if terminal_jobs:
+                    terminal_jobs.close()
                 result = "deleted"
         if result == "missing":
             self._json(404, {"error": "Session not found."})
@@ -400,7 +406,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             cancel_event = threading.Event()
             self.server.active_turns[session_id] = cancel_event
-            undo_history = self.server.file_change_history.setdefault(session_id, [])
+            if session_id not in self.server.file_change_history:
+                self.server.file_change_history[session_id] = self.server.store.load_file_change_history(
+                    session_id, root,
+                )
+            undo_history = self.server.file_change_history[session_id]
+            if session_id not in self.server.terminal_jobs:
+                self.server.terminal_jobs[session_id] = TerminalJobManager(root)
+            terminal_jobs = self.server.terminal_jobs[session_id]
         streaming = False
         partial_text: list[str] = []
         try:
@@ -480,6 +493,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         diff,
                     ),
                     undo_history=undo_history,
+                    file_change_journal=lambda phase, change: self.server.store.record_file_change(
+                        session_id, root, phase, change,
+                    ),
+                    load_context_summary=lambda: self.server.store.load_context_summary(session_id),
+                    save_context_summary=lambda summary, count, digest: self.server.store.save_context_summary(
+                        session_id, summary, count, digest,
+                    ),
+                    terminal_jobs=terminal_jobs,
+                    on_diagnostic=lambda turn_id, event: self.server.store.append_diagnostic(
+                        session_id, turn_id, event,
+                    ),
                     mcp_client=self.server.mcp_client,
                     confirm_mcp=lambda name, preview: self._ask(
                         session_id, cancel_event, "mcp", name, preview

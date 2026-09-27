@@ -1,10 +1,14 @@
 import tempfile
 import sqlite3
+import hashlib
+import stat
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import Mock
 
 from src.session.sqlite_store import SQLiteSessionStore
+from src.tools.file_tools import FileChange, undo_file_change, write_file
 
 
 class SQLiteSessionStoreTests(unittest.TestCase):
@@ -96,6 +100,89 @@ class SQLiteSessionStoreTests(unittest.TestCase):
             self.assertEqual(len(store.search_messages("hello", limit=2)), 2)
             with self.assertRaises(ValueError):
                 store.search_messages(" ")
+
+    def test_file_change_is_durable_and_can_be_undone_after_reopen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "project"
+            root.mkdir()
+            path = root / "note.txt"
+            path.write_text("before\n")
+            db_path = Path(folder) / "sessions.sqlite3"
+            store = SQLiteSessionStore(db_path)
+            session = store.create_session(root)
+            history = store.load_file_change_history(session, root)
+            journal = lambda phase, change: store.record_file_change(session, root, phase, change)
+
+            write_file("note.txt", "after\n", root, Mock(return_value=True), history, journal)
+            self.assertEqual(path.read_text(), "after\n")
+            self.assertEqual(len(history), 1)
+            self.assertIsNotNone(history[0].change_id)
+
+            reopened = SQLiteSessionStore(db_path)
+            restored_history = reopened.load_file_change_history(session, root)
+            self.assertEqual(len(restored_history), 1)
+            undo_journal = lambda phase, change: reopened.record_file_change(session, root, phase, change)
+            undo_file_change(root, restored_history, Mock(return_value=True), undo_journal)
+            self.assertEqual(path.read_text(), "before\n")
+            self.assertEqual(reopened.load_file_change_history(session, root), [])
+
+    def test_restart_reconciles_prepared_change_using_file_fingerprint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "project"
+            root.mkdir()
+            path = root / "note.txt"
+            path.write_text("before")
+            mode = stat.S_IMODE(path.stat().st_mode)
+            db_path = Path(folder) / "sessions.sqlite3"
+            store = SQLiteSessionStore(db_path)
+            session = store.create_session(root)
+            change = FileChange(
+                "note.txt", b"before", mode, hashlib.sha256(b"after").digest(), mode,
+            )
+            change_id = store.record_file_change(session, root, "prepared", change)
+            path.write_text("after")  # Simulate a process exit before the "applied" update.
+
+            reopened = SQLiteSessionStore(db_path)
+            history = reopened.load_file_change_history(session, root)
+            self.assertEqual([item.change_id for item in history], [change_id])
+            path.write_text("user edit")
+            with self.assertRaisesRegex(RuntimeError, "changed after Oryn"):
+                undo_file_change(root, history, Mock(return_value=True))
+            self.assertEqual(path.read_text(), "user edit")
+
+    def test_diagnostics_store_only_allowlisted_redacted_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            session = store.create_session(Path(folder))
+            turn_id = "a" * 32
+            event = {"type": "tool_end", "tool_name": "read_file", "success": True, "elapsed_ms": 17}
+            store.append_diagnostic(session, turn_id, event)
+            self.assertEqual(store.recent_diagnostics(session)[0]["event"], event)
+            with self.assertRaisesRegex(ValueError, "unsupported fields"):
+                store.append_diagnostic(session, turn_id, {"type": "tool_end", "content": "private text"})
+            with self.assertRaisesRegex(ValueError, "invalid metadata"):
+                store.append_diagnostic(session, turn_id, {
+                    "type": "model_request", "round": True, "estimated_tokens": 10,
+                    "tool_count": 0, "loaded_tool_count": 0,
+                })
+            with self.assertRaisesRegex(ValueError, "saved chat"):
+                store.append_diagnostic("unknown", turn_id, {"type": "turn_start"})
+
+    def test_context_summary_checkpoint_survives_reopen_separately_from_transcript(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            session = store.create_session(Path(folder))
+            messages = [{"role": "user", "content": "Original request"}]
+            store.append_messages(messages, session)
+            from src.agent.context import history_digest
+            digest = history_digest(messages, 1)
+            store.save_context_summary(session, "Goal: continue the request.", 1, digest)
+
+            reopened = SQLiteSessionStore(store.db_path)
+            self.assertEqual(reopened.load_context_summary(session), (
+                "Goal: continue the request.", 1, digest,
+            ))
+            self.assertEqual(reopened.load_messages(session), messages)
 
 
 if __name__ == "__main__":

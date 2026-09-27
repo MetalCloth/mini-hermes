@@ -1,9 +1,10 @@
 # Core reliability upgrade plan
 
-Status: **1 and 2 implemented in existing code paths.** New context, terminal-job,
-durable undo, and diagnostic/evaluation subsystems (**3, 5, 6, and 7**) await the
-architecture approval required by the project's `AGENTS.md`. The diagram below mixes
-implemented paths and proposed additions; this is not a claim that all boxes run today.
+Status: **The approved reliability upgrade is implemented and undergoing final regression checks.**
+The project owner approved the 200k-token context threshold, summary prompt, managed terminal
+jobs, per-chat durable undo, redacted local diagnostics, offline evaluations, regression checks,
+and documentation/CI. The diagram describes the current implementation; limits are called out
+below. Archived large tool-output retrieval is not part of this upgrade.
 
 The requested scope is failure recovery, longer tasks, context management, terminal control,
 persistent undo, and diagnostics/evaluation. Keep the existing Python provider, agent loop,
@@ -49,21 +50,21 @@ flowchart TD
 - A user continuation starts a new bounded turn using the saved conversation; it does not
   automatically repeat past side effects.
 
-## 3. Context management — awaiting architecture approval
+## 3. Context management — implemented
 
-- Count message content and tool schemas, reserving space for the response.
+- Count serialized message content and tool schemas with an 8% estimation margin; 200k is an input-context budget, not a provider billing count.
 - Use [OpenAI's tiktoken](https://github.com/openai/tiktoken) for token encoding; unknown
   model encodings are explicitly estimates. Count schemas and reserve response/formatting
   headroom rather than treating encoded text as an exact provider billing measurement.
-- Use a conservative local budget by default and respect any smaller advertised model limit.
+- Use a 200,000 estimated-token pre-compaction threshold and reduce to a 180,000-token target.
 - Keep system/project instructions, the newest user request, and matched tool calls/results.
-- Archive oversized tool results locally with bounded read access instead of losing them.
+- Keep the existing 20,000-character tool-result cap; archived-output retrieval is deferred.
 - Summarize older completed turns in a separate tool-free model request before discarding
   them from a request. Persist the checkpoint in SQLite; keep the original transcript.
 - Summaries remain conversation data and cannot introduce new authorization/instructions.
 - Fail clearly if required instructions/new input cannot fit even after compaction.
 
-## 5. Terminal control — awaiting architecture approval
+## 5. Terminal control — implemented
 
 - Extend the existing Bubblewrap sandbox with session-owned subprocess jobs.
 - A command can return a job ID while running; subsequent calls read new output, send input,
@@ -73,7 +74,7 @@ flowchart TD
 - Deliver incremental output through the existing UI tool-event paths.
 - Terminal jobs remain live process state; saved job IDs do not imply restart survival.
 
-## 6. Persistent undo — awaiting architecture approval
+## 6. Persistent undo — implemented
 
 - Add a change journal to the existing SQLite database, scoped to session and project.
 - Persist the pre-change snapshot and intended result fingerprint before touching the file.
@@ -85,7 +86,7 @@ flowchart TD
   ID. A fresh process resolves prepared records against the old and intended fingerprints.
 - Chat deletion removes its records without changing project files.
 
-## 7. Diagnostics and evaluation — awaiting architecture approval
+## 7. Diagnostics and evaluation — implemented
 
 - Store private per-turn events with identifiers, statuses, timings, counts, and error classes.
 - Avoid storing credentials, complete prompt/tool contents, or raw upstream error bodies in
@@ -100,10 +101,10 @@ flowchart TD
 
 1. Record the current regression baseline — done.
 2. Implement recovery and budgets in existing request/loop paths — done.
-3. Add durable journal/context/diagnostic storage and wire all interfaces.
-4. Implement terminal jobs and output/input/cancellation behavior.
-5. Add token budgeting, compaction, and archived result retrieval.
-6. Run regression and task checks, inspect the TUI, and update the handbook.
+3. Add durable journal/context/diagnostic storage and wire all interfaces — done.
+4. Implement terminal jobs and output/input/cancellation behavior — done.
+5. Add token budgeting and compaction — done; archived result retrieval deferred.
+6. Run regression and offline task checks, inspect interface wiring, and update the handbook — final verification in progress.
 
 Acceptance scenarios include temporary failure recovery; no partial-stream or mutation replay;
 completion beyond eight tool rounds; truthful budget exhaustion; multilingual context limits;
@@ -121,23 +122,32 @@ after stalling. No personal-account calls were required by the suite.
 This plan does not change the UI theme or add subagents, plugins, product installation, or cloud
 accounts. Those are outside the selected scope.
 
-## Recovery/budget evidence and remaining work
+## Verification and remaining limits
 
-- The final updated Python suite passed **98 tests in 35.944 seconds**. Transport failures were
-  controlled, projects disposable, and no real account mutations were required.
-- Checks cover transient/permanent classification, numeric/date Retry-After, partial-stream
-  and mutation replay prevention, bounded cancellation, more than eight tool rounds,
-  partial multi-call pauses, retained call pairs after UI callback failure, and saved
-  continuation/approval expiry through TUI, REPL, and dashboard callers.
-- Follow-up checks verify one saved copy after result-display failure and elapsed time
-  retention on a tool-only paused reply. Its TUI was visually inspected at 120×36 and 65×26.
-- Dashboard type checking, Markdown checks, and production build passed. React Doctor found
-  no issues in the three changed React files; its overall score was 79/100. The existing
-  production bundle-size warning remains.
-- Recovery and pauses report through current UI/HTTP events. No durable diagnostic trace
-  or evaluation runner exists yet. Context remains character-bounded with truncated tool
-  results, undo remains memory-only, and terminal commands remain synchronous.
-- The REPL's existing KeyboardInterrupt behavior still discards the active unsaved turn;
-  preserved exception/paused replies do not imply crash recovery for that path.
+The complete suite and offline evaluator are run from the repository environment:
 
-The goal is not complete until 3, 5, 6, and 7 are approved, implemented, and checked.
+```bash
+./.venv/bin/python -m unittest discover -s src/tests
+./.venv/bin/python -m src.evaluation.run
+git diff --check
+```
+
+The offline suite uses a deterministic scripted provider and disposable project folders. It
+checks direct completion, reading actual project content, and denying a proposed write. It does
+not measure model quality. The larger remaining benchmark milestone still needs more tasks,
+fixed model conditions, scoring calibration, artifact capture, and comparison against a baseline.
+
+The tokenizer normally uses `tiktoken` with a cached OpenAI encoding. If running without the
+encoding data, Oryn falls back to UTF-8 byte length, a safe but overly conservative estimate that
+can trigger compaction early. Token estimates also use a local image-tile approximation and do not
+guarantee provider-side counts. Summary checkpoints keep the transcript but can still omit facts;
+the digest prevents reuse after transcript edits, not mistakes made by the summarizer.
+
+Terminal jobs remain Linux/Bubblewrap-dependent, limited to eight running and 20 retained jobs
+per chat, and do not survive application exit. Persistent undo covers only approved native file
+writes/edits, retains 20 changes per chat, and refuses ambiguous or later-edited files. Diagnostics
+are allowlisted and local but are not encrypted. Large tool outputs remain truncated at the
+existing context boundary; retrieving discarded output from an archive is a separate future task.
+
+The broader public benchmark goal remains future work. The implemented local checks create a
+repeatable starting point, not evidence that Oryn has passed an external benchmark.

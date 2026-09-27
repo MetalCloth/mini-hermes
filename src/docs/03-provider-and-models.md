@@ -273,6 +273,6 @@ HTTP 429/500/502/503/504, eligible temporary socket failures, and an incomplete 
 
 The loop permits three attempts total with 0.5/1-second backoff. A larger `Retry-After` value, expressed as seconds or an HTTP date, takes precedence up to 30 seconds and the remaining turn budget. Waiting is cancellable. A connection-opening request retains the existing 120-second timeout; the cancellation watcher wakes an opened stream, and auth refresh uses a shorter timeout.
 
-The provider receives already selected context, but the full payload also includes all advertised tools. An 80,000-character history budget is not a full request-token budget. The large MCP catalog can add significant payload beyond the transcript.
+The provider receives the selected context and all tools advertised for that request. Oryn estimates the serialized messages and schemas together against a 200,000-token threshold, with an 8% safety margin; images use a separate tile estimate and byte cap. This local estimate is not an exact provider usage or billing count.
 
 Provider tests verify serialization, pairing, stream completion, transient/permanent classification, partial-stream protection, Retry-After parsing, error redaction, cancellation, settings, and version selection. They mock transport behavior; they do not prove every account has access to every catalog model.

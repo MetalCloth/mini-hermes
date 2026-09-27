@@ -2,6 +2,7 @@
 
 import json
 import time
+import uuid
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,12 +10,13 @@ from pathlib import Path
 from threading import Event, Timer
 from typing import Any
 
-from src.agent.context import select_context
+from src.agent.compression import compact_for_request
 from src.mcp.adapter import mcp_loader_tool
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 from src.tools.browser_tools import BrowserSession
 from src.tools.file_tools import FileChange
-from src.tools.registry import execute_tool
+from src.tools.registry import execute_tool, tool_schemas
+from src.tools.terminal_tool import TerminalJobManager
 
 
 Message = dict[str, Any]
@@ -73,6 +75,11 @@ def run_turn(
     confirm_mcp: Callable[[str, str], bool] | None = None,
     limits: TurnLimits | None = None,
     on_status: Callable[[str], None] | None = None,
+    load_context_summary: Callable[[], tuple[str, int, str] | None] | None = None,
+    save_context_summary: Callable[[str, int, str], None] | None = None,
+    file_change_journal: Callable[[str, FileChange], int | None] | None = None,
+    terminal_jobs: TerminalJobManager | None = None,
+    on_diagnostic: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -80,6 +87,7 @@ def run_turn(
         tool for tool in tools
         if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
     ]
+    local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools"}
     loaded_servers: set[str] = set()
     limits = limits or TurnLimits()
     turn_cancel = cancel_event if cancel_event is not None else Event()
@@ -88,6 +96,19 @@ def run_turn(
     timer.daemon = True
     timer.start()
     tool_count = 0
+    model_requests = 0
+    turn_id = uuid.uuid4().hex
+    turn_started = time.monotonic()
+
+    def diagnostic(event_type: str, **fields: Any) -> None:
+        if on_diagnostic is not None:
+            try:
+                on_diagnostic(turn_id, {"type": event_type, **fields})
+            except Exception:
+                # Diagnostics must never break a user turn.
+                pass
+
+    summary, covered_messages, covered_digest = "", 0, ""
 
     def check_cancelled() -> None:
         if time.monotonic() >= deadline:
@@ -118,16 +139,23 @@ def run_turn(
 
     def call_mcp(call: ToolCall) -> str:
         kwargs = {"cancel_event": turn_cancel}
-        if on_status:
-            kwargs["on_retry"] = lambda attempt, delay: on_status(
-                f"Temporary MCP read failure · {call.name} · retry {attempt}/3 in {delay:g}s"
-            )
+
+        def retry(attempt: int, delay: float) -> None:
+            diagnostic("retry", retry_attempt=attempt, delay_ms=round(delay * 1000))
+            if on_status:
+                on_status(f"Temporary MCP read failure · {call.name} · retry {attempt}/3 in {delay:g}s")
+
+        kwargs["on_retry"] = retry
         return mcp_client.call_tool(call.name, call.arguments, **kwargs)
 
     try:
+        saved_summary = load_context_summary() if load_context_summary else None
+        if isinstance(saved_summary, tuple) and len(saved_summary) == 3:
+            summary, covered_messages, covered_digest = saved_summary
+        diagnostic("turn_start")
         if on_status:
             on_status(f"Turn budget: {limits.max_rounds} rounds · {limits.max_tool_calls} tools · {limits.max_turn_seconds}s")
-        for _ in range(limits.max_rounds):
+        for round_number in range(1, limits.max_rounds + 1):
             check_cancelled()
             tools = list(native_tools)
             if mcp_client is not None:
@@ -157,12 +185,42 @@ def run_turn(
                     kwargs = {"cancel_event": turn_cancel}
                     if on_text_delta:
                         kwargs["on_text_delta"] = emit
-                    response = complete(select_context(messages), tools, **kwargs)
+                    def summary_request(estimated_tokens: int) -> None:
+                        nonlocal model_requests
+                        model_requests += 1
+                        diagnostic(
+                            "model_request", round=round_number,
+                            estimated_tokens=estimated_tokens, tool_count=0,
+                            loaded_tool_count=0,
+                        )
+
+                    def compaction_event(source_tokens: int, summary_tokens: int) -> None:
+                        diagnostic(
+                            "compaction", estimated_tokens=source_tokens,
+                            summary_tokens=summary_tokens,
+                        )
+
+                    request_messages, summary, covered_messages, covered_digest, request_tokens = compact_for_request(
+                        messages, tools, complete, summary, covered_messages, covered_digest,
+                        cancel_event=turn_cancel, on_status=on_status,
+                        on_summary_request=summary_request,
+                        on_compaction=compaction_event,
+                        save_summary=save_context_summary,
+                        model=getattr(getattr(complete, "__self__", None), "model", None),
+                    )
+                    model_requests += 1
+                    diagnostic(
+                        "model_request", round=round_number,
+                        estimated_tokens=request_tokens, tool_count=len(tools),
+                        loaded_tool_count=sum(name.startswith("mcp__") for name in advertised_names),
+                    )
+                    response = complete(request_messages, tools, **kwargs)
                 except ProviderRequestError as exc:
                     check_cancelled()
                     if not exc.retryable or saw_delta or attempt == 2:
                         raise
                     delay = max(0.5 * 2 ** attempt, min(30.0, exc.retry_after))
+                    diagnostic("retry", retry_attempt=attempt + 1, delay_ms=round(delay * 1000))
                     if on_status:
                         on_status(f"Temporary model request failure · retry {attempt + 2}/3 in {delay:g}s")
                     turn_cancel.wait(min(delay, max(0.0, deadline - time.monotonic())))
@@ -179,6 +237,10 @@ def run_turn(
                 break
             check_cancelled()
             if not response.tool_calls:
+                diagnostic(
+                    "turn_end", elapsed_ms=round((time.monotonic() - turn_started) * 1000),
+                    tool_count=tool_count, model_requests=model_requests,
+                )
                 return response.text
 
             call_message = {
@@ -192,12 +254,20 @@ def run_turn(
                     break
                 if tool_count >= limits.max_tool_calls:
                     break
+                diagnostic_tool_name = (
+                    call.name if call.name in local_tool_names else
+                    "mcp_tool" if call.name.startswith("mcp__") and call.name in advertised_names else
+                    "unknown_tool"
+                )
                 if on_tool_event:
                     on_tool_event("start", call, None)
+                tool_started = time.monotonic()
+                diagnostic("tool_start", tool_name=diagnostic_tool_name)
                 if turn_cancel.is_set():
                     break
                 check_cancelled()
                 tool_count += 1
+                tool_error_class = None
                 try:
                     if call.name == "load_mcp_tools":
                         if mcp_client is None:
@@ -239,25 +309,44 @@ def run_turn(
                     else:
                         args = (call.name, call.arguments, project_root, confirm_terminal, confirm_write)
                         if call.name == "write_file":
-                            result = execute_tool(*args, undo_history=undo_history)
+                            result = execute_tool(
+                                *args, undo_history=undo_history,
+                                file_change_journal=file_change_journal,
+                            )
                         elif call.name == "edit_file":
                             result = execute_tool(
                                 *args, confirm_edit=confirm_edit, undo_history=undo_history,
+                                file_change_journal=file_change_journal,
                             )
                         elif call.name == "undo_file_change":
                             result = execute_tool(
                                 *args, confirm_undo=confirm_undo, undo_history=undo_history,
+                                file_change_journal=file_change_journal,
                             )
                         elif call.name.startswith("browser_"):
                             result = execute_tool(*args, browser=browser)
+                        elif call.name.startswith("terminal"):
+                            result = execute_tool(
+                                *args, terminal_jobs=terminal_jobs, cancel_event=turn_cancel,
+                            )
                         else:
                             result = execute_tool(*args)
                 except (TurnCancelled, InterruptedError) as exc:
+                    tool_error_class = type(exc).__name__
                     result = f"Tool cancelled or interrupted: {exc}. Inspect any effects before repeating it."
                 except TurnLimitReached as exc:
+                    tool_error_class = type(exc).__name__
                     result = f"Tool paused before completion: {exc}"
                 except Exception as exc:
+                    tool_error_class = type(exc).__name__
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
+                result_lower = result.casefold()
+                tool_succeeded = (
+                    tool_error_class is None
+                    and not result_lower.startswith("tool error:")
+                    and "cancelled" not in result_lower
+                    and "denied" not in result_lower
+                )
                 if len(result) > MAX_TOOL_RESULT_CHARS:
                     marker = f"\n[Tool output truncated; original result was {len(result)} characters.]"
                     result = result[:MAX_TOOL_RESULT_CHARS - len(marker)] + marker
@@ -272,6 +361,11 @@ def run_turn(
                     "role": "tool", "tool_call_id": call.id,
                     "name": call.name, "content": result,
                 })
+                diagnostic(
+                    "tool_end", tool_name=diagnostic_tool_name, success=tool_succeeded,
+                    elapsed_ms=round((time.monotonic() - tool_started) * 1000),
+                    **({"error_class": tool_error_class} if tool_error_class else {}),
+                )
                 if on_tool_event:
                     on_tool_event("result", call, result)
             check_cancelled()
@@ -284,6 +378,13 @@ def run_turn(
             f"Turn paused at its {limits.max_rounds}-round budget. "
             "Completed work is retained. Ask to continue with a new turn budget."
         )
+    except Exception as exc:
+        diagnostic(
+            "turn_error", elapsed_ms=round((time.monotonic() - turn_started) * 1000),
+            tool_count=tool_count, model_requests=model_requests,
+            error_class=type(exc).__name__,
+        )
+        raise
     finally:
         timer.cancel()
         try:

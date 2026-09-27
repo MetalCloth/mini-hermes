@@ -39,6 +39,7 @@ from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
+from src.tools.terminal_tool import TerminalJobManager
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -414,6 +415,9 @@ class ChoiceScreen(ModalScreen[str | None]):
             return
         if self.store.delete_session(selected):
             self.app.file_change_history.pop(selected, None)
+            terminal_jobs = self.app.terminal_jobs.pop(selected, None)
+            if terminal_jobs:
+                terminal_jobs.close()
         self._deleting = None
         if selected == self.current:
             self.dismiss("__new_session__")
@@ -776,6 +780,9 @@ class OrynTUI(App[None]):
         self.turn_limits = turn_limits or TurnLimits()
         self.file_change_history: dict[str, list[FileChange]] = {
             session_id: undo_history if undo_history is not None else [],
+        }
+        self.terminal_jobs: dict[str, TerminalJobManager] = {
+            session_id: TerminalJobManager(project_root),
         }
         self.mcp_statuses: list[str] = []
         self.mcp_ready = False
@@ -1299,6 +1306,10 @@ class OrynTUI(App[None]):
         project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
         self.project_root = project_root
         self.session_id = session_id
+        if session_id not in self.file_change_history:
+            self.file_change_history[session_id] = self.store.load_file_change_history(session_id, project_root)
+        if session_id not in self.terminal_jobs:
+            self.terminal_jobs[session_id] = TerminalJobManager(project_root)
         self.pending_images.clear()
         self._refresh_attachments()
         self.model = self.store.session_model(session_id) or DEFAULT_MODEL
@@ -1468,6 +1479,7 @@ class OrynTUI(App[None]):
         self.pending_images.clear()
         self._refresh_attachments()
         self.session_id = self.store.create_session(project_root)
+        self.terminal_jobs[self.session_id] = TerminalJobManager(project_root)
         self.store.set_session_model(self.session_id, self.model)
         self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
         self.history = _base_history(project_root)
@@ -1540,6 +1552,14 @@ class OrynTUI(App[None]):
         cancel_event: threading.Event,
     ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
+        session_id = self.session_id
+        undo_history = self.undo_history
+        terminal_jobs = self.terminal_jobs.get(session_id)
+        if terminal_jobs is None:
+            terminal_jobs = self.terminal_jobs[session_id] = TerminalJobManager(project_root)
+        file_change_journal = lambda phase, change: self.store.record_file_change(
+            session_id, project_root, phase, change,
+        )
         confirm_terminal = lambda command: self._request_approval(
             "Run terminal command", command,
         )
@@ -1566,11 +1586,18 @@ class OrynTUI(App[None]):
                 cancel_event=cancel_event,
                 confirm_edit=confirm_edit,
                 confirm_undo=confirm_undo,
-                undo_history=self.undo_history,
+                undo_history=undo_history,
                 mcp_client=self.mcp_client,
                 confirm_mcp=confirm_mcp,
                 limits=self.turn_limits,
                 on_status=lambda text: self.post_message(TurnProgress(text)),
+                load_context_summary=lambda: self.store.load_context_summary(session_id),
+                save_context_summary=lambda summary, count, digest: self.store.save_context_summary(
+                    session_id, summary, count, digest,
+                ),
+                file_change_journal=file_change_journal,
+                terminal_jobs=terminal_jobs,
+                on_diagnostic=lambda turn_id, event: self.store.append_diagnostic(session_id, turn_id, event),
             )
         except TurnLimitReached as exc:
             finished = TurnFinished(None, str(exc), paused=True)
@@ -1683,6 +1710,7 @@ def main(argv: list[str] | None = None) -> None:
             mcp_client=mcp_client,
             initial_tools=tool_schemas(),
             turn_limits=limits,
+            undo_history=store.load_file_change_history(session_id, project_root),
         )
         if args.effort or args.speed:
             app.provider.configure(
@@ -1699,6 +1727,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         app.run()
     finally:
+        for terminal_jobs in app.terminal_jobs.values():
+            terminal_jobs.close()
         mcp_client.close()
 
 

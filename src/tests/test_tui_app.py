@@ -684,9 +684,9 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     option = app.screen.query_one(OptionList).highlighted_option
                     self.assertEqual(option.id, "terminal")
                     self.assertTrue(option.prompt.no_wrap)
-                    self.assertIn("Run a shell command", option.prompt.plain)
+                    self.assertIn("Start a shell command", option.prompt.plain)
                     self.assertNotIn("\n", option.prompt.plain)
-                    self.assertIn("Run a shell command", str(app.screen.query_one("#picker-description", Static).content))
+                    self.assertIn("Start a shell command", str(app.screen.query_one("#picker-description", Static).content))
                     await pilot.press("enter")
                     self.assertEqual(len(app.screen_stack), 2)  # Browsing never executes a tool.
                     search.value = "missing-tool"

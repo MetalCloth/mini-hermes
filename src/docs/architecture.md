@@ -15,13 +15,13 @@ The word **harness** means this surrounding machinery. A strong harness makes th
 | Codex transport | [codex.py](../providers/codex.py) | Reads login credentials, refreshes tokens, creates Responses requests, parses streaming responses |
 | Provider result types | [types.py](../providers/types.py) | Defines a `ToolCall` and a `ModelResponse` |
 | Turn execution | [conversation_loop.py](../agent/conversation_loop.py) | Repeats model requests and sequential tool execution, enforces round and result limits |
-| Context selection | [context.py](../agent/context.py) | Keeps instructions and recent whole turns within a character budget |
+| Context preparation | [context.py](../agent/context.py), [compression.py](../agent/compression.py) | Estimates request tokens, compacts older completed turns, and selects recent whole turns |
 | Product instructions | [system_prompt.py](../agent/system_prompt.py) | Supplies Oryn identity, formatting guidance, tool discipline, and recovery instructions |
 | Project instructions | [project_context.py](../agent/project_context.py) | Reads a root `AGENTS.md` safely and with a size limit |
-| Transcript storage | [sqlite_store.py](../session/sqlite_store.py) | Stores messages and session metadata, migrates schema, binds sessions to projects |
+| Session storage | [sqlite_store.py](../session/sqlite_store.py) | Stores transcripts, context checkpoints, durable undo journal, diagnostics, and session metadata |
 | Tool catalog and dispatch | [registry.py](../tools/registry.py) | Describes native operations and routes calls to implementations |
 | File operations | [file_tools.py](../tools/file_tools.py) | Reads, searches, writes, edits, previews, records undo snapshots, and restores guarded changes |
-| Terminal execution | [terminal_tool.py](../tools/terminal_tool.py) | Runs an approved command inside the configured Bubblewrap environment |
+| Terminal execution | [terminal_tool.py](../tools/terminal_tool.py) | Runs approved Bubblewrap commands as chat-owned PTY jobs with read/input/stop controls |
 | Native web access | [web_tools.py](../tools/web_tools.py) | Tavily search, Firecrawl extraction, direct HTML extraction, public URL checks |
 | Native browser interaction | [browser_tools.py](../tools/browser_tools.py) | Manages a Firecrawl cloud browser for one turn |
 | Credential lookup | [secrets.py](../security/secrets.py) | Reads environment values or specific local key files |
@@ -121,8 +121,10 @@ sequenceDiagram
     UI->>U: Show removal and addition
     U->>UI: Approve
     UI-->>F: True
+    F->>DB: Persist prepared undo record
     F->>F: Recheck original bytes and replace atomically
-    F-->>H: Edit result and in-memory undo snapshot
+    F->>DB: Mark file change applied
+    F-->>H: Edit result and durable undo record
     H->>P: Next request with result
     P->>L: Continue from confirmed result
     L-->>UI: Final explanation, through provider and loop

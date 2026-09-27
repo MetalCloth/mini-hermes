@@ -32,6 +32,31 @@ class ChatDemoTests(unittest.TestCase):
         self.assertIn("replace notes.txt", output.getvalue())
         self.assertIn("hello", output.getvalue())
 
+    def test_ctrl_c_at_repl_prompt_exits_without_traceback(self):
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            with patch.object(chat_demo, "SQLiteSessionStore") as store:
+                store.return_value.load_messages.return_value = []
+                with patch.object(chat_demo, "CodexProvider") as provider:
+                    with contextlib.redirect_stdout(output):
+                        chat_demo.main([])
+        provider.return_value.complete.assert_not_called()
+        self.assertIn("Exiting.", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())
+
+    def test_repl_can_inspect_local_redacted_diagnostics(self):
+        output = io.StringIO()
+        with patch.object(chat_demo, "SQLiteSessionStore") as store:
+            store.return_value.recent_diagnostics.return_value = [{
+                "session_id": "a" * 32, "turn_id": "b" * 32,
+                "created_at": "2026-09-28 00:00:00",
+                "event": {"type": "turn_end", "elapsed_ms": 12, "tool_count": 0, "model_requests": 1},
+            }]
+            with contextlib.redirect_stdout(output):
+                chat_demo.main(["--diagnostics"])
+        self.assertIn('"type": "turn_end"', output.getvalue())
+        self.assertNotIn("content", output.getvalue())
+
     def test_approval_preview_escapes_terminal_control_codes(self):
         self.assertEqual(chat_demo._approval_preview("first\n\x1b[2Jsecond"), "| first\n| \\x1b[2Jsecond")
 
@@ -102,17 +127,55 @@ class ChatDemoTests(unittest.TestCase):
             self.assertEqual(len(store.load_messages()), 4)
         self.assertIn("Resumed chat with 2 saved messages", output.getvalue())
 
-    def test_interrupted_turn_is_not_saved_with_an_unanswered_tool_call(self):
+    def test_interrupted_turn_saves_partial_reply_and_resumes_at_prompt(self):
         output = io.StringIO()
-        with patch("builtins.input", side_effect=["Do something", EOFError]):
+        resumed_context = []
+        requests = []
+
+        def interrupt_after_partial(_messages, _tools, on_text_delta=None, **_kwargs):
+            requests.append(_messages)
+            if len(requests) == 1:
+                return ModelResponse(tool_calls=[ToolCall("read", "read_file", {"path": "note.txt"})])
+            on_text_delta("The first step is")
+            raise KeyboardInterrupt
+
+        def continue_reply(messages, _tools, **_kwargs):
+            resumed_context.extend(messages)
+            return ModelResponse("Continuing from the saved partial reply.")
+
+        def complete(*args, **kwargs):
+            handler = interrupt_after_partial if len(requests) < 2 else continue_reply
+            return handler(*args, **kwargs)
+
+        with patch("builtins.input", side_effect=["Do something", "Continue", "/quit"]):
             with patch.object(chat_demo, "SQLiteSessionStore") as store:
                 store.return_value.load_messages.return_value = []
                 with patch.object(chat_demo, "CodexProvider") as provider:
-                    provider.return_value.complete.side_effect = KeyboardInterrupt
-                    with contextlib.redirect_stdout(output):
-                        chat_demo.main([])
-        store.return_value.append_messages.assert_not_called()
-        self.assertIn("Inspect possible tool effects before retrying", output.getvalue())
+                    provider.return_value.complete.side_effect = complete
+                    with patch("src.agent.conversation_loop.execute_tool", return_value="Note contents") as execute:
+                        with contextlib.redirect_stdout(output):
+                            chat_demo.main([])
+
+        saved_turns = [call.args[0] for call in store.return_value.append_messages.call_args_list]
+        self.assertEqual(saved_turns[0], [
+            {"role": "user", "content": "Do something"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "read", "name": "read_file", "arguments": {"path": "note.txt"}},
+            ], "turn_status": "cancelled"},
+            {"role": "tool", "tool_call_id": "read", "name": "read_file", "content": "Note contents"},
+            {"role": "assistant", "content": "The first step is", "turn_status": "cancelled"},
+        ])
+        self.assertEqual(saved_turns[1][-1], {
+            "role": "assistant", "content": "Continuing from the saved partial reply.",
+        })
+        self.assertTrue(any(
+            "The first step is" in message.get("content", "")
+            and "previous Oryn reply was stopped before finishing" in message.get("content", "")
+            for message in resumed_context
+        ))
+        self.assertEqual(sum(message.get("role") == "tool" for message in resumed_context), 1)
+        execute.assert_called_once()
+        self.assertIn("partial reply and completed work were saved", output.getvalue())
 
     def test_search_cli_shows_matching_saved_chat(self):
         output = io.StringIO()

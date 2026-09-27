@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from urllib.error import HTTPError
 from src.tools.browser_tools import BrowserSession, _request
 from src.tools.file_tools import read_file, search_files, write_file
 from src.tools.registry import execute_tool, tool_schemas
-from src.tools.terminal_tool import run_terminal
+from src.tools.terminal_tool import TerminalJobManager, run_terminal
 from src.tools.web_tools import _firecrawl_extract, _tavily_api_key, web_extract, web_search
 
 
@@ -156,6 +157,82 @@ class ToolTests(unittest.TestCase):
         self.assertIn("--bind", command)
         self.assertEqual(command[-3:], ["/bin/bash", "-lc", "echo ok"])
 
+    def test_terminal_timeout_preserves_captured_output(self):
+        root = Path("/home/puneet/Documents/mini-hermes")
+        timeout = subprocess.TimeoutExpired("command", 30, output=b"still working", stderr=b"warning")
+        with patch("src.tools.terminal_tool.shutil.which", return_value="/usr/bin/bwrap"):
+            with patch("src.tools.terminal_tool.subprocess.run", side_effect=timeout):
+                result = run_terminal("slow-command", root, Mock(return_value=True))
+        self.assertIn("timed out after 30 seconds", result)
+        self.assertIn("stdout:\nstill working", result)
+        self.assertIn("stderr:\nwarning", result)
+
+        timeout = subprocess.TimeoutExpired("command", 30, output=b"x" * 25_000)
+        with patch("src.tools.terminal_tool.shutil.which", return_value="/usr/bin/bwrap"):
+            with patch("src.tools.terminal_tool.subprocess.run", side_effect=timeout):
+                result = run_terminal("slow-command", root, Mock(return_value=True))
+        self.assertIn("[output truncated at 20,000 characters]", result)
+        self.assertLess(len(result), 20_200)
+
+    def test_terminal_jobs_support_incremental_output_input_stop_and_session_isolation(self):
+        import sys
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            manager = TerminalJobManager(root)
+            other_session = TerminalJobManager(root)
+            command_builder = lambda code, _root, _bwrap: [sys.executable, "-c", code]
+            with patch("src.tools.terminal_tool.shutil.which", return_value="/fake/bwrap"), \
+                 patch("src.tools.terminal_tool._sandbox_command", side_effect=command_builder):
+                job_id = manager.start(
+                    "print('READY', flush=True); value = input(); print('GOT=' + value, flush=True)",
+                    Mock(return_value=True),
+                )
+                initial = manager.read(job_id, wait_seconds=2)
+                self.assertIn("READY", initial)
+                manager.send_input(job_id, "hello", Mock(return_value=True))
+                final = manager.read(job_id, wait_seconds=2)
+                self.assertIn("GOT=hello", final)
+                with self.assertRaisesRegex(ValueError, "No terminal job"):
+                    other_session.read(job_id, 0)
+
+                long_job = manager.start("import time; time.sleep(30)", Mock(return_value=True))
+                self.assertIn("Stopped terminal job", manager.stop(long_job))
+            manager.close()
+            other_session.close()
+
+    def test_terminal_job_denial_and_input_bounds_prevent_process_actions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            manager = TerminalJobManager(Path(folder))
+            with patch("src.tools.terminal_tool.shutil.which", return_value="/fake/bwrap"):
+                with patch("src.tools.terminal_tool.subprocess.Popen") as popen:
+                    self.assertEqual(manager.start("do not run", Mock(return_value=False)), "Command cancelled by the user.")
+                    popen.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "4,096"):
+                manager.send_input("a" * 12, "x" * 5000, Mock(return_value=True))
+            manager.close()
+
+    def test_cancelling_a_terminal_output_wait_stops_that_job(self):
+        import sys
+        from threading import Event
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            manager = TerminalJobManager(root)
+            with patch("src.tools.terminal_tool.shutil.which", return_value="/fake/bwrap"), \
+                 patch("src.tools.terminal_tool._sandbox_command",
+                       side_effect=lambda code, _root, _bwrap: [sys.executable, "-c", code]):
+                job_id = manager.start("import time; time.sleep(30)", Mock(return_value=True))
+                cancel = Event()
+                cancel.set()
+                with self.assertRaises(InterruptedError):
+                    execute_tool(
+                        "terminal_read", {"job_id": job_id, "wait_seconds": 2},
+                        root, Mock(), Mock(), terminal_jobs=manager, cancel_event=cancel,
+                    )
+                self.assertIn("already exited", manager.stop(job_id))
+            manager.close()
+
     def test_web_search_uses_tavily_and_formats_sources(self):
         payload = {"results": [
             {"title": " Example  Page ", "url": "https://example.com/", "content": "Useful\n result"},
@@ -244,7 +321,8 @@ class ToolTests(unittest.TestCase):
 
     def test_catalog_exposes_browser_navigation_tools(self):
         self.assertEqual([tool["name"] for tool in tool_schemas()], [
-            "terminal", "read_file", "search_files", "write_file", "edit_file", "undo_file_change",
+            "terminal", "terminal_read", "terminal_input", "terminal_stop",
+            "read_file", "search_files", "write_file", "edit_file", "undo_file_change",
             "web_search", "web_extract",
             "browser_open", "browser_snapshot", "browser_click", "browser_fill",
             "browser_press", "browser_scroll", "browser_wait", "browser_back",

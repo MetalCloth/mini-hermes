@@ -15,7 +15,7 @@ from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
 from src.tools.file_tools import FileChange
 from src.tools.registry import tool_schemas
-from src.tools.terminal_tool import validate_project_root
+from src.tools.terminal_tool import TerminalJobManager, validate_project_root
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -103,13 +103,17 @@ def main(argv: list[str] | None = None) -> None:
     session_options.add_argument("--list", action="store_true", help="list saved chats")
     session_options.add_argument("--search", metavar="QUERY", help="search saved user and assistant messages")
     session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
+    session_options.add_argument(
+        "--diagnostics", metavar="SESSION_ID", nargs="?", const="",
+        help="show recent redacted local diagnostics (optionally for one chat)",
+    )
     args = parser.parse_args(argv)
     try:
         limits = turn_limits_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    if (args.list or args.search is not None) and args.project is not None:
-        parser.error("--project cannot be used with --list or --search")
+    if (args.list or args.search is not None or args.diagnostics is not None) and args.project is not None:
+        parser.error("--project cannot be used with --list, --search, or --diagnostics")
 
     try:
         store = SQLiteSessionStore()
@@ -118,6 +122,16 @@ def main(argv: list[str] | None = None) -> None:
             print("Saved sessions:" if sessions else "No saved sessions yet.")
             for session_id in sessions:
                 print(f"{session_id}  {store.session_project_root(session_id) or APP_ROOT}")
+            return
+        if args.diagnostics is not None:
+            records = store.recent_diagnostics(args.diagnostics or None)
+            if not records:
+                print("No local diagnostics found.")
+            else:
+                for record in records:
+                    safe = {"session_id": record["session_id"], "turn_id": record["turn_id"],
+                            "created_at": record["created_at"], "event": record["event"]}
+                    print(_safe_terminal_text(json.dumps(safe, ensure_ascii=False, sort_keys=True)))
             return
         if args.search is not None:
             matches = store.search_messages(args.search)
@@ -191,7 +205,22 @@ def main(argv: list[str] | None = None) -> None:
     if project_instructions:
         print("Loaded project instructions from AGENTS.md.")
     print("Type /quit to exit.")
-    undo_history: list[FileChange] = []
+    stored_undo_history = store.load_file_change_history(session_id, project_root)
+    persistent_journal = isinstance(stored_undo_history, list)
+    undo_history = stored_undo_history if persistent_journal else []
+
+    def load_context_summary():
+        record = store.load_context_summary(session_id)
+        return record if isinstance(record, tuple) and len(record) == 3 else None
+
+    save_context_summary = lambda summary, count, digest: store.save_context_summary(
+        session_id, summary, count, digest,
+    )
+    file_change_journal = (
+        lambda phase, change: store.record_file_change(session_id, project_root, phase, change)
+    ) if persistent_journal else None
+    terminal_jobs = TerminalJobManager(project_root)
+    atexit.register(terminal_jobs.close)
     confirm_terminal = lambda command: _confirm_terminal(command, project_root)
     text_open = False
     text_ends_newline = False
@@ -237,6 +266,9 @@ def main(argv: list[str] | None = None) -> None:
             prompt = input("you> ")
         except EOFError:
             break
+        except KeyboardInterrupt:
+            print("\nExiting.")
+            break
         if prompt.strip().lower() in {"/quit", "/exit"}:
             break
         if not prompt.strip():
@@ -259,13 +291,24 @@ def main(argv: list[str] | None = None) -> None:
                 confirm_mcp=_confirm_mcp,
                 limits=limits,
                 on_status=show_status,
+                load_context_summary=load_context_summary,
+                save_context_summary=save_context_summary,
+                file_change_journal=file_change_journal,
+                terminal_jobs=terminal_jobs,
+                on_diagnostic=lambda turn_id, event: store.append_diagnostic(session_id, turn_id, event),
             )
         except KeyboardInterrupt:
             finish_text()
-            del history[turn_start:]
-            persist_turn = False
-            print("\nTurn interrupted; it was not saved. Inspect possible tool effects before retrying.")
-            break
+            for message in history[turn_start:]:
+                if message.get("role") == "assistant":
+                    message["turn_status"] = "cancelled"
+            history.append({
+                "role": "assistant",
+                "content": "".join(partial_text),
+                "turn_status": "cancelled",
+            })
+            print("\nTurn interrupted; the partial reply and completed work were saved. "
+                  "Inspect possible tool effects before retrying.")
         except Exception as exc:
             finish_text()
             status = "paused" if isinstance(exc, TurnLimitReached) else "failed"

@@ -2,9 +2,9 @@
 
 **A detailed explanation of what we built, how it works, why it changed, and what remains unfinished.**
 
-Documentation snapshot: **27 September 2026**, application commit **`b81462d`**. This handbook was written after inspecting the implementation, its tests, all 25 application commits, and the repository's issue list. Later changes can make individual details stale; each chapter links to the code responsible for its behavior.
+Documentation snapshot: **28 September 2026**. This handbook was written after inspecting the implementation, its tests, and the repository issue list. Later changes can make individual details stale; each chapter links to the code responsible for its behavior.
 
-Follow-up chapters now include on-demand MCP schemas, per-chat live undo, active commands, reply timing, home-page startup, and bounded recovery/turn budgets. The [core upgrade plan](16-core-upgrade-plan.md) distinguishes implemented recovery/budgets from the new subsystems awaiting architecture approval.
+Follow-up chapters now include on-demand MCP schemas, durable per-chat undo, active commands, reply timing, home-page startup, bounded recovery/turn budgets, 200k-token context compaction, managed terminal jobs, local redacted diagnostics, and an offline evaluation baseline. The [core upgrade plan](16-core-upgrade-plan.md) records the implemented work and its remaining limits.
 
 Oryn is an educational local coding assistant. Its model runs remotely, while its Python harness, project tools, session database, and terminal interface run on the user's machine. It also has a local browser dashboard. The aim of this handbook is to let you explain and modify the system yourself, starting with the fundamentals and continuing through the implementation details.
 
@@ -16,19 +16,19 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [2. Architecture](architecture.md) | Processes, modules, data flow, responsibility boundaries, and the source tree |
 | [3. Installation and configuration](02-installation-and-configuration.md) | Launchers, project selection, local credentials, dependency requirements, and configuration precedence |
 | [4. Provider and models](03-provider-and-models.md) | Codex authentication, refresh, request serialization, streamed events, model effort, speed, and version compatibility |
-| [5. Agent loop and context](04-agent-loop-and-context.md) | Tool rounds, callbacks, errors, cancellation, instructions, history budgeting, and incomplete reply annotations |
+| [5. Agent loop and context](04-agent-loop-and-context.md) | Tool rounds, callbacks, errors, cancellation, instructions, the 200k-token budget, rolling summaries, and incomplete reply annotations |
 | [6. Sessions and recovery](05-session-storage-and-recovery.md) | SQLite, migrations, project binding, search, titles, pins, saved model settings, and the interrupted tea example |
-| [7. Files, terminal, diffs, and undo](06-tools-files-terminal-and-undo.md) | What the LLM sends, what Python changes, exact replacement, full replacement, approval previews, Git comparisons, and undo guards |
+| [7. Files, terminal, diffs, and undo](06-tools-files-terminal-and-undo.md) | What the LLM sends, what Python changes, exact replacement, full replacement, approval previews, Git comparisons, terminal jobs, and persistent undo |
 | [8. Search, extraction, and browsing](07-web-search-extraction-and-browser.md) | The scraper failure, Tavily, Firecrawl, plain HTML extraction, browser actions, and safe retry boundaries |
 | [9. MCP fundamentals and connections](08-mcp-fundamentals-and-connections.md) | Host/client/server roles, discovery, the ten configured connections, identity, private repositories, and plugins |
 | [10. MCP management and OAuth](09-mcp-manager-and-oauth.md) | Async ownership, reconnect, credential reload, persistent switches, TUI controls, Notion login, PKCE, and token storage |
 | [11. Terminal UI](10-tui-guide-and-rendering.md) | Textual, worker messages, keyboard shortcuts, slash completion, searchable pickers, layout fixes, and theme matching |
 | [12. Browser dashboard and Markdown](11-web-dashboard-and-markdown.md) | HTTP routes, browser streaming, React state, editable drafts, approval cards, code blocks, mathematical rendering, and languages |
 | [13. Approvals and boundaries](12-approvals-security-and-boundaries.md) | The exact enforced checks, local HTTP protection, terminal isolation, remote permissions, and current limitations |
-| [14. Testing and troubleshooting](13-testing-troubleshooting-and-operations.md) | Existing test coverage, commands, the bugs we repaired, operational diagnosis, and what verification does and does not prove |
+| [14. Testing and troubleshooting](13-testing-troubleshooting-and-operations.md) | Regression coverage, commands, local diagnostics, offline evaluations, and what verification does and does not prove |
 | [15. Roadmap and benchmark preparation](14-roadmap-and-benchmark-readiness.md) | Current capability status, the ten issues, unfinished modules, release work, future subagents, and gradual benchmark preparation |
-| [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 16 built-in tools |
-| [Core upgrade plan and progress](16-core-upgrade-plan.md) | Six selected improvements, implemented recovery/budgets, and pending context/jobs/durable undo/diagnostics architecture |
+| [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 19 built-in tools |
+| [Core upgrade plan and progress](16-core-upgrade-plan.md) | Six selected improvements, their implementation, acceptance checks, and remaining limits |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

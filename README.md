@@ -80,6 +80,16 @@ get at most three attempts, with cancellable backoff. Partial model streams and 
 are not automatically replayed. Retry and pause messages appear in the existing activity
 display. See [the loop and recovery details](src/docs/04-agent-loop-and-context.md).
 
+## Context limit and summaries
+
+Oryn estimates the complete model input—including instructions, active tool schemas, recent turns,
+and image tiles—and starts compressing older completed turns above **200,000 estimated tokens**.
+It aims to return to **180,000 tokens** before sending the next request. Summaries use a separate,
+tool-free model call and are saved per chat; the original transcript remains intact. `tiktoken`
+provides token estimates when its encoding data is cached; while offline without that data Oryn uses
+a conservative UTF-8 byte-count fallback and may summarize earlier. See
+[context budgeting and the summary prompt](src/docs/04-agent-loop-and-context.md#8-token-counting-and-the-200k-compaction-trigger).
+
 ## Web tools
 
 `web_search` uses Tavily. `web_extract` and browser interaction use Firecrawl when configured. Copy the relevant key into the local config file shown in [.env.example](.env.example); keep real keys out of the repository:
@@ -152,7 +162,10 @@ If an MCP server is missing or cannot start, Oryn continues with its built-in to
 
 ```bash
 python -m unittest discover -s src/tests
+python -m src.evaluation.run
+./oryn repl --diagnostics
 cd web && npm run dev
 ```
 
 The dashboard launcher serves the production build; `npm run dev` is for UI development.
+The offline evaluation uses a scripted provider and temporary projects; it needs no credentials or network. `--diagnostics` prints recent redacted per-turn metadata from the local session database.

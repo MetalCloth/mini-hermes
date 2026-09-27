@@ -14,8 +14,8 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | Project roots and root instructions | Implemented | Root validation, project binding, `AGENTS.md` loading |
 | Saved conversations | Implemented | SQLite transcript and metadata |
 | Session search/title/pin/model preferences | Implemented, interface coverage varies | Store methods and TUI controls; dashboard subset |
-| Native read/search/write/edit/undo | Implemented with limits | Undo memory-only and caller-scoped |
-| Terminal command execution | Implemented for Linux setup | Approval, Bubblewrap, timeout; network enabled |
+| Native read/search/write/edit/undo | Implemented with limits | Undo snapshots persist per chat and reconcile interrupted file changes |
+| Terminal command execution | Implemented for Linux setup | Approval, Bubblewrap, PTY jobs; network enabled and jobs stop at app exit |
 | Tavily search and Firecrawl access | Implemented | Native APIs and configured hosted MCP options |
 | Dashboard Markdown/math | Implemented | Renderer/normalizer/plugins and frontend tests |
 | Full-screen terminal application | Implemented | Textual app and responsive picker tests |
@@ -24,8 +24,10 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | Notion browser OAuth | Implemented | SDK flow/storage; TUI integration mock-tested |
 | Partial text recovery | Implemented | Status persistence plus future-context annotation |
 | Bounded transient recovery | Implemented with limits | Three provider attempts before output; read-only MCP retries; no uncertain mutation replay or durable attempt log |
-| Token-aware budgeting/compression | Partial/absent | Character budget exists; compression placeholder empty |
-| Persistent file undo | Not implemented | Live snapshots only |
+| Token-aware budgeting/compression | Implemented with estimates | 200k input trigger, 180k target, tool-free rolling summary, original transcript kept |
+| Persistent file undo | Implemented with limits | Latest 20 changes per chat, SQLite snapshots and fingerprint-based recovery |
+| Local turn diagnostics | Implemented, redacted | Metadata only; inspect using `./oryn repl --diagnostics [SESSION_ID]` |
+| Offline task evaluation | Implemented, small baseline | Three deterministic scripted-provider tasks; not a real-model benchmark |
 | On-demand MCP schemas | Implemented | Compact service directory, per-turn loading, existing approvals |
 | Read-only Git tools | Not implemented | Terminal can inspect Git with approval |
 | Subagents | Not implemented | Empty files |
@@ -33,16 +35,16 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | Scheduler, memory, gateway | Not implemented | Placeholder areas |
 | Global packaged CLI / desktop installer | Not implemented | Repository `.venv` launcher |
 | Oryn user login/cloud accounts | Not implemented | Codex/MCP authentication is separate |
-| Formal agent benchmark suite | Not implemented | Mechanism tests and manual smoke checks exist |
+| Formal agent benchmark suite | Not implemented | Small offline smoke evaluations exist; broad model-quality benchmark remains |
 
 ## 2. The ten GitHub issues
 
 | Issue | Intended work | Current relationship to implementation |
 | --- | --- | --- |
-| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/mini-hermes/issues/1) | Local diagnostic record for each turn and useful redacted failures | Tool/status/error events exist, but no durable unified run-trace subsystem |
-| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/mini-hermes/issues/2) | Fixed tasks and measurable regression results | Unit/integration tests exist; a task-level evaluation harness remains |
-| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/mini-hermes/issues/3) | Safe recovery from budget/large-output conditions | Character selection and result caps exist; token accounting/compression/recovery still limited |
-| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/mini-hermes/issues/4) | Undo surviving restart | In-memory guarded undo exists; durable snapshots absent |
+| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/mini-hermes/issues/1) | Local diagnostic record for each turn and useful redacted failures | Local allowlisted metadata trace is implemented; prompts, arguments, results, and upstream bodies are omitted |
+| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/mini-hermes/issues/2) | Fixed tasks and measurable regression results | Three deterministic offline tasks run through the shared loop; broader task and model scoring remain |
+| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/mini-hermes/issues/3) | Safe recovery from budget/large-output conditions | 200k estimated-token threshold, rolling summary, whole-turn selection; outputs remain capped rather than archived |
+| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/mini-hermes/issues/4) | Undo surviving restart | Latest 20 changes per chat persist and reconcile by file fingerprints |
 | [#5: First supported local release](https://github.com/MetalCloth/mini-hermes/issues/5) | Define/harden/install the release boundary | Working local interfaces; packaging/onboarding/platform scope still unfinished |
 | [#6: Policy-controlled MCP client](https://github.com/MetalCloth/mini-hermes/issues/6) | Connect external tools with discovery and controls | Substantial work implemented, including hosted services and management; open issue does not imply MCP is absent |
 | [#7: Supervised read-only subagent](https://github.com/MetalCloth/mini-hermes/issues/7) | Bounded context-isolated delegated research | Not implemented |
@@ -164,22 +166,20 @@ Required mechanics include independent context, task status, cancellation, clean
 
 Do not copy the main transcript wholesale into every worker. Context isolation matters both for cost and for keeping unrelated instructions/evidence from leaking between tasks.
 
-## 9. Proposal: persistent undo
-
-**Proposed, not implemented.**
+## 9. Implemented: persistent undo and diagnostics
 
 ```mermaid
 flowchart TD
-    A["Approved file proposal"] --> B["Persist old bytes, mode, root, session, operation ID"]
+    A["Approved write/edit"] --> B["Journal old bytes and intended fingerprint"]
     B --> C["Apply atomic file replacement"]
-    C --> D["Persist result digest and applied status"]
+    C --> D["Mark applied; keep latest 20 per chat"]
     D --> E["Restart or later undo request"]
-    E --> F["Load latest relevant applied record"]
-    F --> G["Check root, path, current digest/mode, approval"]
-    G --> H["Restore and mark undone"]
+    E --> F["Reconcile prepared/undoing rows by fingerprint"]
+    F --> G["Require file and mode to match Oryn's result"]
+    G --> H["Ask approval, restore, mark undone"]
 ```
 
-The design must account for crashes between journal writes and filesystem mutation. Merely saving a Python list to JSON after the fact does not establish a durable transaction. The dashboard and TUI already partition their live snapshots by session, with each session bound to a project. A persistent journal must preserve that ownership across restarts.
+The SQLite journal records `prepared`, `applied`, `undoing`, and `undone` states. A crash between journal and filesystem operations is reconciled after restart by comparing old bytes/mode and the intended digest/mode. A file matching neither state becomes a conflict; Oryn does not guess. Terminal and remote MCP effects remain outside this undo journal.
 
 ## 10. Benchmark ambition: what is missing today
 
@@ -198,9 +198,9 @@ flowchart TD
     FIX --> RUN
 ```
 
-This is a proposed evaluation workflow. The present 104 tests exercise mechanisms; they are not an implementation of this runner.
+`src/evaluation/run.py` now exercises three controlled tasks with a scripted provider and temporary project directories: a direct answer, a file read, and a denied write. It reports pass/fail checks, elapsed time, model requests, tool calls, and estimated context size. It uses no model credentials or network. This is a smoke baseline for harness mechanisms, not a model-quality benchmark or public benchmark score.
 
-Useful first tasks can be small and local: fix a known bug, find a symbol, make a guarded edit, recover a partial answer, or use a documentation tool correctly. Public benchmark integration can follow once task execution and scoring are reliable.
+Useful next tasks include a known bug fix, symbol search, guarded edit, partial-reply recovery, and correct documentation-tool use. Public benchmark integration can follow after broader tasks, pinned model/provider conditions, artifact capture, and repeatable scoring are in place.
 
 ## 11. Suggested measurable dimensions
 

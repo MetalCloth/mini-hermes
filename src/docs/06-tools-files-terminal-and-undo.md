@@ -38,7 +38,7 @@ This is the fundamental answer to “how does the LLM change the code?” It cho
 
 ## 2. Native catalog and schema rules
 
-There are 16 built-in tools: terminal; file read/search/write/edit/undo; web search/extract; and eight browser operations. Their function schemas use object parameters, required fields, and `additionalProperties: false`; the registry marks native functions `strict: true`.
+There are 19 built-in tools: four terminal/job operations; file read/search/write/edit/undo; web search/extract; and eight browser operations. Their function schemas use object parameters, required fields, and `additionalProperties: false`; the registry marks native functions `strict: true`.
 
 For example, although Python's `search_files` function has default arguments, its model schema requires all advertised search arguments. Python defaults and JSON schema optionality are separate concepts.
 
@@ -201,7 +201,7 @@ New files inherit the temporary-file creation permissions, typically owner-only.
 | Typical use | Change a function, fix a condition, rename a focused span | Create a new file or deliberately replace all contents |
 | Main failure mode | Missing/ambiguous old text | Missing parent or replacing more than intended |
 | Stale-file defense | Compare original bytes/mode after approval | Compare captured existing state, or reject a newly appeared target |
-| Undo | Recorded when caller supplies history | Recorded when caller supplies history |
+| Undo | Recorded durably when the interface has a session store | Recorded durably when the interface has a session store |
 
 For a thousand-line file, a five-line edit is easier for the model and user to review than resending all thousand lines. This is a reason to prefer exact focused edits; it is not a claim that `write_file` is inherently invalid for existing files.
 
@@ -312,11 +312,11 @@ Each `FileChange` records:
 | `result_digest` | SHA-256 digest of the bytes Oryn wrote |
 | `result_mode` | Permission mode after the change |
 
-Each supplied live history list retains at most 20 snapshots. It is memory-only; saved chat history does not recreate these snapshots after restart. The dashboard and TUI both store lists by session ID. New chats and project switches start with their own empty list; returning to a chat in the same process restores its existing list. Deleting a chat discards its list. Chats using the same project still share files, so a later edit from another chat or editor causes the current-result check to refuse undo. Undo covers changes made through the approved write/edit tools, not arbitrary shell commands or remote MCP actions.
+The session store keeps at most 20 applied snapshots per chat, including exact previous bytes, prior mode, result digest/mode, and project root. A `prepared` row is written before the atomic file replace; successful writes transition it to `applied`. Undo records `undoing` before restoring, then marks the row `undone`. On restart, Oryn compares the current file's fingerprint against the saved previous and intended states. A matching intended state is safe to undo; a matching previous state means the write/undo completed before its status update; anything else becomes a conflict and cannot be undone automatically. New chats have a separate list; deleting a chat removes its snapshots. Chats sharing a project still share files, so later changes trigger refusal. Undo covers approved `write_file`/`edit_file`, not terminal commands or remote MCP actions.
 
 ```mermaid
 flowchart TD
-    A["User asks to undo"] --> B["Read latest live FileChange"]
+    A["User asks to undo"] --> B["Read latest per-chat FileChange"]
     B --> C{"Path safe and file exists as regular file?"}
     C -->|"No"| X["Refuse; preserve current filesystem"]
     C -->|"Yes"| D{"Current digest and mode equal Oryn's recorded result?"}
@@ -324,11 +324,11 @@ flowchart TD
     D -->|"Yes"| E["Show current-to-previous diff and request approval"]
     E --> F{"Approved?"}
     F -->|"No"| Y["Keep file and snapshot"]
-    F -->|"Yes"| G["Recheck bytes and mode again"]
+    F -->|"Yes"| G["Journal undoing; recheck bytes and mode again"]
     G --> H{"Was the file newly created?"}
     H -->|"Yes"| I["Delete Oryn-created file"]
     H -->|"No"| J["Restore exact old bytes and mode atomically"]
-    I --> K["Pop successful undo record"]
+    I --> K["Mark undone and remove from live undo list"]
     J --> K
 ```
 
@@ -338,7 +338,7 @@ For large restore diffs, the preview can be truncated with an explicit note whil
 
 ## 13. Terminal tool
 
-`terminal` requests a shell command. Every command requires approval. After approval, the implementation requires Bubblewrap and runs `/bin/bash -lc` inside the configured environment.
+`terminal` requests a shell command. Every command requires approval. After approval, the implementation requires Bubblewrap and runs `/bin/bash -lc` inside the configured environment. In the chat interfaces it returns a session-local job ID; `terminal_read`, `terminal_input`, and `terminal_stop` poll output, send separately approved input, and stop the process.
 
 The root `/`, `/proc`, `/dev`, `/sys`, and descendants of the system mounts are rejected as projects. The sandbox starts with a read-only bind of the system, private temporary `/home` and `/tmp`, a writable bind of the selected project, fresh process namespace, and configured working directory.
 
@@ -351,14 +351,16 @@ flowchart TD
     B --> P["Selected project writable"]
     B --> H["Home and temp mounts replaced"]
     B --> N["Network remains enabled"]
-    B --> S["Bash executes command, 30-second timeout"]
-    S --> O["Exit code plus capped stdout/stderr"]
+    B --> S["Bash runs as a PTY-backed session-owned process"]
+    S --> O["Read incremental output, up to 10 seconds per poll"]
+    O --> I["Approved terminal_input or terminal_stop"]
+    S --> T["Automatic stop after two hours or application exit"]
 ```
 
 Network is deliberately not disabled by the current command line. Other system paths can remain visible read-only. The environment is a concrete Linux isolation configuration, not a guarantee against every secret exposure or external side effect.
 
-Timeout returns a useful message. Output is capped before it reaches the history cap. A command that already changed a project before timing out is not automatically reversed.
+The legacy direct `run_terminal` helper remains a one-shot 30-second call; the conversation tool uses PTY jobs capped at 200,000 buffered bytes, 4,800 bytes per read, eight running and 20 retained jobs per chat, ten seconds per read, and a two-hour lifetime. Stopping sends TERM then KILL. Jobs are not durable: closing the chat manager terminates remaining processes, and a new process cannot resume a previous job. Output is sanitized before it reaches the model. A command that already changed a project before it stops is not automatically reversed.
 
 ## 14. Things the current tools do not provide
 
-No dedicated Git status/diff tool exists yet; Git inspection is possible through the approval-controlled terminal tool. There is no generic multi-file patch tool, persistent undo journal, redo stack, automatic directory creation in `write_file`, image/audio file editor, arbitrary Python evaluation tool, or subagent delegation tool. Placeholder filenames do not add those operations to the catalog.
+No dedicated Git status/diff tool exists yet; Git inspection is possible through the approval-controlled terminal tool. There is no generic multi-file patch tool, redo stack, automatic directory creation in `write_file`, image/audio file editor, arbitrary Python evaluation tool, or subagent delegation tool. Placeholder filenames do not add those operations to the catalog.

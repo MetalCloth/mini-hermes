@@ -13,7 +13,7 @@ from src.tools.file_tools import (
     undo_file_change,
     write_file,
 )
-from src.tools.terminal_tool import run_terminal
+from src.tools.terminal_tool import TerminalJobManager, run_terminal
 from src.tools.web_tools import web_extract, web_search
 
 
@@ -22,17 +22,45 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
         {
             "name": "terminal",
             "description": (
-                "Run a shell command from the project folder when the user asks you to "
-                "inspect or change this project. The user must approve every command. "
-                "Bubblewrap limits writes to the project folder and hides the user's home; "
-                "network access remains enabled. Returns stdout/stderr and exit code; "
-                "commands time out after 30 seconds."
+                "Start a shell command from the project folder when the user asks you to inspect or change it. "
+                "The user must approve every command. Bubblewrap limits writes to the project folder and hides "
+                "the user's home; network access remains enabled. Returns a session-local job ID and initial output. "
+                "Use terminal_read to check output, terminal_input for approved interactive input, and terminal_stop to cancel."
             ),
             "parameters": {
                 "type": "object", "properties": {
                     "command": {"type": "string", "description": "Command to run, e.g. 'git status --short'."}
                 }, "required": ["command"], "additionalProperties": False,
             },
+        },
+        {
+            "name": "terminal_read",
+            "description": (
+                "Read new output from a running terminal job in this chat. Waits at most 10 seconds. "
+                "Use the exact job ID returned by terminal; output is incremental and session-local."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "job_id": {"type": "string", "description": "12-character ID returned by terminal."},
+                "wait_seconds": {"type": "number", "description": "How long to wait for new output, from 0 to 10."},
+            }, "required": ["job_id", "wait_seconds"], "additionalProperties": False},
+        },
+        {
+            "name": "terminal_input",
+            "description": (
+                "Send up to 4,096 UTF-8 bytes to an interactive terminal job. Oryn asks the user to approve "
+                "the exact input. A newline is added when missing."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "job_id": {"type": "string", "description": "12-character ID returned by terminal."},
+                "text": {"type": "string", "description": "Input to send to the running process."},
+            }, "required": ["job_id", "text"], "additionalProperties": False},
+        },
+        {
+            "name": "terminal_stop",
+            "description": "Stop a running terminal job owned by this chat. It sends TERM, then KILL if needed.",
+            "parameters": {"type": "object", "properties": {
+                "job_id": {"type": "string", "description": "12-character ID returned by terminal."},
+            }, "required": ["job_id"], "additionalProperties": False},
         },
         {
             "name": "read_file",
@@ -111,7 +139,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Undo the most recent approved write_file or edit_file change made by Oryn in this chat session. "
                 "Restores previous bytes and permissions, or deletes a file Oryn created. "
                 "The user must approve the undo. It refuses if the file changed afterward. "
-                "The 20 most recent changes are kept in memory until this Oryn process exits. "
+                "The 20 most recent changes are saved per chat and can be undone after reopening Oryn. "
                 "Changes to existing files over 1 MB are refused so Oryn can keep a safe snapshot."
             ),
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
@@ -263,11 +291,41 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
                  browser: BrowserSession | None = None,
                  confirm_edit: Callable[[str, str], bool] | None = None,
                  confirm_undo: Callable[[str, str, bool], bool] | None = None,
-                 undo_history: list[FileChange] | None = None) -> str:
+                 undo_history: list[FileChange] | None = None,
+                 file_change_journal: Callable[[str, FileChange], int | None] | None = None,
+                 terminal_jobs: TerminalJobManager | None = None,
+                 cancel_event=None) -> str:
     if name.startswith("browser_") and browser is None:
         raise RuntimeError("Browser actions need an active agent turn. Open a page in the chat first.")
     if name == "terminal":
-        result = run_terminal(arguments["command"], project_root, confirm_terminal)
+        if terminal_jobs is None:
+            result = run_terminal(arguments["command"], project_root, confirm_terminal)
+        else:
+            job_id = terminal_jobs.start(arguments["command"], confirm_terminal)
+            if not isinstance(job_id, str) or len(job_id) != 12:
+                result = job_id
+            else:
+                try:
+                    result = terminal_jobs.read(job_id, 0.2, cancel_event)
+                except InterruptedError:
+                    terminal_jobs.stop(job_id)
+                    raise
+    elif name == "terminal_read":
+        if terminal_jobs is None:
+            raise RuntimeError("Terminal jobs are unavailable in this chat.")
+        try:
+            result = terminal_jobs.read(arguments["job_id"], arguments["wait_seconds"], cancel_event)
+        except InterruptedError:
+            terminal_jobs.stop(arguments["job_id"])
+            raise
+    elif name == "terminal_input":
+        if terminal_jobs is None:
+            raise RuntimeError("Terminal jobs are unavailable in this chat.")
+        result = terminal_jobs.send_input(arguments["job_id"], arguments["text"], confirm_terminal)
+    elif name == "terminal_stop":
+        if terminal_jobs is None:
+            raise RuntimeError("Terminal jobs are unavailable in this chat.")
+        result = terminal_jobs.stop(arguments["job_id"])
     elif name == "read_file":
         result = read_file(arguments["path"], project_root)
     elif name == "search_files":
@@ -279,19 +337,20 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
         )
     elif name == "write_file":
         result = write_file(
-            arguments["path"], arguments["content"], project_root, confirm_write, undo_history,
+            arguments["path"], arguments["content"], project_root, confirm_write,
+            undo_history, file_change_journal,
         )
     elif name == "edit_file":
         if confirm_edit is None:
             raise RuntimeError("edit_file needs a user-approval handler; no changes were made.")
         result = edit_file(
             arguments["path"], arguments["old_text"], arguments["new_text"],
-            project_root, confirm_edit, undo_history,
+            project_root, confirm_edit, undo_history, file_change_journal,
         )
     elif name == "undo_file_change":
         if confirm_undo is None or undo_history is None:
             raise RuntimeError("Undo is unavailable in this chat session; no changes were made.")
-        result = undo_file_change(project_root, undo_history, confirm_undo)
+        result = undo_file_change(project_root, undo_history, confirm_undo, file_change_journal)
     elif name == "web_search":
         result = web_search(arguments["query"], arguments["max_results"])
     elif name == "web_extract":

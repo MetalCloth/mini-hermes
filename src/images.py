@@ -165,7 +165,7 @@ def prepare_image(source: bytes, name: str = "Pasted image") -> dict[str, Any]:
 
 
 def image_context_bytes(messages: list[dict[str, Any]]) -> int:
-    """Bound images independently from the transcript's legacy character budget."""
+    """Bound image bytes separately from request-token estimation."""
     total = 0
     for message in messages:
         images = message.get("images", [])
