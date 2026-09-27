@@ -1,10 +1,20 @@
 # Oryn
 
-Oryn is a local, educational coding assistant built around a Codex model. It has a Python agent loop and tools, SQLite chat history, and a React dashboard.
+Oryn is a local, educational coding assistant built around a Codex model. It has a Python agent loop and tools, SQLite chat history, a full-screen terminal UI, MCP connections, and a React dashboard.
+
+## Detailed documentation
+
+Start with the [Oryn engineering handbook](src/docs/README.md). It explains the complete development history, architecture, provider, tool loop, context, sessions, recovery, file editing and undo, web services, MCP/OAuth, both interfaces, testing, and roadmap with diagrams and worked examples.
+
+- [Architecture and request flow](src/docs/architecture.md)
+- [Setup and credential configuration](src/docs/02-installation-and-configuration.md)
+- [Tool arguments and schemas](src/docs/15-native-tool-reference.md)
+- [Troubleshooting](src/docs/13-testing-troubleshooting-and-operations.md)
+- [Manual smoke checklist](src/docs/smoke-checklist.md)
 
 ## Run the dashboard
 
-Requirements: Python 3.10+, Node.js/npm, and the Codex CLI.
+Requirements: Python 3.11+, Node.js/npm, and the Codex CLI. The MCP error-handling path uses Python 3.11's `BaseExceptionGroup`.
 
 ```fish
 python3 -m venv .venv
@@ -82,7 +92,7 @@ EXA_API_KEY=
 LINEAR_API_KEY=
 ```
 
-Existing Tavily and Firecrawl keys in `~/.mini-hermes/tavily.env` and `firecrawl.env` are reused if `mcp.env` has no key. Restart Oryn after changing credentials.
+Existing Tavily and Firecrawl keys in `~/.mini-hermes/tavily.env` and `firecrawl.env` are reused by MCP presets if `mcp.env` has no key. Native tools read their respective files, not `mcp.env`. After changing MCP credentials, reconnect in the TUI or restart Oryn.
 
 Notion's hosted server requires OAuth; a regular Notion integration API key will not work. Sign in explicitly:
 
@@ -105,8 +115,11 @@ If an MCP server is missing or cannot start, Oryn continues with its built-in to
 - `src/providers/` — Codex model API client
 - `src/tools/` — terminal, file, web, and browser tools
 - `src/session/` — SQLite chat history
+- `src/mcp/` — hosted/local connections, discovery, policy, and Notion OAuth
+- `src/tui_app.py` and `src/tui.tcss` — full-screen terminal UI
 - `src/web_app.py` — local HTTP API and static React UI server
 - `web/src/` — React dashboard
+- `src/docs/` — engineering handbook and smoke checklist
 
 ## Development
 
