@@ -40,6 +40,8 @@ By default, `./oryn` opens the full-screen Python TUI on its home page with a fr
 
 Click the effort or speed below the prompt, or use `/effort` (`F3`) and `/speed` (`F4`). Each picker reads the selected model's advertised options from `~/.codex/models_cache.json`; unsupported choices are rejected. Choices are saved separately for each model in each session and apply to the next turn. New chats inherit the current choices. Fast mode requests priority processing and can use more credits; availability depends on the account. Unknown models or a missing catalog keep provider defaults until the Codex CLI refreshes its catalog.
 
+Paste a PNG or JPEG into the composer with Ctrl+V. The draft shows a pasted-image item with its dimensions; Backspace on an empty draft removes the last one. Up to four images (5 MiB each) are accepted per message. Oryn checks dimensions, removes embedded metadata, and requires the local model catalog to confirm image input. Images remain in that chat's local SQLite history and are included with the next message. Linux image paste reads the desktop clipboard through `wl-paste` on Wayland or `xclip` on X11. Image input uses model capacity and may affect usage.
+
 ```bash
 ./oryn
 ./oryn --new

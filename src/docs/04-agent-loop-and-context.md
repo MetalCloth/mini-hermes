@@ -100,6 +100,7 @@ Errors from the provider or context selector are different: they can fail the tu
 | Model requests in `run_turn` | 8 | One user turn |
 | Tool result retained by loop | 20,000 characters | Each result, including truncation marker |
 | History selection budget | 80,000 serialized characters | Selected transcript and pinned instructions |
+| Image history budget | 20 MiB total; 5 MiB per image; four images per message | Image bytes in selected conversation context |
 | MCP approval argument preview | 12,000 characters | Reviewable JSON arguments |
 | Root `AGENTS.md` content | 20,000 characters | Project instructional content |
 
@@ -152,7 +153,7 @@ The project guide asks us to keep responsibilities separate, prefer the simplest
 3. Start with the newest turn and add earlier whole turns while the budget allows.
 4. Restore chronological order and prepare incomplete-reply annotations.
 
-Serialized size is measured using compact JSON with `ensure_ascii=False`, plus a small separator allowance. This is a character count, not a tokenizer estimate.
+Serialized size is measured using compact JSON with `ensure_ascii=False`, plus a small separator allowance. Base64 image bytes are excluded from that character count and bounded separately by the 20 MiB image limit. Both limits are character/byte safeguards, not a tokenizer estimate.
 
 Example sizes are hypothetical:
 

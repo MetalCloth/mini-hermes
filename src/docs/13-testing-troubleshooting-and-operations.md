@@ -18,21 +18,22 @@ Sources: [Python tests](../tests), [Markdown tests](../../web/src/markdown.test.
 
 The user reported successful partial-reply continuation and a working Tavily migration. Those observations complement automated checks; they do not replace them.
 
-## 2. Existing Python suite: 91 test methods
+## 2. Existing Python suite: 97 test methods
 
 The source snapshot contains these test methods, counted from its test definitions:
 
 | File | Count | Main coverage |
 | --- | ---: | --- |
 | [test_chat_demo.py](../tests/test_chat_demo.py) | 6 | REPL history, persistence, safe preview, approval EOF, interrupted tool pairing, search CLI |
-| [test_codex.py](../tests/test_codex.py) | 14 | Stream parsing/completion, function calls, payloads, orphaned calls, errors, cancellation, capabilities, version |
+| [test_codex.py](../tests/test_codex.py) | 15 | Stream parsing/completion, function calls, payloads, image inputs, orphaned calls, errors, cancellation, capabilities, version |
 | [test_conversation_loop.py](../tests/test_conversation_loop.py) | 6 | Tool rounds, multiple calls, result cap, tool errors, cancellation, callback failures |
+| [test_images.py](../tests/test_images.py) | 4 | Clipboard detection, image validation, metadata removal, request formatting, and multimodal context limits |
 | [test_mcp.py](../tests/test_mcp.py) | 19 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions |
 | [test_session_store.py](../tests/test_session_store.py) | 5 | Migration, metadata, ordered history, transaction behavior, empty DB, search |
 | [test_tools.py](../tests/test_tools.py) | 25 | File boundaries, read/search/write, atomic failure, terminal approval/isolation, Tavily, Firecrawl, browser validation/retry |
-| [test_tui_app.py](../tests/test_tui_app.py) | 9 | Home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, compact tools, model/session controls, attached palette layout |
+| [test_tui_app.py](../tests/test_tui_app.py) | 10 | Home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
 | [test_web_app.py](../tests/test_web_app.py) | 7 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence |
-| **Total** | **91** | Mechanism regression coverage |
+| **Total** | **97** | Mechanism regression coverage |
 
 The count describes test methods, not code coverage percentage or benchmark score. Some methods exercise many scenarios internally.
 

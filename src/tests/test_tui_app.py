@@ -2,11 +2,14 @@
 
 import json
 import asyncio
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
+
+from PIL import Image
 
 from src import tui_app
 from src.agent.context import select_context
@@ -72,6 +75,68 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
             finally:
                 app.mcp_client.close()
+
+    async def test_image_attachment_is_sent_saved_and_restored_with_its_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "models_cache.json").write_text(json.dumps({"models": [{
+                "slug": "gpt-6-luna", "input_modalities": ["text", "image"],
+            }]}))
+            image = BytesIO()
+            Image.new("RGB", (3, 2), "orange").save(image, format="PNG")
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session = store.create_session(root)
+            client = MCPClient(configs=[])
+            provider = CodexProvider("gpt-6-luna", root / "auth.json")
+            app = OrynTUI(
+                store=store, session_id=session, project_root=root, model=provider.model, history=[],
+                provider=provider, mcp_client=client, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    composer = app.query_one("#composer", TextArea)
+                    with patch("src.tui_app.read_clipboard_image", return_value=None):
+                        app.copy_to_clipboard("ordinary text")
+                        await pilot.press("ctrl+v")
+                        self.assertEqual(composer.text, "ordinary text")
+                        composer.clear()
+                    with patch("src.tui_app.read_clipboard_image", return_value=image.getvalue()):
+                        await pilot.press("ctrl+v")
+                        attachment = app.query_one("#image-attachments", Static)
+                        self.assertTrue(attachment.display)
+                        self.assertIn("Pasted image 1 (3×2)", str(attachment.content))
+                        await pilot.pause()
+                        for _ in range(3):
+                            await pilot.press("ctrl+v")
+                        self.assertEqual(len(app.pending_images), 4)
+                        await pilot.press("ctrl+v")
+                        self.assertIn("at most 4", str(app.query_one("#activity-label", Static).content))
+                        await pilot.press("backspace")
+                        self.assertEqual(len(app.pending_images), 3)
+                        await pilot.press("ctrl+v")
+                        captured = {}
+
+                        def answer(messages, tools=None, **kwargs):
+                            captured["messages"] = messages
+                            return ModelResponse("They are images.")
+
+                        with patch.object(provider, "complete", side_effect=answer):
+                            await pilot.press("enter")  # Image-only messages are valid.
+                            app._turn_thread.join(timeout=3)
+                            await pilot.pause()
+                        self.assertFalse(app.turn_active)
+                        sent = next(message for message in captured["messages"] if message.get("images"))
+                        self.assertEqual(len(sent["images"]), 4)
+                        self.assertEqual(sent["images"][0]["name"], "Pasted image 1")
+                        saved = store.load_messages(session)
+                        self.assertEqual(len(saved[0]["images"]), 4)
+                        self.assertEqual(saved[0]["images"][0]["width"], 3)
+                        await app._load_session(session)
+                        card = list(app.query(MessageCard))[0]
+                        self.assertIn("Pasted image 1 (3×2)", str(card.query_one(".message-images", Static).content))
+                        await pilot.pause()
+            finally:
+                client.close()
 
     async def test_undo_history_stays_with_its_chat_across_switches_and_deletion(self):
         with tempfile.TemporaryDirectory() as temp:

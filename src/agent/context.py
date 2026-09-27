@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from src.images import MAX_CONTEXT_IMAGE_BYTES, image_context_bytes
+
 
 MAX_HISTORY_CHARS = 80_000
 
@@ -41,23 +43,39 @@ def select_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         turns[-1].append(message)
 
     def size(items: list[dict[str, Any]]) -> int:
-        return sum(len(json.dumps(item, ensure_ascii=False, separators=(",", ":"))) + 1 for item in items)
+        total = 0
+        for item in items:
+            sized = item
+            images = item.get("images")
+            if isinstance(images, list):
+                sized = {**item, "images": [
+                    {key: value for key, value in image.items() if key != "base64_data"}
+                    if isinstance(image, dict) else image
+                    for image in images
+                ]}
+            total += len(json.dumps(sized, ensure_ascii=False, separators=(",", ":"))) + 1
+        return total
 
     selected_turns: list[list[dict[str, Any]]] = []
     used = size(pinned)
+    used_image_bytes = 0
     if used > MAX_HISTORY_CHARS:
         raise ValueError(f"System instructions exceed the {MAX_HISTORY_CHARS:,}-character context budget.")
     for turn in reversed(turns):
         turn_size = size(turn)
-        if used + turn_size > MAX_HISTORY_CHARS:
+        turn_images = image_context_bytes(turn)
+        if (used + turn_size > MAX_HISTORY_CHARS
+                or used_image_bytes + turn_images > MAX_CONTEXT_IMAGE_BYTES):
             if not selected_turns:
                 raise ValueError(
                     f"System instructions and the current chat turn exceed the "
-                    f"{MAX_HISTORY_CHARS:,}-character context budget. Shorten the message or reduce the tool output."
+                    f"{MAX_HISTORY_CHARS:,}-character or {MAX_CONTEXT_IMAGE_BYTES // (1024 * 1024)} MiB image context budget. "
+                    "Shorten the message or remove images."
                 )
             break
         selected_turns.append(turn)
         used += turn_size
+        used_image_bytes += turn_images
 
     selected = pinned + [message for turn in reversed(selected_turns) for message in turn]
     return _mark_incomplete_replies(selected)

@@ -17,6 +17,46 @@ from src.providers.codex import _response_text
 
 
 class CodexStreamTests(unittest.TestCase):
+    def test_image_messages_use_catalog_capability_and_responses_image_parts(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            catalog = root / "models_cache.json"
+            catalog.write_text(json.dumps({"models": [{
+                "slug": "gpt-6-astra", "input_modalities": ["text", "image"],
+            }]}))
+            provider = codex.CodexProvider("gpt-6-astra", root / "auth.json")
+            self.assertTrue(provider.supports_image_input())
+            from src.images import prepare_image
+            pixel = io.BytesIO()
+            Image.new("RGB", (2, 2), "red").save(pixel, format="PNG")
+            message_image = prepare_image(pixel.getvalue())
+            with patch.object(codex, "_read_auth", return_value={"tokens": {
+                "access_token": "token", "account_id": "account",
+            }}):
+                response = io.BytesIO(b'data: {"type":"response.output_text.delta","delta":"Seen"}\n\ndata: {"type":"response.completed","response":{}}\n\n')
+                with patch.object(codex.urllib.request, "urlopen", return_value=response) as urlopen:
+                    result = provider.complete([{
+                        "role": "user", "content": "What is shown?", "images": [message_image],
+                    }])
+                request = json.loads(urlopen.call_args.args[0].data)
+            content = request["input"][0]["content"]
+            self.assertEqual(result.text, "Seen")
+            self.assertEqual(content[0], {"type": "input_text", "text": "What is shown?"})
+            self.assertEqual(content[1]["type"], "input_image")
+            self.assertTrue(content[1]["image_url"].startswith("data:image/png;base64,"))
+            self.assertEqual(provider.model_options()["service_tier"], [("default", "Standard")])
+
+            catalog.write_text(json.dumps({"models": [{"slug": "gpt-6-astra", "input_modalities": ["text"]}]}))
+            self.assertFalse(provider.supports_image_input())
+            with patch.object(codex, "_read_auth", return_value={"tokens": {
+                "access_token": "token", "account_id": "account",
+            }}), patch.object(codex.urllib.request, "urlopen") as urlopen:
+                with self.assertRaisesRegex(ValueError, "does not confirm image input"):
+                    provider.complete([{"role": "user", "content": "Look", "images": [message_image]}])
+                urlopen.assert_not_called()
+
     def test_model_capabilities_drive_settings_payload_and_client_version(self):
         with tempfile.TemporaryDirectory() as folder:
             cache = Path(folder) / "models_cache.json"

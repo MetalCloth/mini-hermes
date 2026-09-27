@@ -28,6 +28,7 @@ from src.agent.conversation_loop import TurnCancelled, run_turn
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
+from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
 from src.mcp.oauth import login_notion
@@ -108,12 +109,13 @@ class ApprovalRequest(Message):
 class MessageCard(Vertical):
     def __init__(
         self, role: str, content: str = "", turn_status: str | None = None,
-        *, elapsed_seconds: float | None = None,
+        *, elapsed_seconds: float | None = None, images: list[dict[str, Any]] | None = None,
     ) -> None:
         self.role = role
         self.content = content
         self.turn_status = turn_status if turn_status in {"cancelled", "failed"} else None
         self.elapsed_seconds = elapsed_seconds
+        self.images = images or []
         super().__init__(classes=f"message-card {role}")
 
     def compose(self) -> ComposeResult:
@@ -125,6 +127,13 @@ class MessageCard(Vertical):
             )
             status.display = self.turn_status is not None
             yield status
+            if self.images:
+                label = Text("▧ ", style="#fab283")
+                for index, image in enumerate(self.images):
+                    if index:
+                        label.append("  ·  ", style="#808080")
+                    label.append(f"{image['name']} ({image['width']}×{image['height']})")
+                yield Static(label, classes="message-images")
             yield Static(self._renderable(), classes="message-copy")
             if self.role == "assistant":
                 yield Label(self._meta_label(), classes="message-meta")
@@ -679,10 +688,26 @@ class ChatComposer(TextArea):
     def action_newline(self) -> None:
         self.insert("\n")
 
+    def action_paste(self) -> None:
+        try:
+            image_data = read_clipboard_image()
+        except ValueError as exc:
+            self.app._set_activity(str(exc), working=False, error=True)
+            return
+        if image_data is None:
+            super().action_paste()
+            return
+        self.app._attach_clipboard_image(image_data)
+
     def action_close_commands(self) -> None:
         self.app.action_dismiss_palette()
 
     def on_key(self, event) -> None:
+        if event.key == "backspace" and not self.text and self.app.pending_images:
+            self.app._remove_last_image()
+            event.prevent_default()
+            event.stop()
+            return
         palette = self.app.query_one("#palette-overlay", PalettePanel)
         if palette.display and event.key in {"up", "down"}:
             options = palette.query_one(OptionList)
@@ -759,6 +784,7 @@ class OrynTUI(App[None]):
         self._turn_started_at: float | None = None
         self._pending_approval: ApprovalRequest | None = None
         self._palette_draft: str | None = None
+        self.pending_images: list[dict[str, Any]] = []
 
     @property
     def undo_history(self) -> list[FileChange]:
@@ -778,7 +804,7 @@ class OrynTUI(App[None]):
                     for message in visible:
                         yield MessageCard(
                             message["role"], message.get("content", ""), message.get("turn_status"),
-                            elapsed_seconds=message.get("elapsed_seconds"),
+                            elapsed_seconds=message.get("elapsed_seconds"), images=message.get("images"),
                         )
                 else:
                     yield Welcome(id="welcome")
@@ -796,6 +822,7 @@ class OrynTUI(App[None]):
                             tab_behavior="indent",
                             highlight_cursor_line=False,
                         )
+                        yield Static(id="image-attachments", classes="image-attachments")
                         with Horizontal(id="composer-meta"):
                             yield Static("Oryn", id="agent-chip")
                             yield Static("·", id="model-separator")
@@ -829,6 +856,10 @@ class OrynTUI(App[None]):
         self.query_one("#composer-wrap").styles.margin = (0, margin, 1, margin)
         self.query_one("#shortcut-hints", Static).update(
             "ctrl+p commands" if compact else "ctrl+p commands   ctrl+o sessions   f2 models"
+        )
+        self.query_one("#send-hint", Static).update(
+            "enter send · ctrl+v image" if compact
+            else "enter send   shift+enter new line   ctrl+v image"
         )
         self.query_one("#provider-chip").display = not compact
 
@@ -994,7 +1025,7 @@ class OrynTUI(App[None]):
     async def action_send_prompt(self) -> None:
         composer = self.query_one("#composer", TextArea)
         prompt = composer.text.strip()
-        if not prompt:
+        if not prompt and not self.pending_images:
             return
         if prompt.startswith("/"):
             parts = prompt[1:].strip().split(maxsplit=1)
@@ -1021,12 +1052,18 @@ class OrynTUI(App[None]):
         if welcome:
             await welcome.remove()
         transcript = self.query_one("#transcript", VerticalScroll)
-        await transcript.mount(MessageCard("user", prompt))
+        images = list(self.pending_images)
+        await transcript.mount(MessageCard("user", prompt, images=images))
         self._current_reply = MessageCard("assistant")
         await transcript.mount(self._current_reply)
         self._scroll_to_bottom()
         composer.clear()
-        self.history.append({"role": "user", "content": prompt})
+        user_message = {"role": "user", "content": prompt}
+        if images:
+            user_message["images"] = images
+        self.history.append(user_message)
+        self.pending_images.clear()
+        self._refresh_attachments()
         self._sync_home()
         self._refresh_header()
         self._turn_start = len(self.history) - 1
@@ -1175,6 +1212,8 @@ class OrynTUI(App[None]):
                 "F3        Change reasoning effort\n"
                 "F4        Change model speed\n"
                 "Enter     Send message\n"
+                "Ctrl+V    Paste a PNG/JPEG image from the clipboard\n"
+                "Backspace Remove the last pasted image when the draft is empty\n"
                 "Shift+Enter Add a new line\n"
                 "Ctrl+C    Stop turn, or quit when idle\n"
                 "Esc       Close a dialog or deny approval"
@@ -1231,6 +1270,8 @@ class OrynTUI(App[None]):
         project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
         self.project_root = project_root
         self.session_id = session_id
+        self.pending_images.clear()
+        self._refresh_attachments()
         self.model = self.store.session_model(session_id) or DEFAULT_MODEL
         self.provider = CodexProvider(self.model, self.provider.auth_file)
         self._restore_model_settings()
@@ -1251,13 +1292,54 @@ class OrynTUI(App[None]):
             for message in visible:
                 await transcript.mount(MessageCard(
                     message["role"], message.get("content", ""), message.get("turn_status"),
-                    elapsed_seconds=message.get("elapsed_seconds"),
+                    elapsed_seconds=message.get("elapsed_seconds"), images=message.get("images"),
                 ))
         else:
             await transcript.mount(Welcome(id="welcome"))
         self._sync_home()
         self._refresh_header()
         self._scroll_to_bottom()
+
+    def _refresh_attachments(self) -> None:
+        widget = self.query_one("#image-attachments", Static)
+        if not self.pending_images:
+            widget.display = False
+            widget.update("")
+            return
+        label = Text("▧ ", style="#fab283")
+        for index, image in enumerate(self.pending_images):
+            if index:
+                label.append("  ·  ", style="#808080")
+            label.append(f"{image['name']} ({image['width']}×{image['height']})")
+        label.append("   Backspace removes last", style="#808080")
+        widget.update(label)
+        widget.display = True
+
+    def _attach_clipboard_image(self, data: bytes) -> None:
+        if len(self.pending_images) >= MAX_IMAGES:
+            self._set_activity(f"A message can contain at most {MAX_IMAGES} images", working=False, error=True)
+            return
+        if self.provider.supports_image_input() is not True:
+            self._set_activity(
+                f"The model catalog does not confirm image input for {self.model}; refresh the model catalog or select an image-capable model.",
+                working=False, error=True,
+            )
+            return
+        try:
+            image = prepare_image(data, f"Pasted image {len(self.pending_images) + 1}")
+        except ValueError as exc:
+            self._set_activity(str(exc), working=False, error=True)
+            return
+        self.pending_images.append(image)
+        self._refresh_attachments()
+        self._set_activity(f"Attached {image['name']} · {image['width']}×{image['height']}", working=False)
+
+    def _remove_last_image(self) -> None:
+        if not self.pending_images:
+            return
+        image = self.pending_images.pop()
+        self._refresh_attachments()
+        self._set_activity(f"Removed {image['name']}", working=False)
 
     async def _change_model(self) -> None:
         self._hide_palette()
@@ -1354,6 +1436,8 @@ class OrynTUI(App[None]):
             self._set_activity(str(exc), working=False, error=True)
             return
         self.project_root = project_root
+        self.pending_images.clear()
+        self._refresh_attachments()
         self.session_id = self.store.create_session(project_root)
         self.store.set_session_model(self.session_id, self.model)
         self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())

@@ -66,6 +66,7 @@ VerticalScroll, OptionList, TextArea {
     border: none; padding: 0; background: transparent; color: $oryn-ink;
 }
 #composer:focus { border: none; }
+.image-attachments { display: none; width: 1fr; height: auto; max-height: 3; color: $oryn-ink; overflow: hidden; }
 #composer-meta { height: 1; margin-top: 1; }
 #agent-chip { width: auto; color: $oryn-blue; }
 #model-separator { width: 3; color: $oryn-muted; content-align: center middle; }

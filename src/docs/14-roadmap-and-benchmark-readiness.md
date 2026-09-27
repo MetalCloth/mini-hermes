@@ -195,7 +195,7 @@ flowchart TD
     FIX --> RUN
 ```
 
-This is a proposed evaluation workflow. The present 91 tests exercise mechanisms; they are not an implementation of this runner.
+This is a proposed evaluation workflow. The present 97 tests exercise mechanisms; they are not an implementation of this runner.
 
 Useful first tasks can be small and local: fix a known bug, find a symbol, make a guarded edit, recover a partial answer, or use a documentation tool correctly. Public benchmark integration can follow once task execution and scoring are reliable.
 

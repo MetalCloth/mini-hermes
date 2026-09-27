@@ -17,6 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from src.images import provider_image_parts
 from src.providers.types import ModelResponse, ToolCall
 
 
@@ -200,6 +201,18 @@ class CodexProvider:
             and isinstance(model.get("display_name", ""), str)
         ]
 
+    def supports_image_input(self) -> bool | None:
+        """Return the local model catalog's explicit image input capability."""
+        models = self._model_catalog().get("models", [])
+        if not isinstance(models, list):
+            return None
+        model = next((item for item in models
+                      if isinstance(item, dict) and item.get("slug") == self.model), None)
+        modalities = model.get("input_modalities") if model else None
+        if not isinstance(modalities, list) or not all(isinstance(item, str) for item in modalities):
+            return None
+        return "image" in modalities
+
     def model_options(self) -> dict[str, list[tuple[str, str]]]:
         """Offer only capabilities advertised for this model by the Codex catalog."""
         options = {
@@ -318,13 +331,24 @@ class CodexProvider:
                 if role in {"system", "developer"}:
                     continue
                 raise ValueError(f"Unsupported message role: {role}")
-            input_messages.append({
-                "role": role,
-                "content": [{
+            content = []
+            if message.get("content"):
+                content.append({
                     "type": "input_text" if role == "user" else "output_text",
                     "text": message["content"],
-                }],
-            })
+                })
+            images = message.get("images", [])
+            if images and role != "user":
+                raise ValueError("Only user messages can contain image attachments.")
+            if images and self.supports_image_input() is not True:
+                raise ValueError(
+                    f"The model catalog does not confirm image input for {self.model}. "
+                    "Refresh the model catalog or select a model that supports images."
+                )
+            content.extend(provider_image_parts(images))
+            if not content:
+                raise ValueError("A user message must contain text or an image.")
+            input_messages.append({"role": role, "content": content})
         payload = {
             "model": self.model,
             "instructions": instructions,
