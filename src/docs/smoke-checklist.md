@@ -49,6 +49,11 @@ This is a repeatable manual plan, not a declaration that every item has already 
 7. Stop at a pending file approval and confirm no file mutation occurs.
 8. Trigger a controlled provider failure, confirm partial text is marked failed, then retry after the cause is resolved.
 9. Confirm no-text failure displays an honest absence of partial output.
+10. Use a controlled pre-output transient provider failure; confirm retry status, a maximum of three attempts, and that stopping cancels the backoff. Permanent/auth/TLS failures must not be retried.
+11. Interrupt a stream after text or function-call data; confirm it fails without automatically replaying that response. Only known read-only MCP calls qualify for transient retry.
+12. Launch with `--max-rounds 1`, request an approved disposable edit, and confirm the completed call/result and file survive the budget pause. Ask “Continue” and confirm the new turn uses that evidence.
+13. Launch with `--max-turn-seconds 1`, leave a file approval pending, and confirm the TUI/dashboard denies it, closes/clears the approval, and pauses without writing. A REPL prompt can wait for input, but a late approval must not write.
+14. Try invalid budget values such as `--max-rounds 0`; confirm launch rejects them before creating a session.
 
 ## 5. TUI layout and input
 

@@ -6,6 +6,7 @@ import mimetypes
 import re
 import secrets
 import threading
+import time
 import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,9 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from src.agent.conversation_loop import TurnCancelled, run_turn
+from src.agent.conversation_loop import (
+    TurnCancelled, TurnLimitReached, TurnLimits, add_turn_arguments, run_turn, turn_limits_from_args,
+)
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
@@ -50,6 +53,7 @@ class DashboardServer(ThreadingHTTPServer):
         provider_factory: Callable[[str], Any] = CodexProvider,
         mcp_client: MCPClient | None = None,
         mcp_settings_file: Path | None = None,
+        turn_limits: TurnLimits | None = None,
     ) -> None:
         super().__init__(("127.0.0.1", port), DashboardHandler)
         self.project_root = validate_project_root(project_root.expanduser().resolve(strict=True))
@@ -58,6 +62,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.mcp_client = mcp_client
         self.mcp_settings_file = mcp_settings_file
         self.model = MODEL
+        self.turn_limits = turn_limits or TurnLimits()
         self.token = secrets.token_urlsafe(32)
         self.state_lock = threading.Lock()
         self.active_turns: dict[str, threading.Event] = {}
@@ -365,8 +370,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 approval.ready.set()
         try:
             self._event("approval", id=approval_id, action=action, target=target, content=content)
-            approval.ready.wait(timeout=300)
-            return approval.decision is True
+            deadline = time.monotonic() + 300
+            while not approval.ready.wait(0.1):
+                if cancel_event.is_set() or time.monotonic() >= deadline:
+                    return False
+            return not cancel_event.is_set() and approval.decision is True
         finally:
             with self.server.state_lock:
                 self.server.approvals.pop(approval_id, None)
@@ -430,9 +438,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                    if key in call.arguments), "")
                     self._event("tool_start", id=call.id, name=call.name, detail=detail[:160])
                 else:
+                    partial_text.clear()  # The completed call already retains this response text.
                     self._event("tool_result", id=call.id, name=call.name,
                                 result=(result or "")[:2000])
-                    partial_text.clear()
 
             def show_text(delta: str) -> None:
                 partial_text.append(delta)
@@ -476,6 +484,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     confirm_mcp=lambda name, preview: self._ask(
                         session_id, cancel_event, "mcp", name, preview
                     ),
+                    limits=self.server.turn_limits,
+                    on_status=lambda text: self._event("progress", message=text),
                 )
                 if cancel_event.is_set():
                     raise TurnCancelled
@@ -484,6 +494,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except TurnCancelled:
                 mark_interrupted_reply("cancelled")
                 outcome = {"type": "cancelled"}
+            except TurnLimitReached as exc:
+                mark_interrupted_reply("paused")
+                outcome = {"type": "paused", "message": str(exc)}
             except Exception as exc:
                 mark_interrupted_reply("failed")
                 outcome = {"type": "error", "message": f"Agent turn failed: {exc}"}
@@ -514,8 +527,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--project", type=Path, default=Path.cwd(), help="Project folder (default: current folder)")
     parser.add_argument("--port", type=int, default=9119)
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab")
+    add_turn_arguments(parser)
     args = parser.parse_args(argv)
-    server = DashboardServer(args.project, args.port, mcp_client=MCPClient())
+    try:
+        limits = turn_limits_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    server = DashboardServer(args.project, args.port, mcp_client=MCPClient(), turn_limits=limits)
     for status in server.mcp_client.start():
         print(f"mcp> {status}")
     url = f"http://127.0.0.1:{server.server_address[1]}"

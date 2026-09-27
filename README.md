@@ -57,6 +57,29 @@ Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboar
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 
+## Turn budgets and recovery
+
+Each user turn allows **40 model rounds, 200 tool calls, and 1,200 seconds** by default.
+The TUI, REPL, and dashboard share these launch options:
+
+```bash
+./oryn --max-rounds 60 --max-tool-calls 300 --max-turn-seconds 1800
+./oryn repl --max-rounds 60
+./oryn dashboard --max-turn-seconds 1800
+```
+
+Allowed ranges are 1–200 rounds, 1–2,000 tool calls, and 1–7,200 seconds. Exhausting a
+budget pauses the turn, retaining completed tool pairs and available partial text. Ask
+Oryn to continue to start a fresh bounded turn. Completed actions remain in history;
+continuation does not automatically repeat them. Blocking operations keep their own
+timeouts, so the time budget is checked at execution boundaries and can be exceeded
+while an operation finishes or cleanup runs.
+
+Known temporary model failures before response output and eligible read-only MCP failures
+get at most three attempts, with cancellable backoff. Partial model streams and mutations
+are not automatically replayed. Retry and pause messages appear in the existing activity
+display. See [the loop and recovery details](src/docs/04-agent-loop-and-context.md).
+
 ## Web tools
 
 `web_search` uses Tavily. `web_extract` and browser interaction use Firecrawl when configured. Copy the relevant key into the local config file shown in [.env.example](.env.example); keep real keys out of the repository:

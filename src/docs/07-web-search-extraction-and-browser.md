@@ -187,7 +187,7 @@ flowchart TD
 
 Deletion treats an already absent/expired session as successfully closed for the relevant 404/410 cases. On a cleanup failure, the session ID is retained inside the object so the failure is not falsely represented as completed cleanup.
 
-This limited safe retry is implemented. A general model/MCP retry supervisor remains future work.
+This limited browser retry is implemented. The shared loop also now retries classified temporary model failures before response output, and the MCP client retries eligible read-only failures. Those paths permit three attempts total; page-changing actions and uncertain mutations remain excluded. A durable attempt log or general mutation-recovery supervisor is not implemented.
 
 ## 10. Current approval distinction
 

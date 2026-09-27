@@ -44,7 +44,7 @@ VerticalScroll, OptionList, TextArea {
 .message-copy { width: 1fr; height: auto; color: $oryn-ink; background: transparent; }
 .message-meta { height: 1; margin-top: 1; color: $oryn-accent; }
 .message-status { display: none; height: auto; margin-bottom: 1; text-style: bold; }
-.message-status.cancelled { color: #f5a742; }
+.message-status.cancelled, .message-status.paused { color: #f5a742; }
 .message-status.failed { color: #e06c75; }
 
 #activity-row { height: 1; padding: 0 2; color: $oryn-muted; }

@@ -1,15 +1,17 @@
 """Run a model turn, executing requested tools until the model returns text."""
 
 import json
+import time
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from threading import Event
+from threading import Event, Timer
 from typing import Any
 
 from src.agent.context import select_context
 from src.mcp.adapter import mcp_loader_tool
-from src.providers.types import ModelResponse, ToolCall
+from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 from src.tools.browser_tools import BrowserSession
 from src.tools.file_tools import FileChange
 from src.tools.registry import execute_tool
@@ -21,6 +23,37 @@ MAX_TOOL_RESULT_CHARS = 20_000
 
 class TurnCancelled(Exception):
     """The user stopped the active agent turn."""
+
+
+class TurnLimitReached(RuntimeError):
+    """A bounded turn paused; its completed work remains available to continue."""
+
+
+@dataclass(frozen=True)
+class TurnLimits:
+    max_rounds: int = 40
+    max_tool_calls: int = 200
+    max_turn_seconds: int = 1200
+
+    def __post_init__(self) -> None:
+        for name, ceiling in (("max_rounds", 200), ("max_tool_calls", 2000), ("max_turn_seconds", 7200)):
+            value = getattr(self, name)
+            if type(value) is not int or not 1 <= value <= ceiling:
+                raise ValueError(f"{name} must be an integer between 1 and {ceiling}.")
+
+
+def add_turn_arguments(parser) -> None:
+    """Share the same bounded turn options across all three launchers."""
+    for name, default, help_text in (
+        ("max-rounds", 40, "model rounds per turn (1–200; default: 40)"),
+        ("max-tool-calls", 200, "tool calls per turn (1–2000; default: 200)"),
+        ("max-turn-seconds", 1200, "turn wall-time budget (1–7200; default: 1200)"),
+    ):
+        parser.add_argument(f"--{name}", type=int, default=default, help=help_text)
+
+
+def turn_limits_from_args(args) -> TurnLimits:
+    return TurnLimits(args.max_rounds, args.max_tool_calls, args.max_turn_seconds)
 
 
 def run_turn(
@@ -38,6 +71,8 @@ def run_turn(
     undo_history: list[FileChange] | None = None,
     mcp_client: Any | None = None,
     confirm_mcp: Callable[[str, str], bool] | None = None,
+    limits: TurnLimits | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -46,13 +81,53 @@ def run_turn(
         if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
     ]
     loaded_servers: set[str] = set()
+    limits = limits or TurnLimits()
+    turn_cancel = cancel_event if cancel_event is not None else Event()
+    deadline = time.monotonic() + limits.max_turn_seconds
+    timer = Timer(limits.max_turn_seconds, turn_cancel.set)
+    timer.daemon = True
+    timer.start()
+    tool_count = 0
 
     def check_cancelled() -> None:
-        if cancel_event and cancel_event.is_set():
+        if time.monotonic() >= deadline:
+            raise TurnLimitReached(
+                f"Turn paused at its {limits.max_turn_seconds}-second time budget. "
+                "Completed work is retained. Ask to continue with a new turn budget."
+            )
+        if turn_cancel.is_set():
             raise TurnCancelled
 
+    def guarded_approval(callback):
+        if callback is None:
+            return None
+
+        def approve(*args):
+            check_cancelled()
+            approved = callback(*args)
+            check_cancelled()
+            return approved
+
+        return approve
+
+    confirm_terminal = guarded_approval(confirm_terminal)
+    confirm_write = guarded_approval(confirm_write)
+    confirm_edit = guarded_approval(confirm_edit)
+    confirm_undo = guarded_approval(confirm_undo)
+    confirm_mcp = guarded_approval(confirm_mcp)
+
+    def call_mcp(call: ToolCall) -> str:
+        kwargs = {"cancel_event": turn_cancel}
+        if on_status:
+            kwargs["on_retry"] = lambda attempt, delay: on_status(
+                f"Temporary MCP read failure · {call.name} · retry {attempt}/3 in {delay:g}s"
+            )
+        return mcp_client.call_tool(call.name, call.arguments, **kwargs)
+
     try:
-        for _ in range(8):
+        if on_status:
+            on_status(f"Turn budget: {limits.max_rounds} rounds · {limits.max_tool_calls} tools · {limits.max_turn_seconds}s")
+        for _ in range(limits.max_rounds):
             check_cancelled()
             tools = list(native_tools)
             if mcp_client is not None:
@@ -67,7 +142,7 @@ def run_turn(
                         loaded_servers.discard(server)
             advertised_names = {tool["name"] for tool in tools}
             check_cancelled()
-            if on_text_delta:
+            for attempt in range(3):
                 saw_delta = False
 
                 def emit(delta: str) -> None:
@@ -75,29 +150,33 @@ def run_turn(
                     check_cancelled()
                     if delta:
                         saw_delta = True
-                        on_text_delta(delta)
+                        if on_text_delta:
+                            on_text_delta(delta)
 
                 try:
-                    kwargs = {"on_text_delta": emit}
-                    if cancel_event is not None:
-                        kwargs["cancel_event"] = cancel_event
+                    kwargs = {"cancel_event": turn_cancel}
+                    if on_text_delta:
+                        kwargs["on_text_delta"] = emit
                     response = complete(select_context(messages), tools, **kwargs)
+                except ProviderRequestError as exc:
+                    check_cancelled()
+                    if not exc.retryable or saw_delta or attempt == 2:
+                        raise
+                    delay = max(0.5 * 2 ** attempt, min(30.0, exc.retry_after))
+                    if on_status:
+                        on_status(f"Temporary model request failure · retry {attempt + 2}/3 in {delay:g}s")
+                    turn_cancel.wait(min(delay, max(0.0, deadline - time.monotonic())))
+                    check_cancelled()
+                    continue
                 except Exception as exc:
-                    if cancel_event and cancel_event.is_set():
-                        raise TurnCancelled from exc
+                    if turn_cancel.is_set():
+                        check_cancelled()
                     raise
-                if response.text and not saw_delta:
+                if on_text_delta and response.text and not saw_delta:
                     # A non-streaming provider still gets one visible reply.
                     check_cancelled()
                     on_text_delta(response.text)
-            else:
-                try:
-                    kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
-                    response = complete(select_context(messages), tools, **kwargs)
-                except Exception as exc:
-                    if cancel_event and cancel_event.is_set():
-                        raise TurnCancelled from exc
-                    raise
+                break
             check_cancelled()
             if not response.tool_calls:
                 return response.text
@@ -105,20 +184,20 @@ def run_turn(
             call_message = {
                 "role": "assistant",
                 "content": response.text,
-                "tool_calls": [
-                    {"id": call.id, "name": call.name, "arguments": call.arguments}
-                    for call in response.tool_calls
-                ],
+                "tool_calls": [],
             }
             completed_calls = []
-            tool_messages = []
             for call in response.tool_calls:
-                if cancel_event and cancel_event.is_set():
+                if turn_cancel.is_set():
+                    break
+                if tool_count >= limits.max_tool_calls:
                     break
                 if on_tool_event:
                     on_tool_event("start", call, None)
-                if cancel_event and cancel_event.is_set():
+                if turn_cancel.is_set():
                     break
+                check_cancelled()
+                tool_count += 1
                 try:
                     if call.name == "load_mcp_tools":
                         if mcp_client is None:
@@ -154,13 +233,9 @@ def run_turn(
                                 result = "The user denied this MCP action; it was not run."
                             else:
                                 check_cancelled()
-                                result = mcp_client.call_tool(
-                                    call.name, call.arguments, cancel_event=cancel_event
-                                )
+                                result = call_mcp(call)
                         else:
-                            result = mcp_client.call_tool(
-                                call.name, call.arguments, cancel_event=cancel_event
-                            )
+                            result = call_mcp(call)
                     else:
                         args = (call.name, call.arguments, project_root, confirm_terminal, confirm_write)
                         if call.name == "write_file":
@@ -177,28 +252,40 @@ def run_turn(
                             result = execute_tool(*args, browser=browser)
                         else:
                             result = execute_tool(*args)
+                except (TurnCancelled, InterruptedError) as exc:
+                    result = f"Tool cancelled or interrupted: {exc}. Inspect any effects before repeating it."
+                except TurnLimitReached as exc:
+                    result = f"Tool paused before completion: {exc}"
                 except Exception as exc:
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
                 if len(result) > MAX_TOOL_RESULT_CHARS:
                     marker = f"\n[Tool output truncated; original result was {len(result)} characters.]"
                     result = result[:MAX_TOOL_RESULT_CHARS - len(marker)] + marker
-                if on_tool_event:
-                    on_tool_event("result", call, result)
                 completed_calls.append(call)
-                tool_messages.append({
+                # Record each completed pair before notifying the UI, which can disconnect.
+                if len(completed_calls) == 1:
+                    messages.append(call_message)
+                call_message["tool_calls"].append({
+                    "id": call.id, "name": call.name, "arguments": call.arguments,
+                })
+                messages.append({
                     "role": "tool", "tool_call_id": call.id,
                     "name": call.name, "content": result,
                 })
-            call_message["tool_calls"] = [
-                {"id": call.id, "name": call.name, "arguments": call.arguments}
-                for call in completed_calls
-            ]
-            # Store the call and every output together so a failed turn cannot save an orphan call.
-            if completed_calls:
-                messages.extend([call_message, *tool_messages])
+                if on_tool_event:
+                    on_tool_event("result", call, result)
             check_cancelled()
-        raise RuntimeError("The model requested tools in 8 consecutive rounds. Please narrow the request.")
+            if len(completed_calls) < len(response.tool_calls):
+                raise TurnLimitReached(
+                    f"Turn paused at its {limits.max_tool_calls}-tool-call budget. "
+                    "Completed work is retained. Ask to continue with a new turn budget."
+                )
+        raise TurnLimitReached(
+            f"Turn paused at its {limits.max_rounds}-round budget. "
+            "Completed work is retained. Ask to continue with a new turn budget."
+        )
     finally:
+        timer.cancel()
         try:
             browser.close()
         except RuntimeError as exc:

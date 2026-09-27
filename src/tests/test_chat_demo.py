@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from src import chat_demo
 from src.agent.system_prompt import SYSTEM_PROMPT
-from src.providers.types import ModelResponse
+from src.providers.types import ModelResponse, ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 
 
@@ -41,7 +41,7 @@ class ChatDemoTests(unittest.TestCase):
         advertised_tools = []
         responses = ["Hello!", "You said hi."]
 
-        def complete(messages, tools, on_text_delta=None):
+        def complete(messages, tools, on_text_delta=None, cancel_event=None):
             histories.append([message.copy() for message in messages])
             advertised_tools.append({tool["name"] for tool in tools})
             return ModelResponse(responses[len(histories) - 1])
@@ -83,7 +83,7 @@ class ChatDemoTests(unittest.TestCase):
                             chat_demo.main([])
 
                 captured = []
-                def complete(messages, tools, on_text_delta=None):
+                def complete(messages, tools, on_text_delta=None, cancel_event=None):
                     captured.append([message.copy() for message in messages])
                     return ModelResponse("Welcome back")
 
@@ -126,6 +126,43 @@ class ChatDemoTests(unittest.TestCase):
         self.assertIn(session_id, output.getvalue())
         self.assertIn("Find the needle here", output.getvalue())
         self.assertIn("--resume ID", output.getvalue())
+
+    def test_repl_budget_pause_keeps_work_and_a_followup_continues_from_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            output = io.StringIO()
+            with patch.object(chat_demo, "SQLiteSessionStore", return_value=store), \
+                 patch("builtins.input", side_effect=["Make a note", "y", "Continue", "/quit"]), \
+                 patch.object(chat_demo, "CodexProvider") as provider, contextlib.redirect_stdout(output):
+                provider.return_value.complete.side_effect = [
+                    ModelResponse(tool_calls=[ToolCall("write", "write_file", {"path": "note.txt", "content": "Created"})]),
+                    ModelResponse("The note is already created."),
+                ]
+                chat_demo.main(["--project", str(root), "--max-rounds", "1"])
+            self.assertEqual((root / "note.txt").read_text(), "Created")
+            saved = store.load_messages(store.list_sessions()[0])
+            self.assertEqual(saved[1]["turn_status"], "paused")
+            self.assertEqual(saved[2]["tool_call_id"], "write")
+            self.assertEqual(saved[-1]["content"], "The note is already created.")
+            self.assertIn("Agent turn paused", output.getvalue())
+
+            # A failed result renderer runs after the paired call/text has been retained.
+            with patch.object(chat_demo, "SQLiteSessionStore", return_value=store), \
+                 patch("builtins.input", side_effect=["Make another note", "/quit"]), \
+                 patch.object(chat_demo, "_confirm_write", return_value=True), \
+                 patch.object(chat_demo, "_approval_preview", side_effect=RuntimeError("Result display failed")), \
+                 patch.object(chat_demo, "CodexProvider") as provider, contextlib.redirect_stdout(io.StringIO()):
+                provider.return_value.complete.return_value = ModelResponse("Creating another note.", [
+                    ToolCall("failed-ui", "write_file", {"path": "another.txt", "content": "Created"}),
+                ])
+                chat_demo.main(["--new", "--project", str(root)])
+            failed_session = next(s for s in store.list_sessions() if len(store.load_messages(s)) == 3)
+            saved = store.load_messages(failed_session)
+            self.assertEqual(saved[1]["content"], "Creating another note.")
+            self.assertEqual(saved[1]["turn_status"], "failed")
+            self.assertEqual(saved[2]["tool_call_id"], "failed-ui")
+            self.assertEqual((root / "another.txt").read_text(), "Created")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ export type SavedMessage = {
   role: "user" | "assistant" | "tool";
   content: string;
   name?: string;
-  turn_status?: "cancelled" | "failed";
+  turn_status?: "cancelled" | "failed" | "paused";
 };
 
 export type McpServerStatus = {
@@ -39,6 +39,8 @@ export type TurnEvent =
   | { type: "approval"; id: string; action: string; target: string; content: string }
   | { type: "done"; answer: string }
   | { type: "cancelled" }
+  | { type: "paused"; message: string }
+  | { type: "progress"; message: string }
   | { type: "error"; message: string };
 
 export class TurnRejected extends Error {}

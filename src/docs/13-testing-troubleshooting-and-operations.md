@@ -18,22 +18,22 @@ Sources: [Python tests](../tests), [Markdown tests](../../web/src/markdown.test.
 
 The user reported successful partial-reply continuation and a working Tavily migration. Those observations complement automated checks; they do not replace them.
 
-## 2. Existing Python suite: 97 test methods
+## 2. Existing Python suite: 104 test methods
 
 The source snapshot contains these test methods, counted from its test definitions:
 
 | File | Count | Main coverage |
 | --- | ---: | --- |
-| [test_chat_demo.py](../tests/test_chat_demo.py) | 6 | REPL history, persistence, safe preview, approval EOF, interrupted tool pairing, search CLI |
-| [test_codex.py](../tests/test_codex.py) | 15 | Stream parsing/completion, function calls, payloads, image inputs, orphaned calls, errors, cancellation, capabilities, version |
-| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 6 | Tool rounds, multiple calls, result cap, tool errors, cancellation, callback failures |
+| [test_chat_demo.py](../tests/test_chat_demo.py) | 7 | REPL history, persistence, safe preview, approval EOF, interrupted tool pairing, search CLI, budget pause/continue |
+| [test_codex.py](../tests/test_codex.py) | 16 | Stream parsing/completion, function calls, payloads, image inputs, orphaned calls, failure classification, partial-stream protection, error redaction, Retry-After, cancellation, capabilities, version |
+| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 8 | Longer turns, bounded retries, tool/time/round pauses, continuation without replay, result caps, cancellation, completed pairs surviving callback failure |
 | [test_images.py](../tests/test_images.py) | 4 | Clipboard detection, image validation, metadata removal, request formatting, and multimodal context limits |
-| [test_mcp.py](../tests/test_mcp.py) | 19 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions |
+| [test_mcp.py](../tests/test_mcp.py) | 20 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions, read-only transient retries |
 | [test_session_store.py](../tests/test_session_store.py) | 5 | Migration, metadata, ordered history, transaction behavior, empty DB, search |
 | [test_tools.py](../tests/test_tools.py) | 25 | File boundaries, read/search/write, atomic failure, terminal approval/isolation, Tavily, Firecrawl, browser validation/retry |
-| [test_tui_app.py](../tests/test_tui_app.py) | 10 | Home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
-| [test_web_app.py](../tests/test_web_app.py) | 7 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence |
-| **Total** | **97** | Mechanism regression coverage |
+| [test_tui_app.py](../tests/test_tui_app.py) | 11 | Budget pause/continue and expired approvals, home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
+| [test_web_app.py](../tests/test_web_app.py) | 8 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence, budget pause/continue and expired approvals |
+| **Total** | **104** | Mechanism regression coverage |
 
 The count describes test methods, not code coverage percentage or benchmark score. Some methods exercise many scenarios internally.
 
@@ -124,6 +124,16 @@ The focused startup regression passed with an existing legacy `main` conversatio
 .venv/bin/python -m unittest -v src.tests.test_tui_app.TUILayoutTests.test_default_launch_opens_home_and_explicit_resume_keeps_saved_chats
 ```
 
+### Follow-up: recovery and longer turns
+
+On 27 September 2026, the final full **98-method Python suite passed in 35.944 seconds** after the shared recovery, execution-budget, and display/persistence changes. Local socket/subprocess scenarios ran outside the restricted execution sandbox. The tests use controlled transport/provider responses and disposable projects; no real account mutations or public benchmark runs were required.
+
+New checks cover three-attempt limits, permanent/TLS failures, numeric/date Retry-After handling, no replay after text/function output, no MCP mutation retry, cancellation in backoff, completion beyond eight rounds, partial multi-call pauses, persistence/continuation, retained executed pairs on UI callback failure, and approval expiry in the actual TUI and dashboard paths. Follow-up checks also confirm that result-display failures preserve one copy of the completed response/call in the REPL/dashboard, and that a tool-only paused reply retains its elapsed time on transcript reload.
+
+Normal (120×36) and narrow (65×26) TUI screenshots of a real offline approved-write/budget-pause flow were inspected. They show the retained response, pause label, elapsed time, and usable composer; this checks that flow rather than claiming coverage of every terminal/font/layout combination.
+
+The dashboard type check, Markdown checks, and production build passed. React Doctor reported no findings in the three changed React files; its overall application score was 79/100, so this is not a claim that the whole dashboard is free of issues. The existing production bundle-size warning remains. These checks establish regression evidence for the implemented paths, not token budgeting, durable undo, terminal jobs, or a task benchmark runner.
+
 ## 5. Diagnostic method: find the broken boundary
 
 ```mermaid
@@ -151,7 +161,7 @@ Do not begin by changing the system prompt for every failure. If the API rejecte
 
 **Root mechanism:** outbound history contained a function call without its required matching result. Interruptions, failures, or legacy saved state can create that mismatch.
 
-**Current defenses:** loop appends completed pairs together; provider filters saved orphaned calls/outputs. Test names include `test_provider_skips_saved_tool_call_without_output` and cancellation/callback pairing tests.
+**Current defenses:** the loop records each executed call/result pair before the result callback can fail; the provider filters saved orphaned calls/outputs. Test names include `test_provider_skips_saved_tool_call_without_output` and cancellation/callback pairing tests.
 
 **If it recurs:** inspect the message sequence and IDs using safe local debugging. Check that outputs immediately follow the assistant batch and are serialized only for sent calls. Do not delete all chats as the first repair or blame web search without evidence.
 
@@ -256,6 +266,8 @@ Live undo lists are caller-owned and scoped by session in both the dashboard and
 ## 17. Search/command timeouts and oversized context
 
 Narrow the path, pattern, result count, or task. The current system reports bounded failures rather than automatically splitting a huge task into subagents. Character limits are explicit; automatic compression is not implemented.
+
+A turn reaching its round/tool/time allowance is now marked paused, with retained completed pairs and partial text. Ask to continue for a fresh budget, or choose the shared `--max-rounds`, `--max-tool-calls`, and `--max-turn-seconds` launch options within their validated ranges. A pause does not undo work or automatically replay completed actions. A blocking operation may finish after the nominal time allowance; late approvals cannot authorize new actions after it expires.
 
 If history selection rejects the current turn, restarting into a shorter/new conversation can reduce input, but do not confuse this with a fix to token-aware budgeting. The tool schema catalog can still consume additional context.
 

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from src import tui_app
+from src.agent.conversation_loop import TurnLimits
 from src.agent.context import select_context
 from src.agent.conversation_loop import TurnCancelled
 from src.mcp.client import MCPClient
@@ -25,6 +26,65 @@ from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_budget_pause_is_visible_saved_resumable_and_closes_expired_approval(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session = store.create_session(root)
+            client = MCPClient(configs=[])
+            provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
+            app = OrynTUI(
+                store=store, session_id=session, project_root=root, model=provider.model, history=[],
+                provider=provider, mcp_client=client, initial_tools=tool_schemas(),
+                turn_limits=TurnLimits(max_rounds=1),
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    with patch.object(provider, "complete", return_value=ModelResponse(tool_calls=[
+                        ToolCall("write", "write_file", {"path": "note.txt", "content": "Created"}),
+                    ])), patch.object(app, "_request_approval", return_value=True):
+                        app.query_one("#composer", TextArea).load_text("Create a note")
+                        await pilot.press("enter")
+                        app._turn_thread.join(timeout=2)
+                        await pilot.pause()
+                    self.assertFalse(app.turn_active)
+                    self.assertEqual((root / "note.txt").read_text(), "Created")
+                    self.assertEqual(list(app.query(MessageCard))[-1].turn_status, "paused")
+                    self.assertIn("Turn paused", str(app.query_one("#activity-label", Static).content))
+                    self.assertEqual(store.load_messages(session)[1]["turn_status"], "paused")
+                    self.assertEqual(store.load_messages(session)[2]["tool_call_id"], "write")
+                    saved_seconds = store.load_messages(session)[1]["elapsed_seconds"]
+                    self.assertGreaterEqual(saved_seconds, 0)
+                    await app._refresh_transcript()
+                    self.assertEqual(list(app.query(MessageCard))[-1].elapsed_seconds, saved_seconds)
+                    with patch.object(provider, "complete", return_value=ModelResponse("The note is created.")) as complete, \
+                         patch("src.agent.conversation_loop.execute_tool") as execute:
+                        app.query_one("#composer", TextArea).load_text("Continue")
+                        await pilot.press("enter")
+                        app._turn_thread.join(timeout=2)
+                        await pilot.pause()
+                        execute.assert_not_called()
+                        self.assertIn("execution budget", complete.call_args.args[0][1]["content"])
+                    self.assertIsNone(list(app.query(MessageCard))[-1].turn_status)
+
+                    app.turn_limits = TurnLimits(max_turn_seconds=1)
+                    with patch.object(provider, "complete", return_value=ModelResponse(tool_calls=[
+                        ToolCall("late", "write_file", {"path": "late.txt", "content": "Must not be written"}),
+                    ])):
+                        app.query_one("#composer", TextArea).load_text("Write another note")
+                        await pilot.press("enter")
+                        await pilot.pause()
+                        self.assertIsInstance(app.screen, ApprovalScreen)
+                        app._turn_thread.join(timeout=2)
+                        await pilot.pause()
+                    self.assertFalse((root / "late.txt").exists())
+                    self.assertIsNone(app._pending_approval)
+                    self.assertEqual(len(app.screen_stack), 1)
+                    self.assertFalse(app.turn_active)
+                    self.assertEqual(list(app.query(MessageCard))[-1].turn_status, "paused")
+            finally:
+                client.close()
+
     async def test_default_launch_opens_home_and_explicit_resume_keeps_saved_chats(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

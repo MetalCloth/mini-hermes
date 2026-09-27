@@ -25,7 +25,7 @@ answer = run_turn(
 )
 ```
 
-Actual callers also supply edit/undo/MCP approval handlers, cancellation, undo history, and tool-activity callbacks.
+Actual callers also supply edit/undo/MCP approval handlers, cancellation, undo history, tool-activity callbacks, `TurnLimits`, and an optional `on_status` callback for budget/retry messages.
 
 ## 2. Complete turn state machine
 
@@ -34,6 +34,10 @@ flowchart TD
     A["User message added to history"] --> B["Create per-turn browser session"]
     B --> C["Check cancellation and select context"]
     C --> D["Call provider with native tools, MCP directory, and loaded schemas"]
+    D --> RETRY{"Known transient failure before output?"}
+    RETRY -->|"Yes, attempts remain"| WAIT["Cancellable backoff, at most 3 attempts"]
+    WAIT --> C
+    RETRY -->|"No safe retry or attempts exhausted"| FAIL["Fail with incomplete state retained"]
     D --> E{"Response has tool calls?"}
     E -->|"No"| F["Return final response text"]
     E -->|"Yes"| G["For each call, sequentially"]
@@ -46,15 +50,15 @@ flowchart TD
     J --> L["Convert result or caught tool error to text"]
     K --> L
     DEF --> L
-    L --> M["Cap result, emit result event, record completed pair"]
+    L --> M["Cap result, record completed pair, then emit result event"]
     M --> N{"More calls in this response?"}
     N -->|"Yes"| G
-    N -->|"No"| O["Append completed assistant calls and outputs together"]
-    O --> P{"Fewer than 8 requests used?"}
+    N -->|"No"| P{"Round, tool, and time budgets available?"}
     P -->|"Yes"| C
-    P -->|"No"| Q["Raise round-limit error"]
+    P -->|"No"| Q["Pause with completed pairs retained"]
     F --> Z["Close per-turn browser in finally"]
     Q --> Z
+    FAIL --> Z
 ```
 
 Exceptions and cancellation also pass through browser cleanup. A cleanup error produces a warning; it does not fabricate a successful browser close.
@@ -77,9 +81,9 @@ tool results:
 
 The IDs associate each result with its request. A tool result is not merely a paragraph somewhere in chat; it is a protocol item connected to a particular call.
 
-The loop builds a pending assistant call message, gathers completed calls and outputs, then appends them as a group. If cancellation occurs between calls, only the completed pairs are retained. Calls that have not run should not become unanswered function calls in saved history.
+The loop builds an assistant call message and appends each completed call and its output to history before reporting the result to the UI. If cancellation or a budget stop occurs between calls, only the completed pairs are retained. Calls that have not run do not become unanswered function calls in saved history.
 
-There are edge cases around callback failures: a result-event callback can raise before the batch is appended. Existing tests ensure this does not leave an unanswered call in history. This pairing safety does not imply every external side effect can be reconstructed after arbitrary process failure; durable per-turn traces remain a roadmap item.
+Previously, a result-event callback could fail before the batch was recorded, losing evidence of an executed action. Recording the completed pair first fixes that boundary; tests verify the pair survives a callback failure. This updates live history, which interfaces save when the turn finishes. It does not imply every external side effect can be reconstructed after process failure; durable per-turn traces remain a roadmap item.
 
 ## 4. Tool errors become information the model can use
 
@@ -93,18 +97,28 @@ The model can then inspect more context or choose a better argument. A denial si
 
 Errors from the provider or context selector are different: they can fail the turn rather than representing one failed tool operation. The interface then preserves available partial text with failure metadata.
 
+Eligible provider failures get at most three attempts before any response output. Only known read-only MCP operations get transient retries, within their existing 90-second total deadline. Playwright calls and uncertain mutations are excluded. An interrupted operation produces a result asking the model to inspect effects before repeating it. Retry messages use the existing status callback; no independent retry supervisor or durable attempt log is implemented.
+
 ## 5. Limits that exist now
 
 | Limit | Value | Scope |
 | --- | --- | --- |
-| Model requests in `run_turn` | 8 | One user turn |
+| Model rounds in `run_turn` | 40 by default; configurable 1–200 | One user turn; up to three transport attempts per round |
+| Tool calls in `run_turn` | 200 by default; configurable 1–2,000 | One user turn, including loads, denials, and tool errors |
+| Turn time allowance | 1,200 seconds by default; configurable 1–7,200 | One user turn, checked at execution boundaries |
 | Tool result retained by loop | 20,000 characters | Each result, including truncation marker |
 | History selection budget | 80,000 serialized characters | Selected transcript and pinned instructions |
 | Image history budget | 20 MiB total; 5 MiB per image; four images per message | Image bytes in selected conversation context |
 | MCP approval argument preview | 12,000 characters | Reviewable JSON arguments |
 | Root `AGENTS.md` content | 20,000 characters | Project instructional content |
 
-Eight rounds means eight model requests, not eight total tool calls. A response can contain several calls. Loading MCP definitions uses a normal tool round and counts toward this limit. If the eighth response still asks for tools, those calls are handled, then the loop raises the limit error rather than making a ninth request.
+A round means one model response, with up to three attempts when retry is safe. A response can contain several tool calls. Loading MCP definitions counts as a tool call and consumes a model round. `--max-rounds`, `--max-tool-calls`, and `--max-turn-seconds` configure the same validated `TurnLimits` in all three launchers; the selected limits are reported at turn start.
+
+At a limit the loop raises `TurnLimitReached`, and the interface records `turn_status="paused"` with completed tool pairs and available partial text. For a multi-call response, calls beyond the tool allowance are never run or saved. A final text response can still finish after the last allowed tool call if another round and time remain.
+
+Example: `--max-rounds 1` allows one response requesting `write_file`. After approval, the file is created and its call/result remain paired. The turn then pauses before a second request. A new user message saying “Continue” starts a new budget with that saved evidence. The loop does not rerun the creation automatically; any newly requested mutation still needs its usual approval and guards.
+
+The time allowance sets the turn cancellation event and is checked before/after approvals, during retry waits, and between execution steps. The TUI and dashboard release pending approvals on expiry. Blocking native operations and connection opening retain their own timeouts; a REPL approval can wait until input returns, but a late approval cannot authorize an action past the deadline. Cleanup may extend elapsed time. This is a bounded execution allowance, not a hard operating-system kill deadline.
 
 Large tool results are sliced before being appended to history, with a marker showing the original size. The marker is part of the cap. The full original output is not transparently saved in a separate file by this implementation.
 
@@ -196,7 +210,7 @@ The selector raises an explicit error asking for a shorter message or reduced ou
 
 ## 9. Incomplete replies in future model context
 
-Stored messages can contain an internal `turn_status` such as `cancelled` or `failed`. Before sending to the model, `_mark_incomplete_replies` copies the message and removes that internal field. For an incomplete assistant message it adds a readable note ahead of the original text:
+Stored messages can contain an internal `turn_status` such as `cancelled`, `failed`, or `paused`. Before sending to the model, `_mark_incomplete_replies` copies the message and removes that internal field. For an incomplete assistant message it adds a readable note ahead of the original text:
 
 ```text
 [The previous Oryn reply was stopped before finishing. The assistant text below
@@ -210,6 +224,8 @@ Put tea leaves in a cup.
 Both the partial content and the warning reach the model if the turn is selected. The note alone would not tell the model which steps the user already saw. The content alone would not tell it the reply was unfinished.
 
 This transformation is for a request copy; it does not permanently insert the note into the saved original text. See the next chapter for the complete recovery example.
+
+Paused messages use “The previous Oryn reply reached its execution budget before finishing.” The retained content and completed call/result pairs still accompany that note when their turn is selected.
 
 ## 10. What happens when you stop
 

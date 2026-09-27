@@ -79,6 +79,10 @@ This is still the OpenCode-inspired direction the user chose to keep. Alternativ
 
 Shared picker behavior is reused because models, sessions, effort, speed, and tools need similar keyboard interaction. Each specialized screen still owns the meaning of its choices.
 
+The turn worker posts `TurnProgress` messages for chosen budgets and transient retries; the app updates its existing activity line. A budget stop posts `TurnFinished(paused=True)`, saves available text and completed pairs with paused metadata, and displays “Paused at the turn budget · ask to continue.” This is distinct from a failed or user-stopped reply. Elapsed time is retained on the last assistant message even when the reply ends at a tool call with no new partial text. A pending approval is denied and its screen closed when the turn expires.
+
+Launch with `--max-rounds`, `--max-tool-calls`, or `--max-turn-seconds` to override the shared defaults of 40 rounds, 200 calls, and 1,200 seconds. See [the execution boundary details](04-agent-loop-and-context.md#5-limits-that-exist-now); blocking operations still retain their own timeouts.
+
 ## 5. Complete command and shortcut reference
 
 | Command | Action | Keyboard access |

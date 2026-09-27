@@ -4,6 +4,8 @@
 
 Documentation snapshot: **27 September 2026**, application commit **`b81462d`**. This handbook was written after inspecting the implementation, its tests, all 25 application commits, and the repository's issue list. Later changes can make individual details stale; each chapter links to the code responsible for its behavior.
 
+Follow-up chapters now include on-demand MCP schemas, per-chat live undo, active commands, reply timing, home-page startup, and bounded recovery/turn budgets. The [core upgrade plan](16-core-upgrade-plan.md) distinguishes implemented recovery/budgets from the new subsystems awaiting architecture approval.
+
 Oryn is an educational local coding assistant. Its model runs remotely, while its Python harness, project tools, session database, and terminal interface run on the user's machine. It also has a local browser dashboard. The aim of this handbook is to let you explain and modify the system yourself, starting with the fundamentals and continuing through the implementation details.
 
 ## Contents
@@ -26,6 +28,7 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [14. Testing and troubleshooting](13-testing-troubleshooting-and-operations.md) | Existing test coverage, commands, the bugs we repaired, operational diagnosis, and what verification does and does not prove |
 | [15. Roadmap and benchmark preparation](14-roadmap-and-benchmark-readiness.md) | Current capability status, the ten issues, unfinished modules, release work, future subagents, and gradual benchmark preparation |
 | [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 16 built-in tools |
+| [Core upgrade plan and progress](16-core-upgrade-plan.md) | Six selected improvements, implemented recovery/budgets, and pending context/jobs/durable undo/diagnostics architecture |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

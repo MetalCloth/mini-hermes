@@ -5,16 +5,20 @@ import ipaddress
 import os
 import shutil
 import socket
+import ssl
 import threading
 import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
+
+import httpx2
 
 from src.mcp.adapter import provider_tool, provider_tool_name, result_text
 from src.mcp.discovery import MCPServerConfig, SERVER_NAMES, server_configs
+from src.providers.types import retry_after_seconds
 
 
 _SAFE_PLAYWRIGHT_TOOLS = {
@@ -235,6 +239,7 @@ class MCPClient:
 
     def call_tool(
         self, provider_name: str, arguments: dict[str, Any], cancel_event: threading.Event | None = None,
+        on_retry: Callable[[int, float], None] | None = None,
     ) -> str:
         self.start()
         binding = self._bindings.get(provider_name)
@@ -246,28 +251,62 @@ class MCPClient:
         if server_name == "playwright" and tool_name == "browser_navigate":
             self._validate_browser_url(arguments.get("url"))
         assert self._loop is not None
-        future = asyncio.run_coroutine_threadsafe(
-            client.call_tool(tool_name, arguments), self._loop
+        read_only = server_name != "playwright" and (
+            server_name in {"github", "context7", "microsoft_learn", "tavily"}
+            or provider_name in self._read_only_tools
         )
         deadline = time.monotonic() + _TOOL_CALL_TIMEOUT_SECONDS
-        while True:
-            if cancel_event and cancel_event.is_set():
-                future.cancel()
+        stop = cancel_event if cancel_event is not None else threading.Event()
+        for attempt in range(3):
+            if stop.is_set():
                 raise InterruptedError("MCP tool call cancelled.")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                future.cancel()
-                raise RuntimeError(
-                    f"{server_name} MCP tool timed out after {_TOOL_CALL_TIMEOUT_SECONDS} seconds."
-                )
+            future = asyncio.run_coroutine_threadsafe(
+                client.call_tool(tool_name, arguments), self._loop
+            )
             try:
-                result = future.result(timeout=min(0.2, remaining))
-                break
-            except TimeoutError as exc:
-                if future.done():
-                    raise RuntimeError(f"{server_name} MCP tool timed out.") from exc
-                continue
-        return result_text(result)
+                while True:
+                    if stop.is_set():
+                        future.cancel()
+                        raise InterruptedError("MCP tool call cancelled.")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        future.cancel()
+                        raise RuntimeError(
+                            f"{server_name} MCP tool timed out after {_TOOL_CALL_TIMEOUT_SECONDS} seconds. "
+                            "Inspect external state before repeating an action."
+                        )
+                    try:
+                        result = future.result(timeout=min(0.2, remaining))
+                        return result_text(result)
+                    except TimeoutError:
+                        if future.done():
+                            raise
+            except Exception as exc:
+                temporary = isinstance(exc, (
+                    TimeoutError, ConnectionError, httpx2.TimeoutException,
+                    httpx2.NetworkError, httpx2.RemoteProtocolError,
+                ))
+                cause = exc
+                for _ in range(8):
+                    if isinstance(cause, ssl.SSLError):
+                        temporary = False
+                        break
+                    cause = cause.__cause__ or cause.__context__
+                    if cause is None:
+                        break
+                if isinstance(exc, httpx2.HTTPStatusError):
+                    temporary = exc.response.status_code in {429, 500, 502, 503, 504}
+                if (not read_only or not temporary or attempt == 2 or stop.is_set()
+                        or time.monotonic() >= deadline):
+                    raise
+                delay = min(0.5 * 2 ** attempt, max(0.0, deadline - time.monotonic()))
+                if isinstance(exc, httpx2.HTTPStatusError):
+                    retry_after = retry_after_seconds(exc.response.headers.get("Retry-After"))
+                    delay = min(max(delay, retry_after), max(0.0, deadline - time.monotonic()))
+                if on_retry:
+                    on_retry(attempt + 2, delay)
+                if stop.wait(delay):
+                    raise InterruptedError("MCP tool call cancelled.") from exc
 
     async def _connect_servers(self) -> None:
         from mcp import Client

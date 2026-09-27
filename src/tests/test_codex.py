@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import subprocess
+import ssl
 import sys
 import tempfile
 import threading
@@ -12,7 +13,7 @@ import urllib.error
 from unittest.mock import patch
 
 from src.providers import codex
-from src.providers.types import ModelResponse, ToolCall
+from src.providers.types import ModelResponse, ProviderRequestError, ToolCall, retry_after_seconds
 from src.providers.codex import _response_text
 
 
@@ -273,6 +274,70 @@ class CodexFailureTests(unittest.TestCase):
                     cancel_event=cancel,
                 )
         self.assertEqual(deltas, ["partial"])
+
+    def test_retry_classification_rejects_partial_streams_permanent_errors_and_secret_echoes(self):
+        with patch("src.providers.types.time.time", return_value=0):
+            for value, expected in ((None, 0), ("invalid", 0), ("nan", 0), ("inf", 0), ("-2", 0),
+                                    ("1.5", 1.5), ("60", 30), ("Thu, 01 Jan 1970 00:00:10 GMT", 10)):
+                self.assertEqual(retry_after_seconds(value), expected)
+        provider = codex.CodexProvider("gpt-5.6-luna")
+        messages = [{"role": "user", "content": "Hi"}]
+        for status in (400, 401, 403, 429, 500, 502, 503, 504):
+            error = urllib.error.HTTPError(codex.ENDPOINT, status, "Failure", {"Retry-After": "999"},
+                                           io.BytesIO(b"upstream unavailable"))
+            with patch.object(codex.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(ProviderRequestError) as failure:
+                    provider.complete(messages)
+            self.assertEqual(failure.exception.retryable, status in {429, 500, 502, 503, 504})
+            self.assertEqual(failure.exception.retry_after, 30.0)
+
+        for reason, retryable in ((TimeoutError("Timed out"), True), (ConnectionResetError("Reset"), True),
+                                  (ssl.SSLCertVerificationError("Invalid certificate"), False), ("DNS blocked", False)):
+            with patch.object(codex.urllib.request, "urlopen", side_effect=urllib.error.URLError(reason)):
+                with self.assertRaises(ProviderRequestError) as failure:
+                    provider.complete(messages)
+            self.assertEqual(failure.exception.retryable, retryable)
+
+        class InterruptedStream:
+            def __init__(self, partial):
+                self.partial = partial
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return None
+            def __iter__(self):
+                if self.partial:
+                    yield b'data: {"type":"response.output_text.delta","delta":"partial"}\n'
+                    yield b"\n"
+                raise ConnectionResetError("Reset stream")
+
+        for partial in (False, True):
+            with patch.object(codex.urllib.request, "urlopen", return_value=InterruptedStream(partial)):
+                with self.assertRaises(ProviderRequestError) as failure:
+                    provider.complete(messages)
+            self.assertEqual(failure.exception.retryable, not partial)
+
+        for stream, retryable in (
+            (b'data: {"type":"response.created"}\n\n', True),
+            (b'data: {"type":"response.output_text.delta","delta":"partial"}\n\n', False),
+            (b'data: {"type":"response.function_call_arguments.delta","delta":"{"}\n\n', False),
+        ):
+            with patch.object(codex.urllib.request, "urlopen", return_value=io.BytesIO(stream)):
+                with self.assertRaises(ProviderRequestError) as failure:
+                    provider.complete(messages)
+            self.assertEqual(failure.exception.retryable, retryable)
+
+        secret = "sensitive-access-token"
+        error = urllib.error.HTTPError(codex.ENDPOINT, 400, "Failure", {}, io.BytesIO(
+            f"Bearer another-secret-token echoed {secret} \x1b[2J".encode() + b"x" * 9000))
+        with patch.object(codex, "_read_auth", return_value={"tokens": {"access_token": secret, "account_id": "account"}}), \
+             patch.object(codex.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaises(ProviderRequestError) as failure:
+                provider.complete(messages)
+        self.assertNotIn(secret, str(failure.exception))
+        self.assertNotIn("another-secret-token", str(failure.exception))
+        self.assertNotIn("\x1b", str(failure.exception))
+        self.assertLess(len(str(failure.exception)), 2100)
 
 
 if __name__ == "__main__":

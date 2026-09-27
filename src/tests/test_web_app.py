@@ -7,11 +7,13 @@ import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
+from src.agent.conversation_loop import TurnLimits
 from src.providers.types import ModelResponse, ToolCall
 from src.mcp.discovery import MCPServerConfig, SERVER_NAMES, load_enabled_servers
 from src.session.sqlite_store import SQLiteSessionStore
-from src.web_app import DashboardServer
+from src.web_app import DashboardHandler, DashboardServer
 
 
 class TextProvider:
@@ -142,6 +144,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.status, 200)
         return conn, response
 
+    def next_event(self, response):
+        """Progress metadata is separate from the next action/delta/outcome."""
+        for line in iter(response.readline, b""):
+            event = json.loads(line)
+            if event["type"] != "progress":
+                return event
+        self.fail("The stream ended before the next event.")
+
     def test_static_page_sessions_and_streamed_reply(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         conn.request("GET", "/")
@@ -185,8 +195,8 @@ class DashboardTests(unittest.TestCase):
         self.server.provider_factory = WriteProvider
         session_id = self.create_session()
         conn, response = self.stream(session_id, "Create a note")
-        first = json.loads(response.readline())
-        approval = json.loads(response.readline())
+        first = self.next_event(response)
+        approval = self.next_event(response)
         self.assertEqual(first["type"], "tool_start")
         self.assertEqual(approval["type"], "approval")
         self.assertEqual(approval["content"], "hello\n")
@@ -211,8 +221,8 @@ class DashboardTests(unittest.TestCase):
         self.server.provider_factory = ApprovalAwareWriteProvider
         session_id = self.create_session()
         conn, response = self.stream(session_id, "Create a note")
-        self.assertEqual(json.loads(response.readline())["type"], "tool_start")
-        approval = json.loads(response.readline())
+        self.assertEqual(self.next_event(response)["type"], "tool_start")
+        approval = self.next_event(response)
         status, decision = self.request("POST", "/api/approvals", {
             "id": approval["id"], "allow": False,
         })
@@ -234,8 +244,8 @@ class DashboardTests(unittest.TestCase):
         self.server.provider_factory = WriteProvider
         session_id = self.create_session()
         conn, response = self.stream(session_id, "Create a note")
-        self.assertEqual(json.loads(response.readline())["type"], "tool_start")
-        approval = json.loads(response.readline())
+        self.assertEqual(self.next_event(response)["type"], "tool_start")
+        approval = self.next_event(response)
         self.assertEqual(approval["type"], "approval")
         status, result = self.request("POST", "/api/turns/cancel", {"session_id": session_id})
         self.assertEqual(status, 200)
@@ -256,7 +266,7 @@ class DashboardTests(unittest.TestCase):
         self.server.provider_factory = BlockingProvider
         session_id = self.create_session()
         conn, response = self.stream(session_id, "Tell me something")
-        first = json.loads(response.readline())
+        first = self.next_event(response)
         self.assertEqual(first, {"type": "delta", "text": "Text before stop."})
 
         status, result = self.request("POST", "/api/turns/cancel", {"session_id": session_id})
@@ -278,7 +288,8 @@ class DashboardTests(unittest.TestCase):
         conn, response = self.stream(session_id, "Answer this")
         events = [json.loads(line) for line in response]
         conn.close()
-        self.assertEqual(events[0], {"type": "delta", "text": "Partial answer before a 502."})
+        self.assertEqual(next(event for event in events if event["type"] == "delta"),
+                         {"type": "delta", "text": "Partial answer before a 502."})
         self.assertEqual(events[-1]["type"], "error")
         self.assertIn("HTTP 502", events[-1]["message"])
 
@@ -287,6 +298,83 @@ class DashboardTests(unittest.TestCase):
         partial = data["messages"][-1]
         self.assertEqual(partial["content"], "Partial answer before a 502.")
         self.assertEqual(partial["turn_status"], "failed")
+
+    def test_budget_pause_preserves_approved_work_and_expires_unapproved_work(self):
+        self.server.provider_factory = WriteProvider
+        self.server.turn_limits = TurnLimits(max_rounds=1)
+        session_id = self.create_session()
+        conn, response = self.stream(session_id, "Create a note")
+        first = json.loads(response.readline())
+        self.assertEqual(first["type"], "progress")
+        self.assertIn("1 rounds", first["message"])
+        self.assertEqual(self.next_event(response)["type"], "tool_start")
+        approval = self.next_event(response)
+        status, _ = self.request("POST", "/api/approvals", {"id": approval["id"], "allow": True})
+        self.assertEqual(status, 200)
+        events = [json.loads(line) for line in response]
+        conn.close()
+        self.assertEqual(events[-1]["type"], "paused")
+        note = Path(self.temp.name) / "note.txt"
+        original = note.read_bytes()
+        saved = self.server.store.load_messages(session_id)
+        self.assertEqual(saved[1]["turn_status"], "paused")
+        self.assertEqual(saved[1]["tool_calls"][0]["id"], saved[2]["tool_call_id"])
+
+        self.server.provider_factory = TextProvider
+        conn, response = self.stream(session_id, "Continue")
+        events = [json.loads(line) for line in response]
+        conn.close()
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(note.read_bytes(), original)
+
+        class LateWriteProvider(TextProvider):
+            def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
+                return ModelResponse(tool_calls=[ToolCall("late", "write_file", {
+                    "path": "late.txt", "content": "Must not be written",
+                })])
+        self.server.provider_factory = LateWriteProvider
+        self.server.turn_limits = TurnLimits(max_turn_seconds=1)
+        conn, response = self.stream(session_id, "Write another note")
+        self.assertEqual(self.next_event(response)["type"], "tool_start")
+        self.assertEqual(self.next_event(response)["type"], "approval")
+        events = [json.loads(line) for line in response]
+        conn.close()
+        self.assertEqual(events[-1]["type"], "paused")
+        self.assertFalse((Path(self.temp.name) / "late.txt").exists())
+        self.assertEqual(self.server.approvals, {})
+
+        # Losing the UI result notification must preserve one copy of the executed pair/text.
+        class IntroWriteProvider(WriteProvider):
+            def complete(self, messages, tools, on_text_delta=None, cancel_event=None):
+                return ModelResponse("Creating your note.", [ToolCall("disconnected", "write_file", {
+                    "path": "after-disconnect.txt", "content": "Created",
+                })])
+
+        original_event = DashboardHandler._event
+
+        def failed_result_event(handler, kind, **fields):
+            if kind == "tool_result":
+                raise BrokenPipeError("Result consumer disconnected")
+            return original_event(handler, kind, **fields)
+
+        self.server.provider_factory = IntroWriteProvider
+        self.server.turn_limits = TurnLimits(max_rounds=1)
+        disconnected_session = self.create_session()
+        with patch.object(DashboardHandler, "_event", failed_result_event):
+            conn, response = self.stream(disconnected_session, "Create another note")
+            self.assertEqual(self.next_event(response)["type"], "delta")
+            self.assertEqual(self.next_event(response)["type"], "tool_start")
+            approval = self.next_event(response)
+            self.request("POST", "/api/approvals", {"id": approval["id"], "allow": True})
+            events = [json.loads(line) for line in response]
+            conn.close()
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual((Path(self.temp.name) / "after-disconnect.txt").read_text(), "Created")
+        saved = self.server.store.load_messages(disconnected_session)
+        self.assertEqual(len(saved), 3)
+        self.assertEqual(saved[1]["content"], "Creating your note.")
+        self.assertEqual(saved[1]["turn_status"], "failed")
+        self.assertEqual(saved[1]["tool_calls"][0]["id"], saved[2]["tool_call_id"])
 
 
 if __name__ == "__main__":

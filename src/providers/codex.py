@@ -2,11 +2,13 @@
 
 import argparse
 import base64
+import errno
 import json
 import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -18,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from src.images import provider_image_parts
-from src.providers.types import ModelResponse, ToolCall
+from src.providers.types import ModelResponse, ProviderRequestError, ToolCall, retry_after_seconds
 
 
 ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -26,6 +28,19 @@ TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_VERSION = "0.157.1"
 AUTH_FILE = Path.home() / ".codex" / "auth.json"
+
+
+def _temporary_connection_error(error: object) -> bool:
+    if isinstance(error, ssl.SSLError):
+        return False
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    if isinstance(error, socket.gaierror):
+        return error.errno == socket.EAI_AGAIN
+    return isinstance(error, OSError) and error.errno in {
+        errno.EAGAIN, errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNREFUSED,
+        errno.ENETUNREACH, errno.EHOSTUNREACH,
+    }
 
 
 def _jwt_payload(token: str) -> dict:
@@ -91,12 +106,20 @@ def _read_auth(auth_file: Path) -> dict:
 
 
 def _response_text(
-    lines: Iterable[bytes], on_text_delta: Callable[[str], None] | None = None
+    lines: Iterable[bytes], on_text_delta: Callable[[str], None] | None = None,
+    on_response_data: Callable[[], None] | None = None,
 ) -> ModelResponse:
     text: list[str] = []
     tool_calls: list[ToolCall] = []
     data: list[str] = []
     finished = False
+    saw_response_data = False
+
+    def mark_response_data() -> None:
+        nonlocal saw_response_data
+        saw_response_data = True
+        if on_response_data:
+            on_response_data()
 
     def consume() -> bool:
         if not data:
@@ -108,11 +131,17 @@ def _response_text(
         if not isinstance(event, dict):
             raise RuntimeError("Codex returned an invalid stream event")
         kind = event.get("type")
+        if kind == "response.function_call_arguments.delta" or (
+            kind in {"response.output_item.added", "response.output_item.done"}
+            and event.get("item", {}).get("type") == "function_call"
+        ):
+            mark_response_data()
         if kind == "response.output_text.delta":
             delta = event.get("delta", "")
             if not isinstance(delta, str):
                 raise RuntimeError("Codex returned an invalid text delta")
             if delta:
+                mark_response_data()
                 text.append(delta)
                 if on_text_delta:
                     on_text_delta(delta)
@@ -130,10 +159,13 @@ def _response_text(
                             if not isinstance(delta, str):
                                 raise RuntimeError("Codex returned invalid output text")
                             if delta:
+                                mark_response_data()
                                 text.append(delta)
                                 if on_text_delta:
                                     on_text_delta(delta)
             if not tool_calls:
+                if any(item.get("type") == "function_call" for item in output):
+                    mark_response_data()
                 tool_calls.extend(
                     _tool_call(item) for item in output if item.get("type") == "function_call"
                 )
@@ -154,7 +186,7 @@ def _response_text(
     if data:
         finished = consume()
     if not finished:
-        raise RuntimeError("Codex stream ended before completion")
+        raise ProviderRequestError("Codex stream ended before completion", retryable=not saw_response_data)
     if not text and not tool_calls:
         raise RuntimeError("Codex returned no text response")
     return ModelResponse("".join(text), tool_calls)
@@ -381,6 +413,12 @@ class CodexProvider:
         )
         if cancel_event and cancel_event.is_set():
             raise InterruptedError("Codex request cancelled")
+        saw_stream_data = False
+
+        def mark_stream_data() -> None:
+            nonlocal saw_stream_data
+            saw_stream_data = True
+
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 finished = threading.Event()
@@ -399,7 +437,7 @@ class CodexProvider:
                     watcher = threading.Thread(target=interrupt_on_cancel, daemon=True)
                     watcher.start()
                 try:
-                    return _response_text(response, on_text_delta)
+                    return _response_text(response, on_text_delta, mark_stream_data)
                 finally:
                     finished.set()
                     if watcher:
@@ -409,18 +447,33 @@ class CodexProvider:
                 exc.close()
                 raise InterruptedError("Codex request cancelled") from exc
             try:
-                detail = exc.read().decode("utf-8", errors="replace")
+                detail = exc.read(4000).decode("utf-8", errors="replace")
             finally:
                 exc.close()
-            raise RuntimeError(f"Codex endpoint returned HTTP {exc.code}: {detail}") from exc
+            for secret in auth["tokens"].values():
+                if isinstance(secret, str) and len(secret) >= 8:
+                    detail = detail.replace(secret, "[redacted]")
+            detail = re.sub(r"(?i)Bearer\s+[^\s\"']+", "Bearer [redacted]", detail)
+            detail = "".join(char for char in detail if char.isprintable() or char in "\n\t")[:2000]
+            raise ProviderRequestError(
+                f"Codex endpoint returned HTTP {exc.code}: {detail}",
+                retryable=not saw_stream_data and exc.code in {429, 500, 502, 503, 504},
+                retry_after=retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None),
+            ) from exc
         except urllib.error.URLError as exc:
             if cancel_event and cancel_event.is_set():
                 raise InterruptedError("Codex request cancelled") from exc
-            raise RuntimeError(f"Could not reach Codex endpoint: {exc.reason}") from exc
+            raise ProviderRequestError(
+                f"Could not reach Codex endpoint: {exc.reason}",
+                retryable=not saw_stream_data and _temporary_connection_error(exc.reason),
+            ) from exc
         except OSError as exc:
             if cancel_event and cancel_event.is_set():
                 raise InterruptedError("Codex request cancelled") from exc
-            raise
+            raise ProviderRequestError(
+                f"Codex connection failed ({type(exc).__name__}).",
+                retryable=not saw_stream_data and _temporary_connection_error(exc),
+            ) from exc
 
 
 def main(argv: list[str] | None = None) -> None:

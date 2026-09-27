@@ -10,6 +10,7 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | --- | --- | --- |
 | Codex login/provider streaming | Implemented | Concrete provider and transport tests |
 | Multi-round native tool use | Implemented | Shared bounded conversation loop |
+| Configurable turn budgets | Implemented | 40 rounds / 200 tool calls / 1,200 seconds by default; saved pause and user continuation |
 | Project roots and root instructions | Implemented | Root validation, project binding, `AGENTS.md` loading |
 | Saved conversations | Implemented | SQLite transcript and metadata |
 | Session search/title/pin/model preferences | Implemented, interface coverage varies | Store methods and TUI controls; dashboard subset |
@@ -22,7 +23,7 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | TUI MCP enable/disable/reconnect | Implemented | Management worker, preference persistence, tests |
 | Notion browser OAuth | Implemented | SDK flow/storage; TUI integration mock-tested |
 | Partial text recovery | Implemented | Status persistence plus future-context annotation |
-| Generic automatic retries/recovery | Partial | Native browser safe read/cleanup retry; provider/MCP supervisor absent |
+| Bounded transient recovery | Implemented with limits | Three provider attempts before output; read-only MCP retries; no uncertain mutation replay or durable attempt log |
 | Token-aware budgeting/compression | Partial/absent | Character budget exists; compression placeholder empty |
 | Persistent file undo | Not implemented | Live snapshots only |
 | On-demand MCP schemas | Implemented | Compact service directory, per-turn loading, existing approvals |
@@ -53,10 +54,10 @@ These issues organize future work. This documentation task did not close them, a
 
 ## 3. Five practical next targets
 
-The latest discussion emphasized consolidating the core before adding uncontrolled complexity. The first target below is now implemented; the others remain proposals:
+The latest discussion emphasized consolidating the core before adding uncontrolled complexity. The first two targets below are now implemented; the others remain proposals:
 
 1. **Load MCP tool details on demand — implemented.** Measure task completion and schema payload on representative workloads.
-2. **Recover from eligible transient failures.** Separate safe retries from uncertain side effects.
+2. **Recover from eligible transient failures — implemented with limits.** Three attempts before model output or for known read-only MCP operations; uncertain side effects are not replayed.
 3. **Package an installable `oryn` command.** Remove dependence on a specific repository `.venv` launcher.
 4. **Add first-run configuration.** Guide a new user through model login, project selection, and optional connections.
 5. **Add the first read-only research subagent.** Keep its task, context, tools, and result explicit and bounded.
@@ -81,15 +82,15 @@ The implementation reuses discovered bindings/schemas and the existing action ap
 
 Success measures: fewer schema bytes/tokens per turn, unchanged ability to complete representative tasks, and no stale/disconnected bindings advertised.
 
-## 5. Proposal: recovery supervisor
+## 5. Implemented: bounded request recovery
 
-**Proposed, not implemented.**
+Recovery is implemented within the existing provider, conversation loop, and MCP client. There is no separate supervisor subsystem or durable attempt log.
 
 ```mermaid
 flowchart TD
     A["Request fails"] --> B["Classify failure"]
     B --> C{"Known transient and safe to repeat?"}
-    C -->|"Yes"| D["Bounded backoff and retry with attempt log"]
+    C -->|"Yes"| D["Bounded backoff and retry with visible status"]
     D --> E{"Succeeded?"}
     E -->|"Yes"| F["Continue turn"]
     E -->|"No and attempts remain"| D
@@ -98,7 +99,9 @@ flowchart TD
     H --> G
 ```
 
-The important design is classification. A read-only documentation request can be retried more safely than a mutation whose acknowledgement was lost. The native Firecrawl snapshot/action distinction is an existing small example to reuse.
+The important design is classification. A read-only documentation request can be retried more safely than a mutation whose acknowledgement was lost. Model HTTP 429/500/502/503/504, eligible temporary connection failures, and metadata-only interrupted streams qualify before any response text/function data. Partial streams, permanent failures, TLS errors, Playwright calls, and uncertain mutations do not qualify. The native Firecrawl snapshot/action distinction remains a separate, smaller retry path.
+
+Requests permit three attempts total with cancellable backoff and bounded Retry-After handling. MCP retries share the existing 90-second call deadline. Retry and budget-pause events use the current interfaces; per-turn traces remain proposed. The loop also now accepts validated round/tool/time limits and retains completed pairs before UI result callbacks, so a paused turn can continue from known work.
 
 Avoid retrying forever, hiding all failures, repeating a form submission, or changing models without explaining the altered task conditions.
 
@@ -195,7 +198,7 @@ flowchart TD
     FIX --> RUN
 ```
 
-This is a proposed evaluation workflow. The present 97 tests exercise mechanisms; they are not an implementation of this runner.
+This is a proposed evaluation workflow. The present 104 tests exercise mechanisms; they are not an implementation of this runner.
 
 Useful first tasks can be small and local: fix a known bug, find a symbol, make a guarded edit, recover a partial answer, or use a documentation tool correctly. Public benchmark integration can follow once task execution and scoring are reliable.
 

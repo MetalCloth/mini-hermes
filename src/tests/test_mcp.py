@@ -1,12 +1,16 @@
 import asyncio
+from concurrent.futures import Future
 import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+
+import httpx2
 
 from src.agent.conversation_loop import run_turn
 from src.mcp.adapter import provider_tool
@@ -23,6 +27,89 @@ from src.tools.registry import tool_schemas
 
 
 class MCPTests(unittest.TestCase):
+    def test_transient_reads_retry_but_mutations_permanent_errors_and_cancelled_calls_do_not(self):
+        request = httpx2.Request("POST", "https://example.com/mcp")
+        unauthorized = httpx2.HTTPStatusError("Unauthorized", request=request,
+                                             response=httpx2.Response(401, request=request))
+        unavailable = httpx2.HTTPStatusError("Unavailable", request=request,
+                                            response=httpx2.Response(503, headers={"Retry-After": "60"}, request=request))
+        certificate = httpx2.ConnectError("Invalid certificate", request=request)
+        import ssl
+        certificate.__cause__ = ssl.SSLCertVerificationError("Invalid certificate")
+
+        def ready(value):
+            future = Future()
+            if isinstance(value, BaseException):
+                future.set_exception(value)
+            else:
+                future.set_result(value)
+            return future
+
+        scenarios = [
+            ("github", False, ConnectionResetError("Reset"), True),
+            ("linear", True, ConnectionResetError("Reset"), True),
+            ("linear", False, ConnectionResetError("Uncertain write"), False),
+            ("playwright", True, ConnectionResetError("Uncertain browser state"), False),
+            ("github", False, unauthorized, False),
+            ("github", False, unavailable, True),
+            ("github", False, certificate, False),
+            ("github", False, httpx2.UnsupportedProtocol("Bad URL"), False),
+        ]
+        for server, hinted_read, failure, retries in scenarios:
+            client = MCPClient(configs=[])
+            client.start = Mock()
+            client._loop = Mock()
+            name = f"mcp__{server}__action"
+            client._bindings[name] = (server, "action", Mock())
+            if hinted_read:
+                client._read_only_tools.add(name)
+            stop = threading.Event()
+            notices = []
+            try:
+                with patch("src.mcp.client.asyncio.run_coroutine_threadsafe",
+                           side_effect=[ready(failure), ready("result")]) as schedule, \
+                     patch("src.mcp.client.result_text", return_value="Read result"), \
+                     patch.object(stop, "wait", return_value=False) as wait:
+                    if retries:
+                        self.assertEqual(client.call_tool(name, {}, stop, lambda n, d: notices.append((n, d))),
+                                         "Read result")
+                        self.assertEqual(schedule.call_count, 2)
+                        self.assertEqual(len(notices), 1)
+                        self.assertLessEqual(wait.call_args.args[0], 30)
+                    else:
+                        with self.assertRaises(type(failure)):
+                            client.call_tool(name, {}, stop, lambda n, d: notices.append((n, d)))
+                        schedule.assert_called_once()
+                        self.assertEqual(notices, [])
+            finally:
+                client._loop = None
+                client.close()
+
+        client = MCPClient(configs=[])
+        client.start = Mock()
+        client._loop = Mock()
+        client._bindings["mcp__github__read"] = ("github", "read", Mock())
+        stop = threading.Event()
+        try:
+            with patch("src.mcp.client.asyncio.run_coroutine_threadsafe",
+                       side_effect=[ready(ConnectionResetError("Reset")) for _ in range(3)]) as schedule, \
+                 patch.object(stop, "wait", return_value=False):
+                with self.assertRaises(ConnectionResetError):
+                    client.call_tool("mcp__github__read", {}, stop)
+                self.assertEqual(schedule.call_count, 3)
+            with patch("src.mcp.client.asyncio.run_coroutine_threadsafe",
+                       return_value=ready(ConnectionResetError("Reset"))) as schedule:
+                with self.assertRaises(InterruptedError):
+                    client.call_tool("mcp__github__read", {}, stop, lambda *_: stop.set())
+                schedule.assert_called_once()
+            with patch("src.mcp.client.asyncio.run_coroutine_threadsafe") as schedule:
+                with self.assertRaises(InterruptedError):
+                    client.call_tool("mcp__github__read", {}, stop)
+                schedule.assert_not_called()
+        finally:
+            client._loop = None
+            client.close()
+
     def test_browser_login_reports_its_url_without_printing_over_the_tui(self):
         import contextlib
         import io
@@ -577,7 +664,9 @@ finally:
                 self.assertEqual(outputs["lookup"], "Repository result")
                 call_ids = [call["id"] for message in history for call in message.get("tool_calls", [])]
                 self.assertEqual(call_ids, list(outputs))
-                client.call_tool.assert_called_once_with("mcp__github__lookup_0", {}, cancel_event=None)
+                client.call_tool.assert_called_once()
+                self.assertEqual(client.call_tool.call_args.args, ("mcp__github__lookup_0", {}))
+                self.assertIsInstance(client.call_tool.call_args.kwargs["cancel_event"], threading.Event)
 
                 # Saved tool names do not automatically load schemas in the next user turn.
                 history.append({"role": "user", "content": "Now something else"})

@@ -13,6 +13,7 @@ def _mark_incomplete_replies(messages: list[dict[str, Any]]) -> list[dict[str, A
     notes = {
         "cancelled": "The previous Oryn reply was stopped before finishing.",
         "failed": "The previous Oryn reply failed before finishing.",
+        "paused": "The previous Oryn reply reached its execution budget before finishing.",
     }
     prepared = []
     for original in messages:

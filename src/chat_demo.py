@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from src.agent.conversation_loop import run_turn
+from src.agent.conversation_loop import TurnLimitReached, add_turn_arguments, run_turn, turn_limits_from_args
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
@@ -97,12 +97,17 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chat with a Codex model.")
     parser.add_argument("--model", default="gpt-5.6-luna", help="Codex model slug")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
+    add_turn_arguments(parser)
     session_options = parser.add_mutually_exclusive_group()
     session_options.add_argument("--new", action="store_true", help="start a new chat")
     session_options.add_argument("--list", action="store_true", help="list saved chats")
     session_options.add_argument("--search", metavar="QUERY", help="search saved user and assistant messages")
     session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
     args = parser.parse_args(argv)
+    try:
+        limits = turn_limits_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     if (args.list or args.search is not None) and args.project is not None:
         parser.error("--project cannot be used with --list or --search")
 
@@ -190,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
     confirm_terminal = lambda command: _confirm_terminal(command, project_root)
     text_open = False
     text_ends_newline = False
+    partial_text: list[str] = []
 
     def finish_text() -> None:
         nonlocal text_open
@@ -205,6 +211,11 @@ def main(argv: list[str] | None = None) -> None:
             text_open = True
         print(_safe_terminal_text(delta), end="", flush=True)
         text_ends_newline = delta.endswith("\n")
+        partial_text.append(delta)
+
+    def show_status(text: str) -> None:
+        finish_text()
+        print(f"agent> {_safe_terminal_text(text)}", flush=True)
 
     def show_tool(phase: str, call: ToolCall, result: str | None) -> None:
         finish_text()
@@ -217,6 +228,7 @@ def main(argv: list[str] | None = None) -> None:
             )
             print(f"tool> {call.name}{label}", flush=True)
         elif result is not None:
+            partial_text.clear()  # The completed call already retains this response text.
             preview = result[:600] + ("\n…" if len(result) > 600 else "")
             print(_approval_preview(preview), flush=True)
 
@@ -233,6 +245,7 @@ def main(argv: list[str] | None = None) -> None:
         turn_start = len(history)
         history.append({"role": "user", "content": prompt})
         text_open = False
+        partial_text.clear()
         persist_turn = True
         try:
             answer = run_turn(
@@ -244,6 +257,8 @@ def main(argv: list[str] | None = None) -> None:
                 undo_history=undo_history,
                 mcp_client=mcp_client,
                 confirm_mcp=_confirm_mcp,
+                limits=limits,
+                on_status=show_status,
             )
         except KeyboardInterrupt:
             finish_text()
@@ -253,7 +268,13 @@ def main(argv: list[str] | None = None) -> None:
             break
         except Exception as exc:
             finish_text()
-            print(f"Agent turn failed: {exc}")
+            status = "paused" if isinstance(exc, TurnLimitReached) else "failed"
+            for message in history[turn_start:]:
+                if message.get("role") == "assistant":
+                    message["turn_status"] = status
+            if partial_text:
+                history.append({"role": "assistant", "content": "".join(partial_text), "turn_status": status})
+            print(f"Agent turn {status}: {_safe_terminal_text(str(exc))}")
         else:
             finish_text()
             history.append({"role": "assistant", "content": answer})

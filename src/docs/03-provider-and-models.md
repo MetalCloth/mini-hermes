@@ -267,8 +267,12 @@ The source fallback is `0.157.1` at this snapshot. The installed CLI check has a
 
 ## 10. Errors and present limits
 
-HTTP errors include status/body information; unreachable endpoints get a connectivity error. There is no generic exponential retry loop, automatic model fallback, request cost meter, or alternate-provider routing. The request timeout is 120 seconds, and refresh uses a shorter timeout.
+HTTP errors include the status and a bounded, control-cleaned body excerpt with local auth token values and Bearer credentials redacted. Unreachable endpoints get a connectivity error. `ProviderRequestError` carries an explicit `retryable` classification and a parsed `Retry-After` delay; the conversation loop decides whether to retry.
+
+HTTP 429/500/502/503/504, eligible temporary socket failures, and an incomplete stream that contains only metadata can be retried before response output. Text or function-call data prevents automatic replay even when no UI delta callback is installed. Invalid requests, authentication failures, TLS errors, malformed events, and unknown failures are not classified as safe transient failures. There is no automatic model fallback, request cost meter, or alternate-provider routing.
+
+The loop permits three attempts total with 0.5/1-second backoff. A larger `Retry-After` value, expressed as seconds or an HTTP date, takes precedence up to 30 seconds and the remaining turn budget. Waiting is cancellable. A connection-opening request retains the existing 120-second timeout; the cancellation watcher wakes an opened stream, and auth refresh uses a shorter timeout.
 
 The provider receives already selected context, but the full payload also includes all advertised tools. An 80,000-character history budget is not a full request-token budget. The large MCP catalog can add significant payload beyond the transcript.
 
-Provider tests verify serialization, pairing, stream completion, errors, cancellation, settings, and version selection. They mock transport behavior; they do not prove every account has access to every catalog model.
+Provider tests verify serialization, pairing, stream completion, transient/permanent classification, partial-stream protection, Retry-After parsing, error redaction, cancellation, settings, and version selection. They mock transport behavior; they do not prove every account has access to every catalog model.

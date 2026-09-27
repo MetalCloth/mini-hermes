@@ -24,7 +24,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from src.agent.conversation_loop import TurnCancelled, run_turn
+from src.agent.conversation_loop import (
+    TurnCancelled, TurnLimitReached, TurnLimits, add_turn_arguments, run_turn, turn_limits_from_args,
+)
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
@@ -74,12 +76,20 @@ class TurnFinished(Message):
     def __init__(
         self, answer: str | None, error: str | None, cancelled: bool = False,
         elapsed_seconds: float | None = None,
+        *, paused: bool = False,
     ) -> None:
         super().__init__()
         self.answer = answer
         self.error = error
         self.cancelled = cancelled
         self.elapsed_seconds = elapsed_seconds
+        self.paused = paused
+
+
+class TurnProgress(Message):
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
 
 
 class MCPReady(Message):
@@ -113,7 +123,7 @@ class MessageCard(Vertical):
     ) -> None:
         self.role = role
         self.content = content
-        self.turn_status = turn_status if turn_status in {"cancelled", "failed"} else None
+        self.turn_status = turn_status if turn_status in {"cancelled", "failed", "paused"} else None
         self.elapsed_seconds = elapsed_seconds
         self.images = images or []
         super().__init__(classes=f"message-card {role}")
@@ -168,6 +178,7 @@ class MessageCard(Vertical):
         return {
             "cancelled": "Stopped before finishing",
             "failed": "Couldn't finish this reply",
+            "paused": "Paused at the turn budget · ask to continue",
         }.get(self.turn_status, "")
 
     def update_content(self, content: str) -> None:
@@ -175,12 +186,13 @@ class MessageCard(Vertical):
         self.query_one(".message-copy", Static).update(self._renderable())
 
     def set_turn_status(self, status: str) -> None:
-        self.turn_status = status if status in {"cancelled", "failed"} else None
+        self.turn_status = status if status in {"cancelled", "failed", "paused"} else None
         label = self.query_one("#message-status", Label)
         label.update(self._status_label())
         label.display = self.turn_status is not None
         label.set_class(self.turn_status == "cancelled", "cancelled")
         label.set_class(self.turn_status == "failed", "failed")
+        label.set_class(self.turn_status == "paused", "paused")
 
 
 class Welcome(Vertical):
@@ -747,6 +759,7 @@ class OrynTUI(App[None]):
         mcp_client: MCPClient,
         initial_tools: list[dict[str, Any]],
         undo_history: list[FileChange] | None = None,
+        turn_limits: TurnLimits | None = None,
     ) -> None:
         super().__init__()
         self.store = store
@@ -760,6 +773,7 @@ class OrynTUI(App[None]):
         self._restore_model_settings()
         self.mcp_client = mcp_client
         self.tools = initial_tools
+        self.turn_limits = turn_limits or TurnLimits()
         self.file_change_history: dict[str, list[FileChange]] = {
             session_id: undo_history if undo_history is not None else [],
         }
@@ -905,14 +919,20 @@ class OrynTUI(App[None]):
         self.turn_active = False
         self._turn_started_at = None
         timing = {"elapsed_seconds": event.elapsed_seconds} if event.elapsed_seconds is not None else {}
+        if self._pending_approval:
+            self._pending_approval.resolve(False)
+            self._pending_approval = None
+            if isinstance(self.screen, ApprovalScreen):
+                self.pop_screen()
         self._refresh_mcp_view()
         if event.error:
             self._set_activity(
+                event.error if event.paused else
                 f"Turn interrupted  ·  {event.error}" if event.cancelled else f"Turn failed  ·  {event.error}",
                 working=False,
-                error=True,
+                error=not event.paused,
             )
-            status = "cancelled" if event.cancelled else "failed"
+            status = "paused" if event.paused else "cancelled" if event.cancelled else "failed"
             for message in self.history[self._turn_start:]:
                 if message.get("role") == "assistant" and (message.get("content") or message.get("tool_calls")):
                     message["turn_status"] = status
@@ -923,6 +943,11 @@ class OrynTUI(App[None]):
                     "turn_status": status,
                     **timing,
                 })
+            elif timing:
+                for message in reversed(self.history[self._turn_start:]):
+                    if message.get("role") == "assistant":
+                        message.update(timing)
+                        break
             if self._current_reply:
                 self._current_reply.set_turn_status(status)
                 self._current_reply.update_content(self._reply_text)
@@ -941,6 +966,10 @@ class OrynTUI(App[None]):
             self._set_activity(f"Could not save this session: {exc}", working=False, error=True)
         if len(self.screen_stack) == 1:
             self.query_one("#composer", TextArea).focus()
+
+    def on_turn_progress(self, event: TurnProgress) -> None:
+        if self.turn_active:
+            self._set_activity(event.text, working=True)
 
     @on(MCPReady)
     def on_mcp_ready(self, event: MCPReady) -> None:
@@ -1492,7 +1521,10 @@ class OrynTUI(App[None]):
         request = ApprovalRequest(title, preview[:12_000])
         if not self.post_message(request):
             return False
-        request.event.wait()
+        while not request.event.wait(0.1):
+            if self._cancel_event and self._cancel_event.is_set():
+                request.resolve(False)
+                break
         return request.approved
 
     def _cancel_active_turn(self) -> None:
@@ -1537,7 +1569,11 @@ class OrynTUI(App[None]):
                 undo_history=self.undo_history,
                 mcp_client=self.mcp_client,
                 confirm_mcp=confirm_mcp,
+                limits=self.turn_limits,
+                on_status=lambda text: self.post_message(TurnProgress(text)),
             )
+        except TurnLimitReached as exc:
+            finished = TurnFinished(None, str(exc), paused=True)
         except TurnCancelled as exc:
             finished = TurnFinished(None, str(exc) or "Stopped by you", cancelled=True)
         except Exception as exc:
@@ -1585,12 +1621,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--effort", help="reasoning effort from the model catalog, or default")
     parser.add_argument("--speed", help="standard or fast, when supported by the selected model")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
+    add_turn_arguments(parser)
     session_options = parser.add_mutually_exclusive_group()
     session_options.add_argument("--new", action="store_true", help="start a new chat (default)")
     session_options.add_argument("--list", action="store_true", help="list saved chats and exit")
     session_options.add_argument("--search", metavar="QUERY", help="search saved messages and exit")
     session_options.add_argument("--resume", metavar="ID", help="resume a saved chat")
     args = parser.parse_args(argv)
+    try:
+        limits = turn_limits_from_args(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     if (args.list or args.search is not None) and args.project is not None:
         parser.error("--project cannot be used with --list or --search")
 
@@ -1641,6 +1682,7 @@ def main(argv: list[str] | None = None) -> None:
             provider=CodexProvider(model),
             mcp_client=mcp_client,
             initial_tools=tool_schemas(),
+            turn_limits=limits,
         )
         if args.effort or args.speed:
             app.provider.configure(

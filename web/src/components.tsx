@@ -11,7 +11,7 @@ import { PromptInputBox, type ShortcutId } from "@/components/ui/ai-prompt-box";
 import { normalizeLatexDelimiters } from "./markdown";
 
 export type TimelineItem =
-  | { key: string; kind: "message"; role: "user" | "assistant"; content: string; turnStatus?: "cancelled" | "failed" }
+  | { key: string; kind: "message"; role: "user" | "assistant"; content: string; turnStatus?: "cancelled" | "failed" | "paused" }
   | { key: string; kind: "tool"; name: string; detail: string; result: string }
   | { key: string; kind: "approval"; id: string; action: string; target: string; content: string; decision?: boolean };
 
@@ -391,7 +391,7 @@ export function Timeline({ items, status, onDecide }: { items: TimelineItem[]; s
             <div className="message-body">
               {item.role === "assistant" && <div className="message-role">Oryn</div>}
               {item.role === "assistant" && item.turnStatus && <div className={`message-turn-status ${item.turnStatus}`} role="status">
-                {item.turnStatus === "cancelled" ? "Stopped before finishing" : "Couldn't finish this reply"}
+                {item.turnStatus === "paused" ? "Paused at the turn budget · ask to continue" : item.turnStatus === "cancelled" ? "Stopped before finishing" : "Couldn't finish this reply"}
               </div>}
               {item.role === "assistant"
                 ? <div className="message-content markdown"><ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[[rehypeKatex, { throwOnError: false }]]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}>{normalizeLatexDelimiters(item.content)}</ReactMarkdown></div>

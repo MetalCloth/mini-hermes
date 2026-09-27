@@ -232,7 +232,7 @@ export default function App() {
     let sessionId = selected;
     const userKey = crypto.randomUUID();
     const streamedAssistantKeys = new Set<string>();
-    function markPartialReply(id: string, turnStatus: "cancelled" | "failed") {
+    function markPartialReply(id: string, turnStatus: "cancelled" | "failed" | "paused") {
       updateItems(id, (current) => current.map((item) =>
         item.kind === "message" && streamedAssistantKeys.has(item.key)
           ? { ...item, turnStatus }
@@ -268,7 +268,9 @@ export default function App() {
       const toolKeys = new Map<string, string>();
 
       function onEvent(event: TurnEvent) {
-        if (event.type === "delta") {
+        if (event.type === "progress") {
+          setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: event.message } }));
+        } else if (event.type === "delta") {
           setStatuses((current) => stopping.current.has(turnId) ? current : ({ ...current, [turnId]: { kind: "busy", message: "Oryn is replying…" } }));
           if (!currentTextKey) {
             const key = crypto.randomUUID();
@@ -304,6 +306,11 @@ export default function App() {
           finished = true;
           stopping.current.delete(turnId);
           setStatuses((current) => ({ ...current, [turnId]: { kind: "ready", message: "Stopped" } }));
+        } else if (event.type === "paused") {
+          markPartialReply(turnId, "paused");
+          finished = true;
+          stopping.current.delete(turnId);
+          setStatuses((current) => ({ ...current, [turnId]: { kind: "ready", message: event.message } }));
         } else if (event.type === "error") {
           markPartialReply(turnId, "failed");
           finished = true;
