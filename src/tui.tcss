@@ -110,6 +110,8 @@ ChoiceScreen, TextPromptScreen, InfoScreen, ApprovalScreen {
     padding: 1 2; border: none; background: $oryn-panel;
 }
 ChoiceScreen.sessions-picker #picker-card { width: 84; }
+ToolsScreen #picker-card { width: 100; }
+MCPManagerScreen #picker-card { width: 76; }
 #picker-title { color: $oryn-ink; text-style: bold; height: 2; content-align: left middle; }
 #picker-header { height: 2; }
 #picker-header #picker-title { width: 1fr; height: 1; }
@@ -122,7 +124,25 @@ ChoiceScreen.sessions-picker #picker-card { width: 84; }
 #picker-search > .input--cursor { background: $oryn-peach; color: $oryn-canvas; }
 #picker-search > .input--placeholder { color: $oryn-muted; }
 #picker-empty { height: auto; min-height: 2; color: $oryn-muted; content-align: left middle; }
-#picker-description { display: none; height: 2; margin-top: 1; color: $oryn-muted; }
+#picker-details { display: none; height: 2; margin-top: 1; scrollbar-size-vertical: 1; }
+#picker-description { height: auto; color: $oryn-muted; }
+ToolsScreen #picker-details { height: 4; }
+ToolsScreen #picker-options { max-height: 14; }
+MCPManagerScreen #picker-details { height: 3; }
+#mcp-notice { height: 2; margin-top: 1; color: $oryn-muted; }
+#mcp-actions { height: 1; margin-top: 1; }
+#mcp-actions Button {
+    height: 1; min-height: 1; min-width: 10; width: auto;
+    border: none; padding: 0 1; margin-right: 1;
+    background: $oryn-element; color: $oryn-ink;
+}
+#mcp-actions Button:focus, #mcp-actions Button:hover {
+    background: $oryn-peach; color: $oryn-canvas;
+}
+#mcp-actions Button:disabled { color: $oryn-muted; }
+#mcp-toggle { width: 12; }
+#mcp-reconnect { width: 13; }
+#mcp-login { width: 16; }
 .modal-hint { height: auto; min-height: 1; color: $oryn-muted; margin-top: 1; }
 #prompt-card { width: 60; }
 #value-input { height: 2; padding: 0; border: none; border-bottom: solid #3c3c3c; background: $oryn-panel; }

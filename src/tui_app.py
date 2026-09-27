@@ -1,6 +1,7 @@
 """Full-screen terminal chat for Oryn."""
 
 import argparse
+import asyncio
 import json
 import re
 import sqlite3
@@ -26,6 +27,8 @@ from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
 from src.mcp.client import MCPClient
+from src.mcp.discovery import save_enabled_servers
+from src.mcp.oauth import login_notion
 from src.providers.codex import CodexProvider
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
@@ -37,7 +40,7 @@ DEFAULT_MODEL = "gpt-5.6-luna"
 COMMANDS = (
     ("new", "New session"),
     ("help", "Show help"),
-    ("mcps", "Show MCP connections"),
+    ("mcps", "Manage MCP connections"),
     ("models", "Switch model"),
     ("effort", "Configure reasoning effort"),
     ("speed", "Configure model speed"),
@@ -72,10 +75,14 @@ class TurnFinished(Message):
 
 
 class MCPReady(Message):
-    def __init__(self, statuses: list[str], schemas: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, statuses: list[str], schemas: list[dict[str, Any]],
+        servers: list[dict[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
         self.statuses = statuses
         self.schemas = schemas
+        self.servers = servers or []
 
 
 class ApprovalRequest(Message):
@@ -218,8 +225,13 @@ class ChoiceScreen(ModalScreen[str | None]):
             yield Input(placeholder="Search", id="picker-search")
             yield OptionList(id="picker-options", markup=False)
             yield Static("", id="picker-empty")
-            yield Static("", id="picker-description", markup=False)
+            with VerticalScroll(id="picker-details"):
+                yield Static("", id="picker-description", markup=False)
+            yield from self._compose_actions()
             yield Static(self._hint(), id="picker-hint", classes="modal-hint")
+
+    def _compose_actions(self) -> ComposeResult:
+        return iter(())
 
     def _hint(self) -> str:
         return (
@@ -238,9 +250,12 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def on_resize(self, event) -> None:
         # Keep the search and hints visible in short terminals; only rows scroll.
-        self.query_one("#picker-options", OptionList).styles.max_height = max(
-            1, min(16, int(event.size.height * 0.8) - (11 if self.descriptions else 8)),
-        )
+        options = self.query_one("#picker-options", OptionList)
+        options.styles.max_height = self._max_rows(event.size.height)
+        self.call_after_refresh(options.scroll_to_highlight)
+
+    def _max_rows(self, height: int) -> int:
+        return max(1, min(16, int(height * 0.8) - (11 if self.descriptions else 8)))
 
     def _filter(self, query: str, selected: str | None = None) -> None:
         query = query.strip()
@@ -260,7 +275,7 @@ class ChoiceScreen(ModalScreen[str | None]):
                 marker = "●" if choice_id == self.current else ("○" if self.descriptions else " ")
                 if choice_id == self._deleting:
                     label = "Press ctrl+d again to confirm deletion"
-                rows.append(Option(Text(f"{marker} {label}"), id=choice_id))
+                rows.append(Option(self._choice_prompt(marker, label, choice_id), id=choice_id))
         options = self.query_one("#picker-options", OptionList)
         options.set_options(rows)
         options.display = bool(matches)
@@ -269,10 +284,15 @@ class ChoiceScreen(ModalScreen[str | None]):
         empty.update("No matches." if self.choices else "No saved sessions yet. Start with /new.")
         description = self.query_one("#picker-description", Static)
         description.display = bool(matches and self.descriptions)
+        self.query_one("#picker-details").display = description.display
         highlighted = next((i for i, row in enumerate(rows) if row.id == (selected or self.current)), None)
         options.highlighted = highlighted if highlighted is not None else next(
             (i for i, row in enumerate(rows) if row.id), None,
         )
+        self.call_after_refresh(options.scroll_to_highlight)
+
+    def _choice_prompt(self, marker: str, label: str, choice_id: str) -> Text:
+        return Text(f"{marker} {label}", no_wrap=True, overflow="ellipsis")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if not self._renaming:
@@ -293,7 +313,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             return
         selected = self.query_one("#picker-options", OptionList).highlighted_option
         if selected and selected.id:
-            self.dismiss(selected.id)
+            self._choose(selected.id)
 
     def on_key(self, event) -> None:
         if not self._renaming and event.key in {"up", "down"} and self.query_one("#picker-search", Input).has_focus:
@@ -307,10 +327,14 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id:
-            self.dismiss(event.option.id)
+            self._choose(event.option.id)
+
+    def _choose(self, choice_id: str) -> None:
+        self.dismiss(choice_id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         self.query_one("#picker-description", Static).update(self.descriptions.get(self._selected_session(), ""))
+        self.query_one("#picker-details", VerticalScroll).scroll_home(animate=False)
         if self._deleting and event.option.id != self._deleting and event.option.id == self._selected_session():
             self._deleting = None
             self._filter(self.query_one(Input).value, event.option.id)
@@ -370,6 +394,155 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._finish_rename()
         else:
             self.dismiss(None)
+
+
+class ToolsScreen(ChoiceScreen):
+    """Browse tool names; keep the full description out of the list rows."""
+
+    def __init__(self, tools: list[dict[str, Any]]) -> None:
+        choices = []
+        descriptions = {}
+        for tool in tools:
+            name = tool.get("name", "tool")
+            parts = name.split("__", 2)
+            group, label = (parts[1].replace("_", " ").title(), parts[2]) if len(parts) == 3 else ("Built-in", name)
+            choices.append((name, label, group))
+            descriptions[name] = str(tool.get("description") or "No description provided.")
+        super().__init__("Available tools", sorted(choices, key=lambda row: (row[2] != "Built-in", row[2], row[1])), "",
+                         descriptions=descriptions)
+        self.add_class("tools-picker")
+
+    def _hint(self) -> str:
+        return "↑ ↓ browse   tab scroll description   esc close"
+
+    def _max_rows(self, height: int) -> int:
+        return max(1, min(14, int(height * 0.8) - 13))
+
+    def on_resize(self, event) -> None:
+        self.call_after_refresh(self._filter, self.query_one(Input).value, self._selected_session())
+
+    def _choice_prompt(self, marker: str, label: str, choice_id: str) -> Text:
+        width = min(28, max(16, (self.app.size.width - 8) // 3))
+        prompt = Text(f"  {label[:width]:<{width}}  ", no_wrap=True, overflow="ellipsis")
+        prompt.append(" ".join(self.descriptions.get(choice_id, "").split()),
+                      style=None if choice_id == self._selected_session() else "#808080")
+        # Textual converts Text to Content and drops no_wrap; bound the actual row text.
+        prompt.truncate(max(1, self.query_one(OptionList).scrollable_content_region.width - 1), overflow="ellipsis")
+        return prompt
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        super().on_option_list_option_highlighted(event)
+        labels = {key: label for key, label, _ in self.choices}
+        options = self.query_one(OptionList)
+        for index in range(options.option_count):
+            choice_id = options.get_option_at_index(index).id
+            if choice_id:
+                options.replace_option_prompt_at_index(index, self._choice_prompt("", labels[choice_id], choice_id))
+
+    def _choose(self, choice_id: str) -> None:
+        pass  # Browsing a tool never runs it.
+
+    def _filter(self, query: str, selected: str | None = None) -> None:
+        super()._filter(query, selected)
+        if not self.choices:
+            self.query_one("#picker-empty", Static).update("No tools are currently available.")
+
+
+class MCPManagerScreen(ChoiceScreen):
+    BINDINGS = [
+        Binding("ctrl+e", "toggle_server", "Enable/disable", show=False, priority=True),
+        Binding("ctrl+r", "reconnect_server", "Reconnect", show=False, priority=True),
+        Binding("ctrl+l", "login_server", "Sign in", show=False, priority=True),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__("MCP connections", [], "")
+        self.add_class("mcp-picker")
+
+    def _compose_actions(self) -> ComposeResult:
+        yield Static("", id="mcp-notice", markup=False)
+        with Horizontal(id="mcp-actions"):
+            yield Button("Enable", id="mcp-toggle")
+            yield Button("Reconnect", id="mcp-reconnect")
+            yield Button("Sign in", id="mcp-login")
+
+    def _hint(self) -> str:
+        return "enter toggle   ctrl+r reconnect   ctrl+l sign in"
+
+    def on_mount(self) -> None:
+        self.refresh_servers()
+        self.query_one("#picker-search", Input).focus()
+
+    def _max_rows(self, height: int) -> int:
+        return max(1, min(12, int(height * 0.8) - 17))
+
+    def refresh_servers(self) -> None:
+        selected = self._selected_session()
+        self.choices = []
+        self.descriptions = {}
+        for server in self.app.mcp_servers:
+            name = server["name"]
+            state = server["state"]
+            status = f"{server['tool_count']} tools" if state == "connected" else state.replace("unavailable", "Needs setup").title()
+            self.choices.append((name, f"{name.replace('_', ' ').title():<18} {status}",
+                                 "Hosted" if server["transport"] == "http" else "Local"))
+            self.descriptions[name] = f"{server['message']}\n{server['access']}"
+        self._filter(self.query_one(Input).value, selected)
+        if not self.choices:
+            self.query_one("#picker-empty", Static).update("No MCP servers are configured.")
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        super().on_option_list_option_highlighted(event)
+        self._update_actions()
+
+    def _filter(self, query: str, selected: str | None = None) -> None:
+        super()._filter(query, selected)
+        self._update_actions()
+
+    def _update_actions(self) -> None:
+        server = next((s for s in self.app.mcp_servers if s["name"] == self._selected_session()), None)
+        blocked = self.app.mcp_busy or self.app.turn_active or not self.app.mcp_ready or server is None
+        toggle = self.query_one("#mcp-toggle", Button)
+        toggle.label = "Disable" if server and server["enabled"] else "Enable"
+        toggle.disabled = blocked
+        self.query_one("#mcp-reconnect", Button).disabled = blocked or not server["enabled"]
+        login = self.query_one("#mcp-login", Button)
+        login.display = bool(server and server["name"] == "notion")
+        login.label = "Cancel sign-in" if self.app.mcp_login_active else "Sign in"
+        login.disabled = blocked and not self.app.mcp_login_active
+        notice = self.app.mcp_notice
+        if not self.app.mcp_ready:
+            notice = "Servers are still connecting. Local tools remain available."
+        elif self.app.turn_active:
+            notice = "Finish the current turn before changing connections."
+        text = Text(notice)
+        if self.app.mcp_login_url:
+            text.append("  Open sign-in", style=f"underline link {self.app.mcp_login_url}")
+        self.query_one("#mcp-notice", Static).update(text)
+
+    def _choose(self, choice_id: str) -> None:
+        self.action_toggle_server()
+
+    def action_toggle_server(self) -> None:
+        self.app.manage_mcp("toggle", self._selected_session())
+
+    def action_reconnect_server(self) -> None:
+        self.app.manage_mcp("reconnect", self._selected_session())
+
+    def action_login_server(self) -> None:
+        if self.app.mcp_login_active:
+            self.app._mcp_worker.cancel()
+        else:
+            self.app.manage_mcp("login", self._selected_session())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        {"mcp-toggle": self.action_toggle_server, "mcp-reconnect": self.action_reconnect_server,
+         "mcp-login": self.action_login_server}[event.button.id]()
+
+    def action_close(self) -> None:
+        if self.app.mcp_login_active:
+            self.app._mcp_worker.cancel()
+        super().action_close()
 
 
 class TextPromptScreen(ModalScreen[str | None]):
@@ -534,6 +707,16 @@ class OrynTUI(App[None]):
         self.undo_history = undo_history if undo_history is not None else []
         self.mcp_statuses: list[str] = []
         self.mcp_ready = False
+        self.mcp_servers = [
+            {"name": c.name, "enabled": c.enabled, "state": "starting" if c.enabled else "disabled",
+             "message": "Connecting." if c.enabled else "Disabled in Oryn settings.",
+             "tool_count": 0, "access": c.access, "transport": "http" if c.url else "stdio"}
+            for c in mcp_client.configs
+        ]
+        self.mcp_busy = False
+        self.mcp_login_active = False
+        self.mcp_login_url: str | None = None
+        self.mcp_notice = "Select a server to manage its connection."
         self.turn_active = False
         self._cancel_event: threading.Event | None = None
         self._current_reply: MessageCard | None = None
@@ -650,6 +833,7 @@ class OrynTUI(App[None]):
 
     def on_turn_finished(self, event: TurnFinished) -> None:
         self.turn_active = False
+        self._refresh_mcp_view()
         if event.error:
             self._set_activity(
                 f"Turn interrupted  ·  {event.error}" if event.cancelled else f"Turn failed  ·  {event.error}",
@@ -686,17 +870,72 @@ class OrynTUI(App[None]):
     def on_mcp_ready(self, event: MCPReady) -> None:
         self.mcp_ready = True
         self.mcp_statuses = event.statuses
+        self.mcp_servers = event.servers
         self.tools = tool_schemas(event.schemas)
         self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
-        if isinstance(self.screen, InfoScreen) and self.screen.title == "MCP STATUS":
-            self.screen.query_one("#info-scroll Static", Static).update(Text(self._mcp_status_body()))
+        self._refresh_mcp_view()
         if not self.turn_active:
             self._set_activity("Ready · MCP connected" if event.schemas else "Ready", working=False)
 
-    def _mcp_status_body(self) -> str:
-        if not self.mcp_ready:
-            return "MCP servers are still connecting. Local tools remain available."
-        return "\n".join(self.mcp_statuses) or "No MCP servers are configured."
+    def _refresh_mcp_view(self) -> None:
+        if isinstance(self.screen, MCPManagerScreen):
+            self.screen.refresh_servers()
+
+    def manage_mcp(self, action: str, name: str | None) -> None:
+        if action not in {"toggle", "reconnect", "login"}:
+            return
+        server = next((s for s in self.mcp_servers if s["name"] == name), None)
+        if self.mcp_busy or self.turn_active or not self.mcp_ready or server is None:
+            return
+        if action == "login" and name != "notion":
+            return
+        if action == "reconnect" and not server["enabled"]:
+            return
+        self.mcp_busy = True
+        self.mcp_notice = f"{name}: {'Opening browser sign-in' if action == 'login' else 'Updating connection'}…"
+        self._refresh_mcp_view()
+        self._mcp_worker = self.run_worker(self._manage_mcp(action, name), group="mcp-management")
+
+    async def _manage_mcp(self, action: str, name: str) -> None:
+        previous = {s["name"] for s in self.mcp_servers if s["enabled"]}
+        try:
+            if action == "login":
+                self.mcp_login_active = True
+
+                def on_authorize(url: str) -> None:
+                    self.mcp_login_url = url
+                    self.mcp_notice = "Finish Notion sign-in in your browser. Esc cancels."
+                    self._refresh_mcp_view()
+
+                await asyncio.wait_for(login_notion(on_authorize=on_authorize), timeout=330)
+                self.mcp_login_active = False
+                self.mcp_login_url = None
+                self.mcp_notice = "Notion signed in. Connecting…"
+                self._refresh_mcp_view()
+            if action == "toggle" or (action == "login" and name not in previous):
+                enabled = previous ^ {name} if action == "toggle" else previous | {name}
+                await asyncio.to_thread(self.mcp_client.set_enabled, enabled)
+                try:
+                    await asyncio.to_thread(save_enabled_servers, enabled)
+                except OSError:
+                    await asyncio.to_thread(self.mcp_client.set_enabled, previous)
+                    raise
+            else:
+                await asyncio.to_thread(self.mcp_client.reconnect, name)
+            state = next(s for s in self.mcp_client.status_snapshot() if s["name"] == name)
+            self.mcp_notice = f"{name}: {state['message']}"
+        except asyncio.CancelledError:
+            self.mcp_notice = "Notion sign-in cancelled."
+        except Exception as exc:
+            self.mcp_notice = f"{name}: update failed ({type(exc).__name__}). Retry or check mcp.env."
+        finally:
+            self.mcp_login_active = False
+            self.mcp_login_url = None
+            self.mcp_busy = False
+            self.mcp_servers = self.mcp_client.status_snapshot()
+            self.tools = tool_schemas(self.mcp_client.tool_schemas())
+            self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
+            self._refresh_mcp_view()
 
     def on_approval_request(self, request: ApprovalRequest) -> None:
         if self._pending_approval:
@@ -708,6 +947,9 @@ class OrynTUI(App[None]):
         )
 
     async def action_send_prompt(self) -> None:
+        if self.mcp_busy:
+            self._set_activity("MCP connections are updating. Your draft is safe; send it when they finish.", working=True)
+            return
         if self.turn_active:
             self._set_activity("Oryn is still working. Your draft is safe; send it when this turn finishes.", working=True)
             return
@@ -860,13 +1102,9 @@ class OrynTUI(App[None]):
             else:
                 await self._choose_project()
         elif name == "tools":
-            body = "\n".join(
-                f"{tool.get('name', 'tool')} — {tool.get('description', '').split('.')[0]}"
-                for tool in self.tools
-            ) or "No tools are currently available."
-            self.push_screen(InfoScreen("TOOLS AVAILABLE TO ORYN", body))
+            self.push_screen(ToolsScreen(self.tools), lambda _: self.query_one("#composer", TextArea).focus())
         elif name == "mcps":
-            self.push_screen(InfoScreen("MCP STATUS", self._mcp_status_body()))
+            self.push_screen(MCPManagerScreen(), lambda _: self.query_one("#composer", TextArea).focus())
         elif name == "help":
             body = (
                 "COMMANDS\n"
@@ -877,7 +1115,7 @@ class OrynTUI(App[None]):
                 "/speed     Set Standard or Fast speed when supported\n"
                 "/project   Switch project folder\n"
                 "/tools     List available tools\n"
-                "/mcps      Show MCP connection status\n"
+                "/mcps      Enable, disable, reconnect, or sign in\n"
                 "/help      Show this guide\n"
                 "/exit      Close Oryn\n\n"
                 "KEYS\n"
@@ -1176,10 +1414,12 @@ class OrynTUI(App[None]):
         try:
             statuses = self.mcp_client.start()
             schemas = self.mcp_client.tool_schemas()
+            servers = self.mcp_client.status_snapshot()
         except Exception as exc:
-            statuses = [f"MCP startup failed: {exc}"]
+            statuses = [f"MCP startup failed ({type(exc).__name__}). Local tools remain available."]
             schemas = []
-        self.post_message(MCPReady(statuses, schemas))
+            servers = []
+        self.post_message(MCPReady(statuses, schemas, servers))
 
 
 def _base_history(project_root: Path) -> list[dict[str, Any]]:

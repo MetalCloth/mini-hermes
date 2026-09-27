@@ -95,7 +95,7 @@ The login command opens your browser and receives the callback on `127.0.0.1:876
 
 GitHub keeps the `repos`, `issues`, and `pull_requests` toolsets in read-only mode. Hugging Face, Linear, Notion, and other tools that are not identified as read-only ask for approval before running. Playwright page-changing actions also ask for approval; arbitrary code execution, screenshots, and saved browser state are not exposed to the model.
 
-The dashboard MCP settings show all connections and retain enable/disable preferences. Existing switches are preserved when the new services are added. In the TUI, `/mcps` shows connection status and setup instructions. You can also use `./oryn mcp enable github` or `./oryn mcp disable github` from the terminal, then restart Oryn.
+The dashboard MCP settings show all connections and retain enable/disable preferences. Existing switches are preserved when the new services are added. In the TUI, `/mcps` lets you search connections, toggle a server with `Enter` or `Ctrl+E`, reconnect with `Ctrl+R`, and start Notion browser sign-in with `Ctrl+L`. `Esc` cancels a pending sign-in. Reconnect reloads keys from `~/.mini-hermes/mcp.env`; changes apply immediately and switches persist across restarts. Connection changes wait until the current answer finishes. Other services use their configured keys. `/tools` shows searchable tool names and short descriptions, with the highlighted tool's full description below. You can also use `./oryn mcp enable github` or `./oryn mcp disable github` from the terminal, then restart Oryn.
 
 If an MCP server is missing or cannot start, Oryn continues with its built-in tools and prints which server was skipped.
 

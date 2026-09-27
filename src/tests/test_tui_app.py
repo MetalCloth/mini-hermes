@@ -1,14 +1,17 @@
 """Picker interaction and geometry checks without network requests."""
 
 import json
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.mcp.client import MCPClient
 from src.providers.codex import CodexProvider
 from src.session.sqlite_store import SQLiteSessionStore
-from src.tui_app import ApprovalScreen, InfoScreen, MCPReady, OrynTUI
+from src.mcp.discovery import load_enabled_servers, save_enabled_servers
+from src.tui_app import ApprovalScreen, InfoScreen, MCPManagerScreen, MCPReady, OrynTUI, ToolsScreen
 from textual.widgets import Button, Input, OptionList, Static, TextArea
 
 
@@ -99,7 +102,132 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 mcp.close()
 
-    async def test_open_mcp_status_updates_when_startup_finishes(self):
+    async def test_mcp_manager_updates_toggles_reconnects_and_starts_login(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            client = MCPClient(configs=[])
+            servers = [
+                {"name": name, "enabled": name != "github", "state": state,
+                 "message": "Add a key to mcp.env." if state == "unavailable" else "Connected.",
+                 "tool_count": 1 if state == "connected" else 0,
+                 "access": "Documentation tools.", "transport": "http"}
+                for name, state in [("context7", "connected"), ("github", "disabled"), ("notion", "unavailable")]
+            ]
+            schema = {"type": "function", "name": "mcp__context7__resolve_library_id",
+                      "description": "Find documentation", "parameters": {"type": "object", "properties": {}}}
+
+            def toggle(enabled):
+                for server in servers:
+                    server.update(enabled=server["name"] in enabled,
+                                  state="connected" if server["name"] in enabled else "disabled")
+                return servers
+
+            def reconnect(name):
+                server = next(s for s in servers if s["name"] == name)
+                server.update(state="connected", message="Connected after reconnect.", tool_count=1)
+                return servers
+
+            async def login(*, on_authorize):
+                on_authorize("https://example.com/authorize?state=test")
+                return 1
+
+            async def pending_login(*, on_authorize):
+                on_authorize("https://example.com/authorize?state=test")
+                await asyncio.Future()
+            app = OrynTUI(
+                store=store, session_id=store.create_session(root), project_root=root,
+                model="gpt-5.6-luna", history=[], provider=CodexProvider("gpt-5.6-luna", root / "auth.json"),
+                mcp_client=client, initial_tools=[],
+            )
+            try:
+                with patch.object(client, "status_snapshot", return_value=servers), \
+                     patch.object(client, "tool_schemas", side_effect=lambda: [schema] if servers[0]["enabled"] else []), \
+                     patch.object(client, "set_enabled", side_effect=toggle) as set_enabled, \
+                     patch.object(client, "reconnect", side_effect=reconnect) as reconnect_mock, \
+                     patch("src.tui_app.save_enabled_servers", side_effect=lambda enabled: save_enabled_servers(enabled, root / "mcp.json")) as save_mock, \
+                     patch("src.tui_app.login_notion", side_effect=login) as login_mock:
+                    async with app.run_test(size=(100, 32)) as pilot:
+                        await pilot.pause()
+                        composer = app.query_one("#composer", TextArea)
+                        composer.load_text("Keep this draft")
+                        app.mcp_ready = False
+                        await app._execute_command("mcps")
+                        await pilot.pause()
+                        self.assertIsInstance(app.screen, MCPManagerScreen)
+                        status = app.screen.query_one("#mcp-notice", Static)
+                        self.assertIn("still connecting", str(status.content))
+                        self.assertTrue(app.screen.query_one("#mcp-toggle", Button).disabled)
+                        statuses = [
+                            "context7: Connected with 2 tool(s).",
+                            "github: Disabled in Oryn settings.",
+                            "playwright: Connected with 22 tool(s).",
+                        ]
+                        app.post_message(MCPReady(statuses, [schema], servers))
+                        await pilot.pause()
+                        self.assertTrue(app.mcp_ready)
+                        self.assertIn(schema, app.tools)
+                        self.assertEqual(app.screen.styles.background.a, 0)
+                        search = app.screen.query_one(Input)
+                        search.value = "context7"
+                        await pilot.pause()
+                        await pilot.press("enter")
+                        await app.workers.wait_for_complete()
+                        await pilot.pause()
+                        self.assertFalse(servers[0]["enabled"])
+                        self.assertNotIn(schema, app.tools)
+                        self.assertNotIn("context7", load_enabled_servers(root / "mcp.json"))
+                        self.assertTrue(app.screen.query_one("#mcp-reconnect", Button).disabled)
+                        await pilot.press("ctrl+e")
+                        await app.workers.wait_for_complete()
+                        await pilot.pause()
+                        self.assertIn(schema, app.tools)
+                        await pilot.press("ctrl+r")
+                        await app.workers.wait_for_complete()
+                        reconnect_mock.assert_called_with("context7")
+                        with patch.object(save_mock, "side_effect", OSError("Disk full")):
+                            await pilot.press("enter")
+                            await app.workers.wait_for_complete()
+                        self.assertTrue(servers[0]["enabled"])
+                        self.assertIn(schema, app.tools)
+                        self.assertIn("update failed", app.mcp_notice)
+                        app.turn_active = True
+                        app._refresh_mcp_view()
+                        count = set_enabled.call_count
+                        await pilot.press("enter")
+                        self.assertEqual(set_enabled.call_count, count)
+                        app.turn_active = False
+                        search.value = "notion"
+                        await pilot.pause()
+                        await pilot.press("ctrl+l")
+                        await app.workers.wait_for_complete()
+                        login_mock.assert_called_once()
+                        reconnect_mock.assert_called_with("notion")
+                        self.assertFalse(app.mcp_busy)
+                        login_mock.side_effect = pending_login
+                        await pilot.press("ctrl+l")
+                        await pilot.pause()
+                        self.assertTrue(app.mcp_login_active)
+                        self.assertIn("Open sign-in", str(status.content))
+                        await app.action_send_prompt()
+                        self.assertEqual(composer.text, "Keep this draft")
+                        await pilot.press("escape")
+                        await app.workers.wait_for_complete()
+                        await pilot.pause()
+                        self.assertFalse(app.mcp_busy)
+                        self.assertEqual(composer.text, "Keep this draft")
+                        self.assertTrue(composer.has_focus)
+                        await pilot.resize_terminal(64, 24)
+                        await app._execute_command("mcps")
+                        await pilot.pause()
+                        card = app.screen.query_one("#picker-card").region
+                        self.assertLessEqual(app.screen.query_one("#picker-hint").region.bottom, card.bottom)
+                        self.assertLessEqual(card.bottom, 24)
+                        await pilot.press("escape")
+            finally:
+                client.close()
+
+    async def test_tools_are_searchable_single_line_rows_with_separate_details(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = SQLiteSessionStore(root / "sessions.sqlite3")
@@ -110,28 +238,38 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                 mcp_client=client, initial_tools=[],
             )
             try:
-                async with app.run_test(size=(100, 32)) as pilot:
+                async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
-                    app.mcp_ready = False
-                    await app._execute_command("mcps")
+                    await app._execute_command("tools")
                     await pilot.pause()
-                    status = app.screen.query_one("#info-scroll Static", Static)
-                    self.assertIn("still connecting", str(status.content))
-                    statuses = [
-                        "context7: Connected with 2 tool(s).",
-                        "github: Disabled in Oryn settings.",
-                        "playwright: Connected with 22 tool(s).",
-                    ]
-                    schema = {
-                        "type": "function", "name": "mcp__context7__resolve_library_id",
-                        "description": "Find documentation", "parameters": {"type": "object", "properties": {}},
-                    }
-                    app.post_message(MCPReady(statuses, [schema]))
+                    self.assertIsInstance(app.screen, ToolsScreen)
+                    self.assertEqual(app.screen.styles.background.a, 0)
+                    search = app.screen.query_one(Input)
+                    search.value = "terminal"
                     await pilot.pause()
-                    self.assertEqual(str(status.content), "\n".join(statuses))
-                    self.assertTrue(app.mcp_ready)
-                    self.assertIn(schema, app.tools)
+                    option = app.screen.query_one(OptionList).highlighted_option
+                    self.assertEqual(option.id, "terminal")
+                    self.assertTrue(option.prompt.no_wrap)
+                    self.assertIn("Run a shell command", option.prompt.plain)
+                    self.assertNotIn("\n", option.prompt.plain)
+                    self.assertIn("Run a shell command", str(app.screen.query_one("#picker-description", Static).content))
+                    await pilot.press("enter")
+                    self.assertEqual(len(app.screen_stack), 2)  # Browsing never executes a tool.
+                    search.value = "missing-tool"
+                    await pilot.pause()
+                    self.assertTrue(app.screen.query_one("#picker-empty").display)
+                    search.value = ""
+                    await pilot.resize_terminal(64, 24)
+                    await pilot.pause()
+                    card = app.screen.query_one("#picker-card").region
+                    self.assertLessEqual(app.screen.query_one("#picker-hint").region.bottom, card.bottom)
+                    self.assertLessEqual(card.bottom, 24)
                     await pilot.press("escape")
+                    self.assertTrue(app.query_one("#composer", TextArea).has_focus)
+                    app.tools = []
+                    await app._execute_command("tools")
+                    await pilot.pause()
+                    self.assertIn("No tools", str(app.screen.query_one("#picker-empty", Static).content))
             finally:
                 client.close()
 

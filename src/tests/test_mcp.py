@@ -22,6 +22,48 @@ from src.providers.types import ModelResponse, ToolCall
 
 
 class MCPTests(unittest.TestCase):
+    def test_browser_login_reports_its_url_without_printing_over_the_tui(self):
+        import contextlib
+        import io
+        from src.mcp.oauth import NotionTokenStorage, login_notion
+
+        redirect = None
+
+        def auth_factory(on_redirect, _callback, _storage):
+            nonlocal redirect
+            redirect = on_redirect
+            return SimpleNamespace(context=SimpleNamespace(oauth_metadata=None, protected_resource_metadata=None))
+
+        class FakeContext:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            async def list_tools(self):
+                await redirect("https://example.com/authorize?state=test")
+                return SimpleNamespace(tools=[object()])
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch("src.mcp.oauth.HTTPServer"), \
+             patch("src.mcp.oauth.NotionTokenStorage", return_value=NotionTokenStorage(Path(folder) / "auth.json")), \
+             patch("src.mcp.oauth.notion_auth", side_effect=auth_factory), \
+             patch("src.mcp.oauth.webbrowser.open", return_value=True) as browser, \
+             patch("mcp.shared._httpx_utils.create_mcp_http_client", FakeContext), \
+             patch("mcp.Client", FakeContext):
+            urls = []
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                count = asyncio.run(login_notion(on_authorize=urls.append))
+            self.assertEqual(count, 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(urls, ["https://example.com/authorize?state=test"])
+            browser.assert_called_once_with(urls[0])
+
     def test_mcp_cli_reuses_server_preferences(self):
         import contextlib
         import io
@@ -334,6 +376,56 @@ finally:
 
         asyncio.run(connect_and_stop())
         self.assertTrue(TaskBoundClient.instances[0].closed_in_owner)
+
+    def test_reconnect_reloads_credentials_and_closes_the_previous_owner(self):
+        tool = SimpleNamespace(name="lookup", description="Lookup data", title="",
+                               input_schema={"type": "object", "properties": {}})
+
+        class TaskBoundClient:
+            instances = []
+
+            def __init__(self, *_args, **_kwargs):
+                self.closed_in_owner = False
+                self.instances.append(self)
+
+            async def __aenter__(self):
+                self.owner = asyncio.current_task()
+                return self
+
+            async def __aexit__(self, *_args):
+                self.closed_in_owner = asyncio.current_task() is self.owner
+
+            async def list_tools(self, cursor=None):
+                return SimpleNamespace(tools=[tool], next_cursor=None)
+
+        original = MCPServerConfig("context7", "fake", env={"API_KEY": "old"})
+        fresh = MCPServerConfig("context7", "fake", env={"API_KEY": "new"})
+        client = MCPClient([original])
+        client._uses_presets = True
+        with patch("mcp.Client", TaskBoundClient), \
+             patch("src.mcp.client.shutil.which", return_value="/fake"), \
+             patch("src.mcp.client.server_configs", side_effect=lambda enabled: [
+                 MCPServerConfig("context7", "fake", env=fresh.env, enabled="context7" in enabled)
+             ]) as configs:
+            try:
+                client.start()
+                client.reconnect("context7")
+                self.assertTrue(TaskBoundClient.instances[0].closed_in_owner)
+                self.assertEqual(client.configs[0].env, {"API_KEY": "new"})
+                self.assertEqual(len(client.tool_schemas()), 1)
+                self.assertIs(client._bindings["mcp__context7__lookup"][2], TaskBoundClient.instances[1])
+                client.set_enabled(set())
+                self.assertEqual(client.tool_schemas(), [])
+                with self.assertRaises(ValueError):
+                    client.reconnect("context7")
+                with self.assertRaises(ValueError):
+                    client.reconnect("unknown")
+                client.set_enabled({"context7"})
+                self.assertEqual(len(client.tool_schemas()), 1)
+                self.assertEqual(configs.call_count, 3)
+            finally:
+                client.close()
+        self.assertTrue(all(c.closed_in_owner for c in TaskBoundClient.instances))
 
     def test_disabling_a_server_removes_its_tools_and_schema(self):
         config = MCPServerConfig("context7", "unused", (), {}, enabled=False)

@@ -46,8 +46,10 @@ class MCPClient:
     """Own connected server processes for one Oryn process."""
 
     def __init__(self, configs: list[MCPServerConfig] | None = None) -> None:
+        self._uses_presets = configs is None
         self.configs = configs if configs is not None else server_configs()
         self._lock = threading.Lock()
+        self._control_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
@@ -118,18 +120,38 @@ class MCPClient:
         """Start or stop only the MCP servers whose user setting changed."""
         if not isinstance(enabled_servers, set) or not enabled_servers <= set(SERVER_NAMES):
             raise ValueError("Choose valid MCP servers.")
-        self.start()
-        with self._lock:
+        with self._control_lock:
+            self.start()
             previous = {config.name: config.enabled for config in self.configs}
             changed = {name for name in previous if previous[name] != (name in enabled_servers)}
             if changed:
+                fresh = {c.name: c for c in server_configs(enabled_servers)} if self._uses_presets else {}
                 self.configs = [
-                    replace(config, enabled=config.name in enabled_servers)
+                    fresh.get(config.name, replace(config, enabled=config.name in enabled_servers))
+                    if config.name in changed else config
                     for config in self.configs
                 ]
-            loop = self._loop
+            return self._update_servers(changed)
+
+    def reconnect(self, name: str) -> list[dict[str, Any]]:
+        """Reload credentials and replace one connection without restarting Oryn."""
+        with self._control_lock:
+            self.start()
+            config = next((c for c in self.configs if c.name == name), None)
+            if config is None:
+                raise ValueError("Unknown MCP server.")
+            if not config.enabled:
+                raise ValueError("Enable this server before reconnecting.")
+            if self._uses_presets:
+                enabled = {c.name for c in self.configs if c.enabled}
+                fresh = next(c for c in server_configs(enabled) if c.name == name)
+                self.configs = [fresh if c.name == name else c for c in self.configs]
+            return self._update_servers({name})
+
+    def _update_servers(self, changed: set[str]) -> list[dict[str, Any]]:
         if not changed:
             return self.status_snapshot()
+        loop = self._loop
         if loop is None or not loop.is_running():
             raise RuntimeError("MCP servers are not running.")
         future = asyncio.run_coroutine_threadsafe(self._reconfigure(changed), loop)
@@ -327,20 +349,23 @@ class MCPClient:
         return f"{config.name}: {message}"
 
     async def _reconfigure(self, changed: set[str]) -> None:
-        disabled = [config for config in self.configs if config.name in changed and not config.enabled]
-        for config in disabled:
+        for config in self.configs:
+            if config.name not in changed:
+                continue
             stop = self._server_stops.pop(config.name, None)
             task = self._server_tasks.pop(config.name, None)
             if stop:
                 stop.set()
             if task:
-                await task
+                await asyncio.gather(task, return_exceptions=True)
             removed = [name for name, binding in self._bindings.items() if binding[0] == config.name]
             for name in removed:
                 self._bindings.pop(name, None)
                 self._read_only_tools.discard(name)
             self._schemas = [schema for schema in self._schemas if schema.get("name") not in removed]
-            self._status_by_name[config.name] = ("disabled", "Disabled in Oryn settings.")
+            self._status_by_name[config.name] = (
+                ("starting", "Connecting.") if config.enabled else ("disabled", "Disabled in Oryn settings.")
+            )
 
         enabled = [config for config in self.configs if config.name in changed and config.enabled]
         if enabled:

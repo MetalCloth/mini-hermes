@@ -10,6 +10,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from mcp.client.auth import OAuthClientProvider
@@ -111,7 +112,7 @@ def notion_auth(redirect_handler=None, callback_handler=None, storage=None) -> O
     return provider
 
 
-async def login_notion() -> int:
+async def login_notion(*, on_authorize: Callable[[str], None] | None = None) -> int:
     """Explicit sign-in: startup never opens a browser or waits for a user."""
     from mcp import Client
     from mcp.client.streamable_http import streamable_http_client
@@ -160,7 +161,10 @@ async def login_notion() -> int:
     async def redirect(url: str) -> None:
         nonlocal expected_state
         expected_state = parse_qs(urlsplit(url).query).get("state", [""])[0]
-        print(f"Sign in to Notion in your browser:\n{url}", flush=True)
+        if on_authorize:
+            on_authorize(url)
+        else:
+            print(f"Sign in to Notion in your browser:\n{url}", flush=True)
         await asyncio.to_thread(webbrowser.open, url)
 
     async def callback() -> AuthorizationCodeResult:
