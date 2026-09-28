@@ -1,6 +1,7 @@
 """Oryn's small, known-good MCP server presets."""
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -10,8 +11,9 @@ from src.security.secrets import local_secret
 SERVER_NAMES = (
     "github", "context7", "microsoft_learn", "huggingface", "tavily",
     "firecrawl", "exa", "linear", "notion", "playwright",
+    "computer",
 )
-_DEFAULT_ENABLED = set(SERVER_NAMES)
+_DEFAULT_ENABLED = set(SERVER_NAMES) - {"computer"}
 _LEGACY_SERVERS = {"context7", "github", "playwright"}
 
 
@@ -114,6 +116,12 @@ def server_configs(enabled_servers: set[str] | None = None) -> list[MCPServerCon
             name, url=url, headers=headers, oauth=oauth,
             enabled=name in enabled, disabled_reason=reason, access=access,
         ))
+    computer_env = {key: os.environ[key] for key in (
+        "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP",
+        "WAYLAND_DISPLAY", "DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+    ) if key in os.environ}
+    computer_env["PATH"] = f"{Path(__file__).resolve().parents[2] / '.venv/bin'}:{os.environ.get('PATH', '')}"
     return [
         *configs,
         MCPServerConfig(
@@ -125,5 +133,11 @@ def server_configs(enabled_servers: set[str] | None = None) -> list[MCPServerCon
             {},
             enabled="playwright" in enabled,
             access="Opens pages and reads browser content; sensitive browser actions need approval.",
+        ),
+        MCPServerConfig(
+            "computer", "npx", ("-y", "@agent-sh/computer-use-linux@0.7.5", "mcp"),
+            computer_env,
+            enabled="computer" in enabled,
+            access="Local desktop control. Use /computer to arm one selected window and task.",
         ),
     ]

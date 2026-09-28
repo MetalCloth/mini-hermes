@@ -79,6 +79,7 @@ VerticalScroll, OptionList, TextArea {
 #effort-chip:hover, #effort-chip:focus,
 #speed-chip:hover, #speed-chip:focus { background: $oryn-element; color: $oryn-peach; border: none; }
 #provider-chip { width: auto; color: $oryn-muted; }
+#computer-chip { width: auto; color: $oryn-peach; text-style: bold; display: none; }
 #composer-footer { height: 1; padding: 0 2; color: $oryn-muted; }
 #send-hint { width: 1fr; color: $oryn-muted; }
 #composer-commands { width: auto; color: $oryn-muted; }

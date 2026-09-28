@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx2
 
-from src.mcp.adapter import provider_tool, provider_tool_name, result_text
+from src.mcp.adapter import provider_tool, provider_tool_name, result_text, result_with_images
 from src.mcp.discovery import MCPServerConfig, SERVER_NAMES, server_configs
 from src.providers.types import retry_after_seconds
 
@@ -277,7 +277,7 @@ class MCPClient:
                         )
                     try:
                         result = future.result(timeout=min(0.2, remaining))
-                        return result_text(result)
+                        return result_with_images(result) if server_name == "computer" else result_text(result)
                     except TimeoutError:
                         if future.done():
                             raise
@@ -460,7 +460,7 @@ class MCPClient:
                 errlog = stack.enter_context(open(os.devnull, "w"))
                 transport = stdio_client(params, errlog=errlog)
             # Hosted servers currently use the stable initialize handshake.
-            mode = "legacy" if config.url or config.name == "github" else "auto"
+            mode = "legacy" if config.url or config.name in {"github", "computer"} else "auto"
             client = await stack.enter_async_context(client_type(transport, mode=mode))
             tools = []
             cursor = None

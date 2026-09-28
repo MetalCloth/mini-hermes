@@ -20,7 +20,7 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [6. Sessions and recovery](05-session-storage-and-recovery.md) | SQLite, migrations, project binding, search, titles, pins, saved model settings, and the interrupted tea example |
 | [7. Files, terminal, diffs, and undo](06-tools-files-terminal-and-undo.md) | What the LLM sends, what Python changes, exact replacement, full replacement, approval previews, Git comparisons, terminal jobs, and persistent undo |
 | [8. Search, extraction, and browsing](07-web-search-extraction-and-browser.md) | The scraper failure, Tavily, Firecrawl, plain HTML extraction, browser actions, and safe retry boundaries |
-| [9. MCP fundamentals and connections](08-mcp-fundamentals-and-connections.md) | Host/client/server roles, discovery, the ten configured connections, identity, private repositories, and plugins |
+| [9. MCP fundamentals and connections](08-mcp-fundamentals-and-connections.md) | Host/client/server roles, discovery, eleven configured connections, identity, private repositories, and plugins |
 | [10. MCP management and OAuth](09-mcp-manager-and-oauth.md) | Async ownership, reconnect, credential reload, persistent switches, TUI controls, Notion login, PKCE, and token storage |
 | [11. Terminal UI](10-tui-guide-and-rendering.md) | Textual, worker messages, keyboard shortcuts, slash completion, searchable pickers, layout fixes, and theme matching |
 | [12. Browser dashboard and Markdown](11-web-dashboard-and-markdown.md) | HTTP routes, browser streaming, React state, editable drafts, approval cards, code blocks, mathematical rendering, and languages |

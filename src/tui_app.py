@@ -30,6 +30,7 @@ from src.agent.conversation_loop import (
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
+from src.computer import ComputerScope, ComputerStopServer, calculator_windows
 from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
@@ -44,6 +45,7 @@ from src.tools.terminal_tool import TerminalJobManager
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 COMMANDS = (
+    ("computer", "Control one selected calculator window for one task"),
     ("new", "New session"),
     ("help", "Show help"),
     ("mcps", "Manage MCP connections"),
@@ -56,7 +58,7 @@ COMMANDS = (
     ("exit", "Exit the app"),
 )
 COMMAND_ALIASES = {"model": "models", "mcp": "mcps", "quit": "exit", "q": "exit"}
-COMMANDS_DURING_TURN = {"help", "tools", "mcps"}
+COMMANDS_DURING_TURN = {"help", "tools", "mcps", "computer"}
 
 
 class StreamChunk(Message):
@@ -806,6 +808,9 @@ class OrynTUI(App[None]):
         self._pending_approval: ApprovalRequest | None = None
         self._palette_draft: str | None = None
         self.pending_images: list[dict[str, Any]] = []
+        self._computer_target: dict[str, Any] | None = None
+        self._computer_auto_enabled = False
+        self._computer_stop_server: ComputerStopServer | None = None
 
     @property
     def undo_history(self) -> list[FileChange]:
@@ -831,7 +836,7 @@ class OrynTUI(App[None]):
                     yield Welcome(id="welcome")
             with Horizontal(id="activity-row"):
                 yield Static("●", id="activity-dot")
-                yield Static("Ready", id="activity-label")
+                yield Static("Ready", id="activity-label", markup=False)
                 yield Static(f"{len(self.tools)} tools", id="tool-count")
             with Horizontal(id="composer-row"):
                 with Vertical(id="composer-wrap"):
@@ -851,6 +856,7 @@ class OrynTUI(App[None]):
                             yield Button(self._effort_label(), id="effort-chip")
                             yield Button(self._speed_label(), id="speed-chip")
                             yield Static("ChatGPT", id="provider-chip")
+                            yield Static("", id="computer-chip")
                     with Horizontal(id="composer-footer"):
                         yield Static("enter send   shift+enter new line", id="send-hint")
                         yield Static("/ commands", id="composer-commands")
@@ -886,6 +892,7 @@ class OrynTUI(App[None]):
 
     def on_unmount(self) -> None:
         self._cancel_active_turn()
+        self._close_computer_stop()
         if self._pending_approval:
             self._pending_approval.resolve(False)
             self._pending_approval = None
@@ -924,6 +931,13 @@ class OrynTUI(App[None]):
 
     def on_turn_finished(self, event: TurnFinished) -> None:
         self.turn_active = False
+        if self._computer_target is not None or self._computer_auto_enabled:
+            self._computer_target = None
+            self._refresh_computer_chip()
+            self._close_computer_stop()
+            if self._computer_auto_enabled:
+                self.mcp_busy = True
+                self.run_worker(self._disconnect_computer(), group="computer-disconnect", exclusive=True)
         self._turn_started_at = None
         timing = {"elapsed_seconds": event.elapsed_seconds} if event.elapsed_seconds is not None else {}
         if self._pending_approval:
@@ -1111,7 +1125,8 @@ class OrynTUI(App[None]):
         # Provider and tool calls block, but must not hold the TUI open at shutdown.
         self._turn_thread = threading.Thread(
             target=self._run_turn,
-            args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event),
+            args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event,
+                  ComputerScope(**self._computer_target) if self._computer_target else None),
             name="oryn-agent-turn",
             daemon=True,
         )
@@ -1220,13 +1235,15 @@ class OrynTUI(App[None]):
             await self._change_setting("reasoning_effort" if name == "effort" else "service_tier", argument)
         elif name == "project":
             if argument:
-                self._switch_project(argument)
+                await self._switch_project(argument)
             else:
                 await self._choose_project()
         elif name == "tools":
             self.push_screen(ToolsScreen(self.tools), lambda _: self.query_one("#composer", TextArea).focus())
         elif name == "mcps":
             self.push_screen(MCPManagerScreen(), lambda _: self.query_one("#composer", TextArea).focus())
+        elif name == "computer":
+            await self._computer_command(argument)
         elif name == "help":
             body = (
                 "COMMANDS\n"
@@ -1238,6 +1255,7 @@ class OrynTUI(App[None]):
                 "/project   Switch project folder\n"
                 "/tools     List available tools\n"
                 "/mcps      Enable, disable, reconnect, or sign in\n"
+                "/computer  Select one calculator window for the next task; /computer stop to stop\n"
                 "/help      Show this guide\n"
                 "/exit      Close Oryn\n\n"
                 "KEYS\n"
@@ -1259,6 +1277,98 @@ class OrynTUI(App[None]):
             self.exit()
         elif name:
             self._set_activity(f"Unknown command: /{name}. Type /help for commands.", working=False, error=True)
+
+    async def _computer_command(self, argument: str | None) -> None:
+        command = (argument or "on").strip().casefold()
+        if command in {"off", "stop"}:
+            if self.turn_active and self._computer_target:
+                self._cancel_active_turn()
+                self._set_activity("Stopping computer task…", working=True)
+            elif not self.turn_active:
+                await self._disarm_computer()
+                self._set_activity("Computer mode off", working=False)
+            return
+        if command != "on":
+            self._set_activity("Use /computer, /computer off, or /computer stop.", working=False, error=True)
+            return
+        if self.turn_active or self.mcp_busy:
+            self._set_activity("Finish the current turn or MCP update first.", working=True)
+            return
+        if self._computer_target is not None:
+            self._set_activity("Computer is armed. Send one task, or use /computer off.", working=False)
+            return
+        if self.provider.supports_image_input() is not True:
+            self._set_activity("Choose an image-capable model before using /computer.", working=False, error=True)
+            return
+        self.mcp_busy = True
+        self._set_activity("Connecting local computer driver…", working=True)
+        try:
+            enabled = {config.name for config in self.mcp_client.configs if config.enabled}
+            if "computer" not in enabled:
+                await asyncio.to_thread(self.mcp_client.set_enabled, enabled | {"computer"})
+                self._computer_auto_enabled = True
+            raw = await asyncio.to_thread(self.mcp_client.call_tool, "mcp__computer__list_windows", {})
+            windows = calculator_windows(raw)
+            if not windows:
+                raise ValueError("Open Calculator (galculator), then run /computer again.")
+            selected = await self.push_screen_wait(ChoiceScreen(
+                "Select a calculator window", [
+                    (str(window["window_id"]), window["title"],
+                     f"{window['width']}×{window['height']} · one task") for window in windows
+                ], str(windows[0]["window_id"]),
+            ))
+            if selected:
+                target = next(window for window in windows if str(window["window_id"]) == selected)
+                self._computer_stop_server = ComputerStopServer(
+                    lambda: self.call_from_thread(self._stop_computer_from_shortcut)
+                )
+                self._computer_stop_server.start()
+                self._computer_target = target
+                self._refresh_computer_chip()
+                self._set_activity("Computer armed for one calculator task · /computer stop to cancel", working=False)
+            else:
+                await self._disarm_computer()
+        except Exception as exc:
+            await self._disarm_computer()
+            self._set_activity(f"Computer unavailable: {exc}", working=False, error=True)
+        finally:
+            self.mcp_busy = False
+        self.query_one("#composer", TextArea).focus()
+
+    def _stop_computer_from_shortcut(self) -> None:
+        if self.turn_active and self._computer_target:
+            self._cancel_active_turn()
+            self._set_activity("Computer task stopped from desktop shortcut", working=True)
+        else:
+            self.run_worker(self._disarm_computer(), group="computer-disconnect", exclusive=True)
+
+    def _refresh_computer_chip(self) -> None:
+        chip = self.query_one("#computer-chip", Static)
+        chip.display = self._computer_target is not None
+        chip.update("● COMPUTER" if self._computer_target else "")
+
+    def _close_computer_stop(self) -> None:
+        if self._computer_stop_server is not None:
+            self._computer_stop_server.close()
+            self._computer_stop_server = None
+
+    async def _disconnect_computer(self) -> None:
+        if self._computer_auto_enabled:
+            self.mcp_busy = True
+            self._computer_auto_enabled = False
+            enabled = {config.name for config in self.mcp_client.configs if config.enabled}
+            try:
+                await asyncio.to_thread(self.mcp_client.set_enabled, enabled - {"computer"})
+            except Exception as exc:
+                self._set_activity(f"Could not disconnect computer driver: {exc}", working=False, error=True)
+            finally:
+                self.mcp_busy = False
+
+    async def _disarm_computer(self) -> None:
+        self._computer_target = None
+        self._refresh_computer_chip()
+        self._close_computer_stop()
+        await self._disconnect_computer()
 
     async def _new_session(self) -> None:
         self.session_id = self.store.create_session(self.project_root)
@@ -1302,6 +1412,7 @@ class OrynTUI(App[None]):
         return choices
 
     async def _load_session(self, session_id: str) -> None:
+        await self._disarm_computer()
         saved_root = self.store.session_project_root(session_id)
         project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
         self.project_root = project_root
@@ -1398,6 +1509,11 @@ class OrynTUI(App[None]):
         self.query_one("#composer", TextArea).focus()
 
     def _save_model(self, model: str) -> None:
+        if self._computer_target is not None:
+            self._computer_target = None
+            self._refresh_computer_chip()
+            self._close_computer_stop()
+            self.run_worker(self._disconnect_computer(), group="computer-disconnect", exclusive=True)
         try:
             self.store.set_session_model(self.session_id, model)
         except ValueError as exc:
@@ -1467,14 +1583,15 @@ class OrynTUI(App[None]):
             "/path/to/project",
         ))
         if result:
-            self._switch_project(result)
+            await self._switch_project(result)
 
-    def _switch_project(self, path: str) -> None:
+    async def _switch_project(self, path: str) -> None:
         try:
             project_root = _resolve_project_root(Path(path))
         except (ValueError, OSError) as exc:
             self._set_activity(str(exc), working=False, error=True)
             return
+        await self._disarm_computer()
         self.project_root = project_root
         self.pending_images.clear()
         self._refresh_attachments()
@@ -1550,6 +1667,7 @@ class OrynTUI(App[None]):
         tools: list[dict[str, Any]],
         project_root: Path,
         cancel_event: threading.Event,
+        computer_scope: ComputerScope | None = None,
     ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         session_id = self.session_id
@@ -1597,6 +1715,7 @@ class OrynTUI(App[None]):
                 ),
                 file_change_journal=file_change_journal,
                 terminal_jobs=terminal_jobs,
+                computer_scope=computer_scope,
                 on_diagnostic=lambda turn_id, event: self.store.append_diagnostic(session_id, turn_id, event),
             )
         except TurnLimitReached as exc:

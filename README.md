@@ -57,6 +57,14 @@ Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboar
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 
+## Local computer preview
+
+On Linux, `/computer` starts a local `computer-use-linux` MCP driver and lets you select an already-open **galculator** window. Send one task after selecting it. Oryn observes that window, uses pointer clicks, and disconnects the driver after the turn if `/computer` started it. This preview allows 20 desktop tool calls and 120 seconds per task; other apps and Oryn's normal tools are unavailable to the model during that task. Connecting `computer` in `/mcps` alone does not arm desktop control.
+
+Install Node.js/npm, `galculator`, and a Wayland input helper such as `wtype`; check desktop readiness with `npx -y @agent-sh/computer-use-linux@0.7.5 doctor`. Your desktop may ask for screen-sharing permission on the first capture. Screenshots are sent to the selected image-capable model for the current turn only and are not saved in chat history. Textual accessibility results are saved as tool messages.
+
+Use `/computer stop` or `Ctrl+C` while Oryn has focus. When the agent has focused Calculator, bind `./oryn computer stop` to a desktop-wide shortcut so you can stop it without returning to the terminal. The first preview supports only screenshot observation and pointer clicks; broader desktop and keyboard control come later.
+
 ## Turn budgets and recovery
 
 Each user turn allows **40 model rounds, 200 tool calls, and 1,200 seconds** by default.
