@@ -1,6 +1,7 @@
 """Run a model turn, executing requested tools until the model returns text."""
 
 import json
+import re
 import time
 import uuid
 import warnings
@@ -17,7 +18,7 @@ from src.computer import (
 )
 from src.mcp.adapter import MCPImageResult, mcp_loader_tool
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
-from src.tools.browser_tools import BrowserSession
+from src.tools.browser_tools import BrowserSession, FirecrawlHTTPError
 from src.tools.file_tools import FileChange
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
@@ -84,6 +85,7 @@ def run_turn(
     file_change_journal: Callable[[str, FileChange], int | None] | None = None,
     terminal_jobs: TerminalJobManager | None = None,
     on_diagnostic: Callable[[str, dict[str, Any]], None] | None = None,
+    tool_allowlist: set[str] | None = None,
     computer_scope: ComputerScope | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
@@ -94,12 +96,16 @@ def run_turn(
     ]
     if computer_scope is not None:
         native_tools = []
-        allowed_tools = {"load_mcp_tools"} | {
+        tool_allowlist = {"load_mcp_tools"} | {
             f"mcp__computer__{name}" for name in ("get_app_state", "click")
         }
+    local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
+    from src.agent.skills import discover_skills, skill_loader_tool
+    if tool_allowlist is None or "load_skill" in tool_allowlist:
+        available_skills, skill_problems = discover_skills(project_root)
     else:
-        allowed_tools = None
-    local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools"}
+        available_skills, skill_problems = {}, []
+    loaded_skills: set[str] = set()
     loaded_servers: set[str] = set()
     limits = limits or TurnLimits()
     if computer_scope is not None:
@@ -125,6 +131,9 @@ def run_turn(
                 pass
 
     summary, covered_messages, covered_digest = "", 0, ""
+    model_name = getattr(getattr(complete, "__self__", None), "model", "unknown")
+    if not isinstance(model_name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9./_:-]{0,119}", model_name):
+        model_name = "unknown"
 
     def check_cancelled() -> None:
         if time.monotonic() >= deadline:
@@ -168,12 +177,17 @@ def run_turn(
         saved_summary = load_context_summary() if load_context_summary else None
         if isinstance(saved_summary, tuple) and len(saved_summary) == 3:
             summary, covered_messages, covered_digest = saved_summary
-        diagnostic("turn_start")
+        diagnostic("turn_start", model=model_name)
         if on_status:
             on_status(f"Turn budget: {limits.max_rounds} rounds · {limits.max_tool_calls} tools · {limits.max_turn_seconds}s")
         for round_number in range(1, limits.max_rounds + 1):
             check_cancelled()
             tools = list(native_tools)
+            remaining_skills = {
+                name: skill for name, skill in available_skills.items() if name not in loaded_skills
+            }
+            if remaining_skills and (tool_allowlist is None or "load_skill" in tool_allowlist):
+                tools.append(skill_loader_tool(remaining_skills))
             if mcp_client is not None:
                 directory = mcp_client.tool_directory()
                 if computer_scope is not None:
@@ -297,10 +311,43 @@ def run_turn(
                 check_cancelled()
                 tool_count += 1
                 tool_error_class = None
+                upstream_metadata: dict[str, Any] = {}
                 try:
-                    if allowed_tools is not None and call.name not in allowed_tools:
+                    if tool_allowlist is not None and call.name not in tool_allowlist:
                         raise ValueError("This tool is outside the allowed set for this turn and was not run.")
-                    if call.name == "load_mcp_tools":
+                    if call.name == "load_skill":
+                        from src.agent.skills import load_skill
+
+                        if not isinstance(call.arguments, dict) or set(call.arguments) != {"name"}:
+                            raise ValueError("load_skill requires exactly one argument: name.")
+                        skill = load_skill(project_root, call.arguments["name"])
+                        loaded_skills.add(skill.name)
+                        diagnostic("skill_loaded", skill_name=skill.name)
+                        if on_status:
+                            on_status(f"Loaded skill · {skill.name}")
+                        result = (
+                            f"Loaded skill '{skill.name}' for this user turn. Apply its instructions "
+                            f"only where relevant to the user's request.\n\n{skill.instructions}"
+                        )
+                    elif call.name == "delegate_read_only":
+                        from src.agent.subagents import run_read_only_subagent
+
+                        if not isinstance(call.arguments, dict) or set(call.arguments) != {"task"}:
+                            raise ValueError("delegate_read_only requires exactly one argument: task.")
+                        task = call.arguments["task"]
+                        diagnostic("subagent_start", task_chars=len(task) if isinstance(task, str) else 0,
+                                   allowed_tool_count=4)
+                        if on_status:
+                            on_status("Delegating a bounded, read-only inspection")
+                        worker_result = run_read_only_subagent(task, complete, project_root, turn_cancel)
+                        usage = worker_result.get("usage", {})
+                        diagnostic(
+                            "subagent_end", status=worker_result.get("status", "failed"),
+                            elapsed_ms=usage.get("elapsed_ms", 0), tool_count=usage.get("tool_calls", 0),
+                            model_requests=usage.get("model_requests", 0),
+                        )
+                        result = json.dumps(worker_result, ensure_ascii=False)
+                    elif call.name == "load_mcp_tools":
                         if mcp_client is None:
                             raise RuntimeError("MCP loading is unavailable without an active MCP client.")
                         if not isinstance(call.arguments, dict) or set(call.arguments) != {"server"}:
@@ -418,6 +465,12 @@ def run_turn(
                     raise
                 except Exception as exc:
                     tool_error_class = type(exc).__name__
+                    if isinstance(exc, FirecrawlHTTPError):
+                        upstream_metadata = {
+                            "upstream_status": exc.status_code,
+                            **({"upstream_request_id": exc.request_id} if exc.request_id else {}),
+                            **({"upstream_detail": exc.detail} if exc.detail else {}),
+                        }
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
                 result_images = []
                 if isinstance(result, MCPImageResult):
@@ -450,6 +503,7 @@ def run_turn(
                     "tool_end", tool_name=diagnostic_tool_name, success=tool_succeeded,
                     elapsed_ms=round((time.monotonic() - tool_started) * 1000),
                     **({"error_class": tool_error_class} if tool_error_class else {}),
+                    **upstream_metadata,
                 )
                 if on_tool_event:
                     on_tool_event("result", call, result)

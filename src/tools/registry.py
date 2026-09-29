@@ -13,6 +13,7 @@ from src.tools.file_tools import (
     undo_file_change,
     write_file,
 )
+from src.tools.git_tools import git_diff, git_status
 from src.tools.terminal_tool import TerminalJobManager, run_terminal
 from src.tools.web_tools import web_extract, web_search
 
@@ -99,6 +100,36 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "required": ["pattern", "path", "include", "exclude", "literal", "case_sensitive", "max_results"],
                 "additionalProperties": False,
             },
+        },
+        {
+            "name": "git_status",
+            "description": (
+                "Inspect staged changes, unstaged changes, and untracked paths under the active project folder. "
+                "This read-only tool does not stage, commit, or modify files. Use it when the user asks what "
+                "Git work is pending or which files changed."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+        {
+            "name": "git_diff",
+            "description": (
+                "Preview staged changes (index compared with HEAD) and unstaged changes (worktree compared "
+                "with the index), plus untracked paths separately. Output is capped. This read-only tool "
+                "does not stage, commit, revert, or modify files; use it before proposing or reviewing edits."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        },
+        {
+            "name": "delegate_read_only",
+            "description": (
+                "Delegate an independent project-inspection task to one isolated read-only worker. "
+                "It can read/search project files and inspect Git changes, but cannot write, run commands, "
+                "use MCP, or delegate again. Returns bounded findings with evidence and uncertainty. "
+                "Use only when a separate context materially helps; simple tasks should stay in this turn."
+            ),
+            "parameters": {"type": "object", "properties": {
+                "task": {"type": "string", "description": "One focused inspection task, at most 2,000 characters."},
+            }, "required": ["task"], "additionalProperties": False},
         },
         {
             "name": "write_file",
@@ -335,6 +366,10 @@ def execute_tool(name: str, arguments: dict[str, Any], project_root: Path,
             literal=arguments["literal"], case_sensitive=arguments["case_sensitive"],
             max_results=arguments["max_results"],
         )
+    elif name == "git_status":
+        result = git_status(project_root)
+    elif name == "git_diff":
+        result = git_diff(project_root)
     elif name == "write_file":
         result = write_file(
             arguments["path"], arguments["content"], project_root, confirm_write,

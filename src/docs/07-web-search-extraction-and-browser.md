@@ -187,7 +187,7 @@ flowchart TD
 
 Deletion treats an already absent/expired session as successfully closed for the relevant 404/410 cases. On a cleanup failure, the session ID is retained inside the object so the failure is not falsely represented as completed cleanup.
 
-This limited browser retry is implemented. The shared loop also now retries classified temporary model failures before response output, and the MCP client retries eligible read-only failures. Those paths permit three attempts total; page-changing actions and uncertain mutations remain excluded. A durable attempt log or general mutation-recovery supervisor is not implemented.
+This limited browser retry is implemented. The shared loop also retries classified temporary model failures before response output, and the MCP client retries eligible read-only failures. Those paths permit three attempts total; page-changing actions and uncertain mutations remain excluded. Retry events and safe Firecrawl HTTP failure metadata are saved in local per-turn diagnostics; raw upstream bodies and page content are not stored there. A general mutation-recovery supervisor is not implemented.
 
 ## 10. Current approval distinction
 

@@ -12,11 +12,16 @@ Start with the [Oryn engineering handbook](src/docs/README.md). It explains the 
 - [Troubleshooting](src/docs/13-testing-troubleshooting-and-operations.md)
 - [Manual smoke checklist](src/docs/smoke-checklist.md)
 
-## Run the dashboard
+## Fresh local install
 
-Requirements: Python 3.11+, Node.js/npm, and the Codex CLI. The MCP error-handling path uses Python 3.11's `BaseExceptionGroup`.
+First supported target: Linux, Python 3.11+, and the Codex CLI. Install `ripgrep` for file search
+and `bubblewrap` for the approved terminal tool using your distribution's package manager. The
+dashboard needs Node.js `^20.19.0` or `>=22.12.0` and npm; the optional local Playwright MCP also
+needs Node.js/npm. The MCP error-handling path uses Python 3.11's `BaseExceptionGroup`.
 
 ```fish
+git clone https://github.com/MetalCloth/mini-hermes.git
+cd mini-hermes
 python3 -m venv .venv
 source .venv/bin/activate.fish
 python -m pip install -r requirements.txt
@@ -26,7 +31,12 @@ codex login
 
 For Bash or Zsh, activate with `source .venv/bin/activate` instead.
 
-The launcher installs the React dependencies on first use, builds the UI, and opens the dashboard at `http://127.0.0.1:9119`. Run it from the project folder you want Oryn to work in. The dashboard is local-only and asks before running terminal commands or writing files.
+The launcher installs the React dependencies on first use, builds the UI, and opens the dashboard at `http://127.0.0.1:9119`. Run it from the project folder you want Oryn to work in. The dashboard is local-only and asks before running terminal commands or writing files. Without `ripgrep`, `search_files` is unavailable; without Bubblewrap, terminal commands are refused.
+
+The first local release is a single-user Linux checkout, not a globally packaged binary or remote
+multi-user server. On startup Oryn checks whether the local Codex login looks configured. A missing
+or malformed login produces an actionable `codex login` warning without printing token values.
+See the [install, upgrade, and security boundary](src/docs/02-installation-and-configuration.md).
 
 To use a different project folder, start Oryn from that folder or pass `--project`:
 
@@ -111,7 +121,13 @@ For a simple page read, Oryn uses `web_extract`. Browser interaction opens a sho
 
 Oryn connects directly to nine official hosted MCP servers using the installed MCP Python SDK. GitHub and Context7 no longer need Docker or Node.js. Playwright remains a separate local, headless browser connection and needs Node.js 20+.
 
-MCP definitions load on demand in the REPL, TUI, and dashboard. Each model request includes native tools and `load_mcp_tools`, whose description contains a compact server directory. The model selects a server; its full schemas become callable in the next request and remain available for that user turn. A new turn starts with the small directory again. Connections and `list_tools` discovery still run at startup/reconnect; loading reuses those definitions and preserves action approvals. `/tools` shows the complete discovered inventory, including tools not yet loaded into a model request.
+All MCP connections start disabled. Enable only the services you want in `/mcps`; Oryn launches
+only explicitly enabled servers. MCP definitions load on demand in the REPL, TUI, and dashboard.
+Each model request includes native tools and, when a server is enabled, `load_mcp_tools` with a
+compact server directory. The model selects a server; its full schemas become callable in the
+next request and remain available for that user turn. `/tools` shows the complete discovered
+inventory, including tools not yet loaded into a model request. Desktop tools require `/computer`
+even if their MCP connection is enabled.
 
 | Connection | Official endpoint | Authentication |
 | --- | --- | --- |
@@ -150,7 +166,7 @@ The login command opens your browser and receives the callback on `127.0.0.1:876
 
 GitHub keeps the `repos`, `issues`, and `pull_requests` toolsets in read-only mode. Hugging Face, Linear, Notion, and other tools that are not identified as read-only ask for approval before running. Playwright page-changing actions also ask for approval; arbitrary code execution, screenshots, and saved browser state are not exposed to the model.
 
-The dashboard MCP settings show all connections and retain enable/disable preferences. Existing switches are preserved when the new services are added. In the TUI, `/mcps` lets you search connections, toggle a server with `Enter` or `Ctrl+E`, reconnect with `Ctrl+R`, and start Notion browser sign-in with `Ctrl+L`. `Esc` cancels a pending sign-in. Reconnect reloads keys from `~/.mini-hermes/mcp.env`; changes apply immediately and switches persist across restarts. Connection changes wait until the current answer finishes. Other services use their configured keys. `/tools` shows searchable tool names and short descriptions, with the highlighted tool's full description below. You can also use `./oryn mcp enable github` or `./oryn mcp disable github` from the terminal, then restart Oryn.
+The dashboard MCP settings show all connections and retain enable/disable preferences. Connections are disabled until you opt in; adding a new preset never enables it automatically. In the TUI, `/mcps` lets you search connections, toggle a server with `Enter` or `Ctrl+E`, reconnect with `Ctrl+R`, and start Notion browser sign-in with `Ctrl+L`. `Esc` cancels a pending sign-in. Reconnect reloads keys from `~/.mini-hermes/mcp.env`; changes apply immediately and switches persist across restarts. Connection changes wait until the current answer finishes. Other services use their configured keys. `/tools` shows searchable tool names and short descriptions, with the highlighted tool's full description below. You can also use `./oryn mcp enable github` or `./oryn mcp disable github` from the terminal, then restart Oryn.
 
 If an MCP server is missing or cannot start, Oryn continues with its built-in tools and prints which server was skipped.
 
@@ -176,4 +192,6 @@ cd web && npm run dev
 ```
 
 The dashboard launcher serves the production build; `npm run dev` is for UI development.
-The offline evaluation uses a scripted provider and temporary projects; it needs no credentials or network. `--diagnostics` prints recent redacted per-turn metadata from the local session database.
+The six-case offline evaluation uses a scripted provider and temporary projects; it needs no credentials or network. It covers direct completion, a successful and denied tool cycle, provider failure, interruption with retained evidence, and a current-turn context limit. `--diagnostics` prints recent redacted per-turn metadata from the local session database, including bounded Firecrawl HTTP status/detail/request IDs when supplied safely.
+
+The [shared turn and dashboard API contract](src/docs/17-shared-turn-gateway-and-api.md) documents the common loop, persistence semantics, streaming events, and the lifecycle required before any future scheduler.

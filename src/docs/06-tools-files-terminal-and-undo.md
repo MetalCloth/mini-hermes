@@ -38,7 +38,7 @@ This is the fundamental answer to “how does the LLM change the code?” It cho
 
 ## 2. Native catalog and schema rules
 
-There are 19 built-in tools: four terminal/job operations; file read/search/write/edit/undo; web search/extract; and eight browser operations. Their function schemas use object parameters, required fields, and `additionalProperties: false`; the registry marks native functions `strict: true`.
+The native registry has 22 functions: four terminal/job operations; file read/search/write/edit/undo; two read-only Git tools; one bounded read-only delegation tool; web search/extract; and eight browser operations. A `load_skill` function is added only when valid local skills exist. Schemas use object parameters, required fields, and `additionalProperties: false`; the registry marks native functions `strict: true`.
 
 For example, although Python's `search_files` function has default arguments, its model schema requires all advertised search arguments. Python defaults and JSON schema optionality are separate concepts.
 
@@ -188,7 +188,7 @@ flowchart TD
     H --> I["Remember change for undo and report success"]
 ```
 
-New files inherit the temporary-file creation permissions, typically owner-only. Existing permissions are preserved. Content is limited to 100,000 characters; when undo recording is enabled, the previous file must fit the one-million-byte snapshot limit.
+New files inherit the temporary-file creation permissions, typically owner-only. Existing permissions are preserved. Content is limited to 100,000 characters; when undo recording is enabled, the previous file must fit the one-million-byte snapshot limit. Undo keeps at most 20 changes per chat for 30 days, then prunes them when the history is loaded or another change is recorded.
 
 ## 8. `edit_file` versus `write_file`
 
@@ -361,6 +361,36 @@ Network is deliberately not disabled by the current command line. Other system p
 
 The legacy direct `run_terminal` helper remains a one-shot 30-second call; the conversation tool uses PTY jobs capped at 200,000 buffered bytes, 4,800 bytes per read, eight running and 20 retained jobs per chat, ten seconds per read, and a two-hour lifetime. Stopping sends TERM then KILL. Jobs are not durable: closing the chat manager terminates remaining processes, and a new process cannot resume a previous job. Output is sanitized before it reaches the model. A command that already changed a project before it stops is not automatically reversed.
 
-## 14. Things the current tools do not provide
+## 14. Read-only Git awareness
 
-No dedicated Git status/diff tool exists yet; Git inspection is possible through the approval-controlled terminal tool. There is no generic multi-file patch tool, redo stack, automatic directory creation in `write_file`, image/audio file editor, arbitrary Python evaluation tool, or subagent delegation tool. Placeholder filenames do not add those operations to the catalog.
+`git_status` groups staged changes, unstaged changes, and untracked paths. `git_diff` shows the
+staged patch (`index` compared with `HEAD`), the unstaged patch (`worktree` compared with
+`index`), then untracked path names. Git does not include untracked contents in its diff, so the
+tool does not try to read or invent them.
+
+Both commands run with `--no-pager`, `--no-optional-locks`, and a pathspec scoped to the active
+project folder. If the active folder is inside a larger repository, displayed paths remain
+repository-relative. Git output is capped at 20,000 characters with a visible marker, and each
+command has a five-second timeout. They never stage, commit, checkout, revert, or write files.
+
+```text
+Staged changes (index vs HEAD):
+A  "project/new_module.py"
+
+Unstaged changes (worktree vs index):
+ M "project/config.py"
+
+Untracked paths (not included in Git diff):
+"project/notes.txt"
+```
+
+Use these tools to understand the current work before making a proposal. The tool's `HEAD` is
+the last committed version, but staged and unstaged comparisons are separate; a three-day-old
+uncommitted file is still included in the relevant working-tree comparison.
+
+## 15. Things the current tools do not provide
+
+There is no generic multi-file patch tool, redo stack, automatic directory creation in
+`write_file`, image/audio file editor, or arbitrary Python evaluation tool. Dedicated Git
+inspection and a single bounded read-only subagent are implemented; neither can change files.
+Placeholder filenames do not add other operations to the catalog.

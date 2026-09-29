@@ -100,18 +100,18 @@ UI persistence failures are handled by attempting to restore the prior live enab
 
 ## 6. Preferences and migration
 
-`mcp-settings.json` stores non-secret data:
+`mcp-settings.json` stores non-secret data. A clean install starts with no enabled server:
 
 ```json
 {
-  "enabled_servers": ["context7", "github", "microsoft_learn"],
+  "enabled_servers": [],
   "known_servers": ["github", "context7", "microsoft_learn", "huggingface", "tavily", "firecrawl", "exa", "linear", "notion", "playwright"]
 }
 ```
 
-The sample intentionally enables only a few connections. Default configuration currently enables all ten names, although missing credentials can still make a service unavailable.
+Enabling an entry is an explicit user action. Oryn starts no MCP server by default, including the local Playwright subprocess. If a preferences file is malformed or contains unknown values, the fallback is the empty set.
 
-`known_servers` preserves older user decisions when new presets are added. Previously known disabled servers stay disabled; newly introduced default-enabled names can be enabled on migration. Malformed preference data falls back to defaults, which means corrupted configuration can change apparent switches. This is current behavior, not a promise of strict fail-closed preference parsing.
+`known_servers` preserves older user decisions when new presets are added. Previously known disabled servers stay disabled; newly introduced servers stay disabled until the user enables them. Malformed preference data fails closed to the empty set.
 
 Writes use a temporary sibling JSON file, set owner-only permissions, then replace the destination. Preferences do not contain API keys.
 

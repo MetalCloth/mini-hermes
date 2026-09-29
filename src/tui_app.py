@@ -35,7 +35,7 @@ from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
 from src.mcp.oauth import login_notion
-from src.providers.codex import CodexProvider
+from src.providers.codex import CodexProvider, auth_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -880,6 +880,8 @@ class OrynTUI(App[None]):
     def on_mount(self) -> None:
         self._sync_home()
         self._refresh_header()
+        if warning := auth_setup_warning(getattr(self.provider, "auth_file", None)):
+            self._set_activity(warning, working=False, error=True)
         self.query_one("#composer", TextArea).focus()
         self._scroll_to_bottom(force=True)
         # MCP startup can be slow; keep it outside Textual's executor and event loop.
@@ -1020,7 +1022,11 @@ class OrynTUI(App[None]):
         self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
         self._refresh_mcp_view()
         if not self.turn_active:
-            self._set_activity("Ready · MCP connected" if event.schemas else "Ready", working=False)
+            warning = auth_setup_warning(getattr(self.provider, "auth_file", None))
+            self._set_activity(
+                warning or ("Ready · MCP connected" if event.schemas else "Ready"),
+                working=False, error=bool(warning),
+            )
 
     def _refresh_mcp_view(self) -> None:
         if isinstance(self.screen, MCPManagerScreen):

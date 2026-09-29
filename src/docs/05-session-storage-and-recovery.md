@@ -257,14 +257,14 @@ Tool call/results already completed remain in the turn history where recorded. A
 | Pending approval | No |
 | Current Firecrawl browser lifetime | No reliable resumption mechanism |
 | Rolling context summary checkpoint | Yes; transcript remains intact |
-| Approved file-change undo snapshots | Yes; latest 20 changes per chat, guarded by content/mode checks |
+| Approved file-change undo snapshots | Yes; latest 20 changes per chat for 30 days, guarded by content/mode checks |
 | Redacted diagnostic events | Yes; bounded local metadata only |
 | Running terminal jobs | No; stopped when that chat/app closes |
 | Semantic long-term memory | Not implemented |
 
 A persisted transcript is not a resumable transaction log. Terminal processes and pending approvals do not survive restart. For approved `write_file` and `edit_file` changes, the SQLite journal records the old bytes and intended result before changing the file. On reopen, Oryn fingerprints the current file and reconciles an interrupted `prepared` or `undoing` record as applied, aborted/undone, or conflict. It refuses an ambiguous state rather than guessing. Undo still covers only these file tools; it does not reverse terminal or remote MCP effects.
 
-The dashboard and TUI load a distinct latest-20 undo list for each chat. Chats that share a project still share its files, so a later edit by another chat or an editor causes the digest/mode guard to refuse undo. Removing a chat deletes its local summary, diagnostic records, and undo snapshots without changing project files.
+The dashboard and TUI load a distinct undo list for each chat. Oryn retains at most the latest 20 changes, each with at most a 1 MB prior-file snapshot, for up to 30 days. Expired records are pruned during journal writes and history loads. Chats that share a project still share its files, so a later edit by another chat or an editor causes the digest/mode guard to refuse undo. Removing a chat deletes its local summary, diagnostic records, and undo snapshots without changing project files.
 
 ## 12. Reading the database safely for learning
 

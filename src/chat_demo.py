@@ -10,7 +10,7 @@ from src.agent.conversation_loop import TurnLimitReached, add_turn_arguments, ru
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
-from src.providers.codex import CodexProvider
+from src.providers.codex import CodexProvider, auth_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -169,6 +169,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Could not access sessions at {DEFAULT_DB_PATH}: {exc}")
         return
     provider = CodexProvider(args.model)
+    if warning := auth_setup_warning(provider.auth_file):
+        print(f"config> {warning}")
     try:
         project_instructions = load_project_instructions(project_root)
     except ValueError as exc:

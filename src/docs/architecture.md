@@ -24,6 +24,8 @@ The word **harness** means this surrounding machinery. A strong harness makes th
 | Terminal execution | [terminal_tool.py](../tools/terminal_tool.py) | Runs approved Bubblewrap commands as chat-owned PTY jobs with read/input/stop controls |
 | Native web access | [web_tools.py](../tools/web_tools.py) | Tavily search, Firecrawl extraction, direct HTML extraction, public URL checks |
 | Native browser interaction | [browser_tools.py](../tools/browser_tools.py) | Manages a Firecrawl cloud browser for one turn |
+| Git inspection | [git_tools.py](../tools/git_tools.py) | Reads project-scoped status and staged/unstaged diff previews without changing the repository |
+| Local skills and delegated inspection | [skills.py](../agent/skills.py), [subagents.py](../agent/subagents.py) | Loads selected instruction files and runs one isolated bounded read-only child |
 | Credential lookup | [secrets.py](../security/secrets.py) | Reads environment values or specific local key files |
 | MCP presets | [discovery.py](../mcp/discovery.py) | Builds known server configurations and reads/writes enabled preferences |
 | MCP runtime | [client.py](../mcp/client.py) | Connects servers, discovers tools, calls them, reconnects, and owns async lifetimes |
@@ -186,12 +188,12 @@ flowchart TD
     S2 --> H2["Saved transcript and model settings"]
     S1 --> T1["Active turn: cancellation, approvals, browser lifetime"]
     S2 --> T2["Active turn, when supported by interface"]
-    A --> U["In-memory file-change snapshots"]
+    A --> U["SQLite file-change journal"]
 ```
 
 The dashboard tracks active turns per session and can have different sessions active concurrently. The TUI presents one active conversation and blocks switching operations during its turn. MCP enable/disable state is global, so connection reconfiguration waits while turns are active.
 
-SQLite records outlive a process. Undo snapshots do not. A native Firecrawl browser belongs to a turn and is closed when that turn ends. These lifetime differences explain many behaviors that otherwise look inconsistent.
+SQLite transcripts, context summaries, diagnostic events, and bounded undo snapshots outlive a process. Active turns, MCP connections, terminal jobs, and a native Firecrawl browser do not. These lifetime differences explain many behaviors that otherwise look inconsistent.
 
 ## 9. The source tree: what exists and what is scaffolding
 
@@ -199,18 +201,18 @@ The implemented areas are shown above. These files or areas are still empty plac
 
 | Area | Placeholder files | Do not infer |
 | --- | --- | --- |
-| Additional agent machinery | `agent.py`, `compression.py`, `prompt_builder.py`, `turn.py` in `src/agent` | A second agent engine or automatic summarization |
+| Additional agent scaffolding | `agent.py`, `prompt_builder.py`, `turn.py` in `src/agent` | A second agent engine; context compaction is implemented in `compression.py` |
 | Extra providers | `base.py`, `groq.py`, `router.py` in `src/providers` | Working Groq integration or provider routing |
 | Alternate session layer | `models.py`, `search.py`, `store.py` in `src/session` | Separate ORM or search subsystem; actual search is in SQLite store |
 | Generic security layer | `approvals.py`, `permission.py` in `src/security` | A general policy engine; actual checks live in tools and interface bridges |
-| Subagents | `manager.py`, `task.py`, `aggregation.py` in `src/subagents` | Spawned agents, task scheduling, or result aggregation |
+| Older subagent scaffolding | `manager.py`, `task.py`, `aggregation.py` in `src/subagents` | A scheduler or swarm; the single bounded worker is `src/agent/subagents.py` |
 | Memory | Files in `src/memory` | Semantic memory, embeddings, or cross-session learned facts |
 | Scheduling | Files in `src/cron` | Scheduled autonomous work |
 | Plugins | `hooks.py`, `loader.py`, `registry.py` in `src/plugins` | Installation, loading, or execution of plugins |
 | Alternate execution environments | Files in `src/environments` | Docker, SSH, or interchangeable execution backends |
-| Gateway and messaging platforms | Files in `src/gateway` and its platforms | Discord/Telegram operation or a unified gateway |
+| Messaging-platform scaffolding | Files in `src/gateway` and its platforms | Working Discord/Telegram bots; local TUI/REPL/dashboard share `run_turn` and the SQLite store |
 | Packaged CLI skeleton | Files in `src/hermes-cli` | An installed global CLI; the actual entrypoint is the repository launcher |
-| Future native tools | `cron_tools.py`, `delegation_tools.py`, `memory_tool.py`, `toolsets.py` | Working scheduled, delegated, or memory operations |
+| Future native tools | `cron_tools.py`, `delegation_tools.py`, `memory_tool.py`, `toolsets.py` | Working scheduled tasks, a general delegation framework, or semantic memory; the bounded worker is implemented separately |
 
 Creating documentation here fills the previously empty architecture document. It does not implement these other placeholders.
 
@@ -222,7 +224,7 @@ Creating documentation here fills the previously empty architecture document. It
 
 **Standard library for native HTTP and files:** existing requirements are small. MCP and Textual are used where a real protocol/UI library helps; basic file and HTTP operations use Python facilities.
 
-**Separate UI bridges:** the REPL, TUI, and dashboard share the core loop but supply different approval and display callbacks. A unified gateway is an open roadmap issue, not current behavior.
+**Separate UI bridges:** the REPL, TUI, and dashboard use `conversation_loop.run_turn` and `SQLiteSessionStore`, but supply different approval, display, and streaming callbacks. The local API contract and future background lifecycle are documented in [chapter 17](17-shared-turn-gateway-and-api.md); a scheduler and public remote API are not implemented.
 
 **Explicit side-effect boundaries:** file mutation constructs a proposal, asks approval, rechecks the file, then applies it. The LLM's plan is converted into a concrete reviewable action.
 

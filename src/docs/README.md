@@ -4,7 +4,7 @@
 
 Documentation snapshot: **28 September 2026**. This handbook was written after inspecting the implementation, its tests, and the repository issue list. Later changes can make individual details stale; each chapter links to the code responsible for its behavior.
 
-Follow-up chapters now include on-demand MCP schemas, durable per-chat undo, active commands, reply timing, home-page startup, bounded recovery/turn budgets, 200k-token context compaction, managed terminal jobs, local redacted diagnostics, and an offline evaluation baseline. The [core upgrade plan](16-core-upgrade-plan.md) records the implemented work and its remaining limits.
+Follow-up chapters now include on-demand MCP schemas, explicit MCP opt-in, durable per-chat undo, scoped skills, one bounded read-only subagent, Git awareness, safe upstream traces, offline failure/context evaluations, a local first-release boundary, and a documented shared turn/API contract. The [core upgrade plan](16-core-upgrade-plan.md) records the earlier reliability milestone and its remaining limits.
 
 Oryn is an educational local coding assistant. Its model runs remotely, while its Python harness, project tools, session database, and terminal interface run on the user's machine. It also has a local browser dashboard. The aim of this handbook is to let you explain and modify the system yourself, starting with the fundamentals and continuing through the implementation details.
 
@@ -26,9 +26,10 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [12. Browser dashboard and Markdown](11-web-dashboard-and-markdown.md) | HTTP routes, browser streaming, React state, editable drafts, approval cards, code blocks, mathematical rendering, and languages |
 | [13. Approvals and boundaries](12-approvals-security-and-boundaries.md) | The exact enforced checks, local HTTP protection, terminal isolation, remote permissions, and current limitations |
 | [14. Testing and troubleshooting](13-testing-troubleshooting-and-operations.md) | Regression coverage, commands, local diagnostics, offline evaluations, and what verification does and does not prove |
-| [15. Roadmap and benchmark preparation](14-roadmap-and-benchmark-readiness.md) | Current capability status, the ten issues, unfinished modules, release work, future subagents, and gradual benchmark preparation |
-| [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 19 built-in tools |
+| [15. Roadmap and benchmark preparation](14-roadmap-and-benchmark-readiness.md) | Current capability status, implementation of the ten tracked issues, remaining context work, and gradual benchmark preparation |
+| [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 22 built-in tools |
 | [Core upgrade plan and progress](16-core-upgrade-plan.md) | Six selected improvements, their implementation, acceptance checks, and remaining limits |
+| [17. Shared turn gateway and local API](17-shared-turn-gateway-and-api.md) | Common turn entry point, dashboard HTTP/NDJSON contract, persistence semantics, and future background lifecycle |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

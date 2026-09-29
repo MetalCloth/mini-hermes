@@ -2,7 +2,7 @@
 
 [Handbook index](README.md) · [Previous: roadmap](14-roadmap-and-benchmark-readiness.md)
 
-This reference was generated from the actual `tool_schemas()` output in [registry.py](../tools/registry.py). It lists the 19 native model-facing functions. MCP names and arguments are discovered dynamically and cannot be frozen into one permanent list.
+This reference was checked against the actual `tool_schemas()` output in [registry.py](../tools/registry.py). It lists the 22 native model-facing functions. `load_skill` is advertised only when valid local skills exist; MCP names and arguments are discovered dynamically.
 
 ## Reading a schema
 
@@ -20,6 +20,9 @@ Example argument objects are explanatory and do not execute the tools. Browser r
 | [`terminal_stop`](#terminal-stop) | `job_id` |
 | [`read_file`](#read-file) | `path` |
 | [`search_files`](#search-files) | `pattern`, `path`, `include`, `exclude`, `literal`, `case_sensitive`, `max_results` |
+| [`git_status`](#git-status) | None; use `{}` |
+| [`git_diff`](#git-diff) | None; use `{}` |
+| [`delegate_read_only`](#delegate-read-only) | `task` |
 | [`write_file`](#write-file) | `path`, `content` |
 | [`edit_file`](#edit-file) | `path`, `old_text`, `new_text` |
 | [`undo_file_change`](#undo-file-change) | None; use `{}` |
@@ -817,6 +820,48 @@ No arguments. Send an empty object.
   "type": "object",
   "properties": {},
   "required": [],
+  "additionalProperties": false
+}
+```
+
+## git-status
+
+Model-facing name: `git_status`.
+
+Read-only inspection of staged, unstaged, and untracked paths under the active project. It runs
+Git with the active project as its working root, restricts pathspecs to that folder, times out
+after five seconds, and caps output at 20,000 characters. It does not change the index or
+worktree. See the [Git tool details](06-tools-files-terminal-and-undo.md#14-read-only-git-awareness).
+
+```json
+{"type":"object","properties":{},"required":[],"additionalProperties":false}
+```
+
+## git-diff
+
+Model-facing name: `git_diff`.
+
+Shows staged patch (`index` versus `HEAD`), unstaged patch (`worktree` versus `index`), and
+untracked path names separately. Untracked file contents are not included. The same project
+scope, five-second timeout, and output cap apply.
+
+```json
+{"type":"object","properties":{},"required":[],"additionalProperties":false}
+```
+
+## delegate-read-only
+
+Model-facing name: `delegate_read_only`.
+
+For one independent inspection task only. The worker receives an isolated context and can call
+`read_file`, `search_files`, `git_status`, and `git_diff`; it has no writes, shell, MCP, or nested
+delegation. The task is limited to 2,000 characters. See the [worker limits and evidence format](04-agent-loop-and-context.md#12-one-bounded-read-only-subagent).
+
+```json
+{
+  "type": "object",
+  "properties": {"task": {"type": "string", "description": "One focused inspection task, at most 2,000 characters."}},
+  "required": ["task"],
   "additionalProperties": false
 }
 ```

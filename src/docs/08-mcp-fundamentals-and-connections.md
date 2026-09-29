@@ -206,7 +206,7 @@ Oryn currently requests GitHub `repos`, `issues`, and `pull_requests` toolsets w
 | MCP | Communication/discovery protocol | SDK-backed client implemented |
 | Connector / integration | Product-facing connection to a service | Ten known MCP presets; native web services too |
 | Plugin | Packaged extension that might include tools, MCP config, skills, or assets | Plugin files are placeholders |
-| Skill / instructions | Guidance on how to do a class of work | Root project instructions implemented; a general skill loader is not |
+| Skill / instructions | Guidance on how to do a class of work | Scoped local `SKILL.md` loader implemented; executable plugins remain out of scope |
 
 A product can show “Linear” as an app/connector without the UI telling you its internal protocol. Do not infer another product's architecture from its icon or label alone. Oryn's Linear path is concretely the configured MCP endpoint above.
 
@@ -214,7 +214,7 @@ Official public MCP endpoints let compatible clients connect subject to authenti
 
 ## 10. On-demand model catalog
 
-All accepted schemas remain in the local inventory, and `/tools` can display them. The model initially receives the nineteen native schemas and one `load_mcp_tools` definition containing server names, short descriptions, states, and counts. Credentials and request headers are excluded from this directory. An empty configuration supplies no loader.
+All accepted schemas remain in the local inventory, and `/tools` can display them. The model initially receives the current native schemas and, when any server is enabled, one `load_mcp_tools` definition containing server names, short descriptions, states, and counts. Credentials and request headers are excluded from this directory. A clean default configuration enables no servers and supplies no loader.
 
 ```json
 {"name": "load_mcp_tools", "arguments": {"server": "github"}}

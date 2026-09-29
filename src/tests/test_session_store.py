@@ -150,6 +150,33 @@ class SQLiteSessionStoreTests(unittest.TestCase):
                 undo_file_change(root, history, Mock(return_value=True))
             self.assertEqual(path.read_text(), "user edit")
 
+    def test_file_change_snapshots_expire_after_retention_window(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "project"
+            root.mkdir()
+            path = root / "note.txt"
+            path.write_text("after")
+            store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
+            session = store.create_session(root)
+            mode = stat.S_IMODE(path.stat().st_mode)
+            change = FileChange(
+                "note.txt", b"before", mode, hashlib.sha256(b"after").digest(), mode,
+            )
+            change_id = store.record_file_change(session, root, "prepared", change)
+            change = FileChange(
+                change.path, change.previous_content, change.previous_mode,
+                change.result_digest, change.result_mode, change_id,
+            )
+            store.record_file_change(session, root, "applied", change)
+            with closing(sqlite3.connect(store.db_path)) as connection:
+                connection.execute(
+                    "UPDATE file_changes SET created_at = datetime('now', '-31 days') WHERE id = ?",
+                    (change_id,),
+                )
+                connection.commit()
+
+            self.assertEqual(store.load_file_change_history(session, root), [])
+
     def test_diagnostics_store_only_allowlisted_redacted_metadata(self):
         with tempfile.TemporaryDirectory() as folder:
             store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
@@ -158,6 +185,17 @@ class SQLiteSessionStoreTests(unittest.TestCase):
             event = {"type": "tool_end", "tool_name": "read_file", "success": True, "elapsed_ms": 17}
             store.append_diagnostic(session, turn_id, event)
             self.assertEqual(store.recent_diagnostics(session)[0]["event"], event)
+            upstream = {
+                "type": "tool_end", "tool_name": "browser_click", "success": False,
+                "elapsed_ms": 17, "error_class": "FirecrawlHTTPError", "upstream_status": 502,
+                "upstream_request_id": "req-123abc", "upstream_detail": "temporary failure",
+            }
+            store.append_diagnostic(session, turn_id, upstream)
+            self.assertEqual(store.recent_diagnostics(session)[0]["event"], upstream)
+            with self.assertRaisesRegex(ValueError, "invalid metadata"):
+                store.append_diagnostic(session, turn_id, {
+                    **upstream, "upstream_detail": "Bearer secret-token",
+                })
             with self.assertRaisesRegex(ValueError, "unsupported fields"):
                 store.append_diagnostic(session, turn_id, {"type": "tool_end", "content": "private text"})
             with self.assertRaisesRegex(ValueError, "invalid metadata"):

@@ -21,7 +21,7 @@ from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
 from src.mcp.discovery import SERVER_NAMES, mcp_settings_path, save_enabled_servers
-from src.providers.codex import CodexProvider
+from src.providers.codex import CodexProvider, auth_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -558,6 +558,8 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
     server = DashboardServer(args.project, args.port, mcp_client=MCPClient(), turn_limits=limits)
+    if warning := auth_setup_warning():
+        print(f"config> {warning}")
     for status in server.mcp_client.start():
         print(f"mcp> {status}")
     url = f"http://127.0.0.1:{server.server_address[1]}"

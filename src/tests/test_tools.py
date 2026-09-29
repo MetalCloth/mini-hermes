@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
-from src.tools.browser_tools import BrowserSession, _request
+from src.tools.browser_tools import BrowserSession, FirecrawlHTTPError, _request
 from src.tools.file_tools import read_file, search_files, write_file
+from src.tools.git_tools import git_diff, git_status
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import TerminalJobManager, run_terminal
 from src.tools.web_tools import _firecrawl_extract, _tavily_api_key, web_extract, web_search
@@ -78,6 +79,59 @@ class ToolTests(unittest.TestCase):
                 search_files("search_marker", root, path="tavily.env")
             with self.assertRaisesRegex(ValueError, "Search failed"):
                 search_files("(", root)
+
+    def test_git_status_and_diff_are_read_only_and_scoped_to_project(self):
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder)
+            project = repo / "project"
+            project.mkdir()
+            (repo / "outside.txt").write_text("outside baseline\n")
+            (project / "tracked.txt").write_text("before\n")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
+            (project / "tracked.txt").write_text("unstaged change\n")
+            (project / "staged.txt").write_text("staged change\n")
+            subprocess.run(["git", "-C", str(repo), "add", "project/staged.txt"], check=True)
+            (project / "new.txt").write_text("untracked\n")
+
+            before = subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                check=True, capture_output=True,
+            ).stdout
+            status = git_status(project)
+            preview = git_diff(project)
+            after = subprocess.run(
+                ["git", "-C", str(repo), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                check=True, capture_output=True,
+            ).stdout
+
+            self.assertIn("Staged changes", status)
+            self.assertIn("Unstaged changes", status)
+            self.assertIn("Untracked paths", status)
+            self.assertNotIn("outside.txt", status)
+            self.assertIn("index compared with HEAD", preview)
+            self.assertIn("worktree compared with index", preview)
+            self.assertIn('"project/new.txt"', preview)
+            self.assertNotIn("outside.txt", preview)
+            self.assertEqual(before, after)
+
+    def test_git_tools_reject_non_repository_and_bound_large_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with self.assertRaisesRegex(ValueError, "not inside a Git repository"):
+                git_status(root)
+
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "large.txt").write_text("old\n")
+            subprocess.run(["git", "-C", str(root), "add", "large.txt"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                            "commit", "-qm", "baseline"], check=True)
+            (root / "large.txt").write_text("changed\n" * 5_000)
+            preview = git_diff(root)
+            self.assertIn("Git output truncated at 20,000 characters", preview)
 
     def test_write_file_creates_utf8_text_after_approval(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -322,7 +376,8 @@ class ToolTests(unittest.TestCase):
     def test_catalog_exposes_browser_navigation_tools(self):
         self.assertEqual([tool["name"] for tool in tool_schemas()], [
             "terminal", "terminal_read", "terminal_input", "terminal_stop",
-            "read_file", "search_files", "write_file", "edit_file", "undo_file_change",
+            "read_file", "search_files", "git_status", "git_diff", "delegate_read_only",
+            "write_file", "edit_file", "undo_file_change",
             "web_search", "web_extract",
             "browser_open", "browser_snapshot", "browser_click", "browser_fill",
             "browser_press", "browser_scroll", "browser_wait", "browser_back",
@@ -385,6 +440,26 @@ class ToolTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "may have run"):
                     _request("/scrape/id/interact", "fake")
                 self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_firecrawl_http_error_keeps_only_safe_request_metadata(self):
+        secret = "fc-1234567890abcdef"
+        error = HTTPError(
+            "https://api.firecrawl.dev/v2/interact", 502, "Bad Gateway",
+            {"X-Request-ID": "req-123abc"},
+            io.BytesIO(json.dumps({"error": f"upstream failed Bearer hidden {secret}"}).encode()),
+        )
+        self.addCleanup(error.close)
+        with patch("src.tools.browser_tools.build_opener") as opener:
+            opener.return_value.open.side_effect = error
+            with self.assertRaises(FirecrawlHTTPError) as raised:
+                _request("/scrape/id/interact", secret)
+        failure = raised.exception
+        self.assertEqual(failure.status_code, 502)
+        self.assertEqual(failure.request_id, "req-123abc")
+        self.assertEqual(failure.detail, "upstream failed [redacted] [redacted]")
+        self.assertIn("Request ID: req-123abc", str(failure))
+        self.assertNotIn(secret, str(failure))
+        self.assertNotIn("hidden", str(failure))
 
     def test_browser_close_retries_transient_error_and_preserves_failed_session_id(self):
         scrape_id = "550e8400-e29b-41d4-a716-446655440000"

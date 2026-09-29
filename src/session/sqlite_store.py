@@ -13,6 +13,7 @@ from typing import Any
 
 DEFAULT_DB_PATH = Path.home() / ".mini-hermes" / "sessions.sqlite3"
 SESSION_ID = "main"
+FILE_CHANGE_MAX_AGE_DAYS = 30
 
 
 class SQLiteSessionStore:
@@ -344,6 +345,7 @@ class SQLiteSessionStore:
             with connection:
                 if phase == "prepared":
                     connection.execute("BEGIN IMMEDIATE")
+                    self._prune_expired_file_changes(connection, session_id)
                     row = connection.execute(
                         "SELECT project_root FROM sessions WHERE id = ?", (session_id,),
                     ).fetchone()
@@ -371,6 +373,7 @@ class SQLiteSessionStore:
                 if cursor.rowcount != 1:
                     raise RuntimeError("File-change journal state changed unexpectedly.")
                 if phase == "applied":
+                    self._prune_expired_file_changes(connection, session_id)
                     connection.execute(
                         "DELETE FROM file_changes WHERE session_id = ? AND id NOT IN "
                         "(SELECT id FROM file_changes WHERE session_id = ? AND state = 'applied' "
@@ -379,6 +382,14 @@ class SQLiteSessionStore:
                     )
         finally:
             connection.close()
+
+    @staticmethod
+    def _prune_expired_file_changes(connection, session_id: str) -> None:
+        connection.execute(
+            "DELETE FROM file_changes WHERE session_id = ? AND created_at < datetime('now', ?) "
+            "AND state NOT IN ('prepared','undoing')",
+            (session_id, f"-{FILE_CHANGE_MAX_AGE_DAYS} days"),
+        )
 
     def load_file_change_history(self, session_id: str, project_root: Path):
         """Reconcile crash-interrupted edits, then return up to 20 safe undo records."""
@@ -421,6 +432,8 @@ class SQLiteSessionStore:
                     else:
                         state = "conflict"
                     connection.execute("UPDATE file_changes SET state = ? WHERE id = ?", (state, row["id"]))
+            with connection:
+                self._prune_expired_file_changes(connection, session_id)
             records = connection.execute(
                 "SELECT * FROM file_changes WHERE session_id = ? AND project_root = ? AND state = 'applied' "
                 "ORDER BY id DESC LIMIT 20",
@@ -437,12 +450,19 @@ class SQLiteSessionStore:
     def append_diagnostic(self, session_id: str, turn_id: str, event: dict[str, Any]) -> None:
         """Append allowlisted metadata only; prompts, tool arguments, and outputs are rejected."""
         fields = {
-            "turn_start": set(),
+            "turn_start": {"model"},
             "model_request": {"round", "estimated_tokens", "tool_count", "loaded_tool_count"},
             "retry": {"retry_attempt", "delay_ms"},
             "tool_start": {"tool_name"},
-            "tool_end": {"tool_name", "success", "elapsed_ms", "error_class"},
+            "tool_end": {
+                "tool_name", "success", "elapsed_ms", "error_class",
+                "upstream_status", "upstream_request_id", "upstream_detail",
+            },
             "compaction": {"estimated_tokens", "summary_tokens"},
+            "subagent_start": {"task_chars", "allowed_tool_count"},
+            "subagent_end": {"status", "elapsed_ms", "tool_count", "model_requests"},
+            "skill_loaded": {"skill_name"},
+            "skill_rejected": {"skill_name", "error_class"},
             "turn_end": {"elapsed_ms", "tool_count", "model_requests"},
             "turn_error": {"elapsed_ms", "tool_count", "model_requests", "error_class"},
         }
@@ -454,9 +474,13 @@ class SQLiteSessionStore:
         expected_fields = fields.get(event_type)
         if expected_fields is None:
             raise ValueError("Invalid diagnostic event type.")
-        required_fields = (
-            expected_fields - ({"error_class"} if event_type == "tool_end" else set())
+        optional_fields = (
+            {"error_class", "upstream_status", "upstream_request_id", "upstream_detail"}
+            if event_type == "tool_end" else set()
         )
+        if event_type == "turn_start":
+            optional_fields = {"model"}
+        required_fields = expected_fields - optional_fields
         if set(event) - (expected_fields | {"type"}):
             raise ValueError("Diagnostic event contains unsupported fields.")
         if not required_fields <= set(event):
@@ -464,12 +488,35 @@ class SQLiteSessionStore:
         for key, value in event.items():
             if key == "type":
                 continue
-            if key in {"tool_name", "error_class"}:
-                pattern = r"[A-Za-z_][A-Za-z0-9_:-]{0,159}" if key == "tool_name" else r"[A-Za-z_][A-Za-z0-9_]{0,63}"
+            if key in {"tool_name", "error_class", "skill_name"}:
+                pattern = (r"[A-Za-z_][A-Za-z0-9_:-]{0,159}" if key == "tool_name" else
+                           r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}" if key == "skill_name" else
+                           r"[A-Za-z_][A-Za-z0-9_]{0,63}")
                 if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "model":
+                if not isinstance(value, str) or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9./_:-]{0,119}", value,
+                ):
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "status":
+                if value not in {"completed", "limit_reached", "cancelled", "timed_out", "failed"}:
                     raise ValueError("Diagnostic event contains invalid metadata.")
             elif key == "success":
                 if type(value) is not bool:
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "upstream_status":
+                if type(value) is not int or not 100 <= value <= 599:
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "upstream_request_id":
+                if not isinstance(value, str) or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value,
+                ):
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "upstream_detail":
+                if (not isinstance(value, str) or not 1 <= len(value) <= 300
+                        or any(not char.isprintable() for char in value)
+                        or re.search(r"(?i)(?:Bearer\s+\S+|https?://|(?:fc|tvly|sk|ghp|github_pat|lin_api|ntn)[_-][A-Za-z0-9_-]{8,})", value)):
                     raise ValueError("Diagnostic event contains invalid metadata.")
             elif type(value) is not int or value < 0 or value > 10**9:
                 raise ValueError("Diagnostic event contains invalid metadata.")

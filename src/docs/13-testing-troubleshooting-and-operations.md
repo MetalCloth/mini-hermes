@@ -20,25 +20,26 @@ The user reported successful partial-reply continuation and a working Tavily mig
 
 ## 2. Python regression suite and offline evaluations
 
-The suite is run locally and by `.github/workflows/tests.yml`. Latest verification for this snapshot: **126 tests passed on Python 3.14**. The method count is test evidence, not a quality score.
+The suite is run locally and by `.github/workflows/tests.yml`. Latest verification for this snapshot: **139 tests passed on Python 3.14**. The method count is test evidence, not a quality score.
 
 The source snapshot contains these test methods, counted from its test definitions:
 
 | File | Count | Main coverage |
 | --- | ---: | --- |
 | [test_chat_demo.py](../tests/test_chat_demo.py) | 9 | REPL history, persistence, safe preview, approval EOF, idle/active Ctrl-C, interrupted tool pairing, search CLI, budget pause/continue, diagnostics |
-| [test_codex.py](../tests/test_codex.py) | 16 | Stream parsing/completion, function calls, payloads, image inputs, orphaned calls, failure classification, partial-stream protection, error redaction, Retry-After, cancellation, capabilities, version |
+| [test_codex.py](../tests/test_codex.py) | 17 | Startup auth check, stream parsing/completion, function calls, payloads, image inputs, orphaned calls, failure classification, partial-stream protection, error redaction, Retry-After, cancellation, capabilities, version |
 | [test_compression.py](../tests/test_compression.py) | 5 | Summary prompt guardrails, complete-turn compaction, stale checkpoint invalidation, older-image compaction, oversized active-turn refusal |
 | [test_context.py](../tests/test_context.py) | 4 | 200k trigger/180k target, whole-turn selection with tool-schema costs, clear overflow, image/non-Latin estimation |
-| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 10 | Longer turns, bounded retries, tool/time/round pauses, continuation, cancellation, call pairing, schema selection, redacted diagnostics |
-| [test_evaluation.py](../tests/test_evaluation.py) | 1 | Deterministic offline tasks cover a direct answer, file read, and denied write |
+| [test_conversation_loop.py](../tests/test_conversation_loop.py) | 14 | Bounded read-only delegation, scoped skills, tool schema accounting, retries, pause/continue, cancellation, call pairing, redacted traces, truncation |
+| [test_evaluation.py](../tests/test_evaluation.py) | 1 | Six deterministic offline tasks cover direct answers, read, denied write, provider failure, interruption, and context overflow |
 | [test_images.py](../tests/test_images.py) | 4 | Clipboard detection, image validation, metadata removal, request formatting, and multimodal context limits |
-| [test_mcp.py](../tests/test_mcp.py) | 20 | Hosted/stdio flows, preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions, read-only transient retries |
-| [test_session_store.py](../tests/test_session_store.py) | 9 | Migration, metadata, ordered history, summary checkpoint, durable undo/recovery, redacted diagnostics, transaction behavior, search |
-| [test_tools.py](../tests/test_tools.py) | 29 | File boundaries, read/search/write, atomic failure, terminal approval/isolation/jobs/cancellation, Tavily, Firecrawl, browser validation/retry |
-| [test_tui_app.py](../tests/test_tui_app.py) | 11 | Budget pause/continue and expired approvals, home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
+| [test_mcp.py](../tests/test_mcp.py) | 21 | Hosted/local stdio flows, explicit preferences, redaction, schema validation, duplicate names, owner lifetime, reconnect, OAuth, timeout, deferred definitions, read-only transient retries |
+| [test_session_store.py](../tests/test_session_store.py) | 10 | Migration, metadata, ordered history, summary checkpoint, durable undo/recovery/retention, redacted diagnostics, transaction behavior, search |
+| [test_skills.py](../tests/test_skills.py) | 2 | Skill frontmatter, size and path validation, and project precedence |
+| [test_tools.py](../tests/test_tools.py) | 32 | Project-scoped Git status/diff, file boundaries, read/search/write, atomic failure, terminal approval/isolation/jobs/cancellation, Tavily, Firecrawl, browser validation/retry |
+| [test_tui_app.py](../tests/test_tui_app.py) | 12 | Budget pause/continue and expired approvals, home-page startup/resume, elapsed reply time, commands during active tools, per-chat undo, effort/speed persistence, MCP controls/login/activity rendering, image paste/send/reopen, compact tools, model/session controls, attached palette layout |
 | [test_web_app.py](../tests/test_web_app.py) | 8 | Static/bootstrap/session routes, MCP preferences, streamed turns, approval/denial, stop, partial failure persistence, budget pause/continue and expired approvals |
-| **Total** | **126** | Mechanism regression coverage; not a model benchmark |
+| **Total** | **139** | Mechanism regression coverage; not a model benchmark |
 
 The count describes test methods, not code coverage percentage or benchmark score. Some methods exercise many scenarios internally.
 
@@ -64,7 +65,7 @@ The `.venv` matters: MCP SDK major-version differences and Textual versions can 
 
 ### Local diagnostic data
 
-All three launchers write allowlisted per-turn metadata to the private local SQLite database: event category, turn ID, elapsed milliseconds, token estimates, request/tool counts, a fixed native tool label or generic `mcp_tool`, and exception class names. The diagnostic schema rejects arbitrary fields. It does not store prompts, file paths, tool arguments/results, error messages, or provider response bodies. Inspect the most recent records with `./oryn repl --diagnostics`, or pass a saved ID to filter one chat. Events are local metadata, not an encrypted store; the database permission and privacy limits still apply.
+All three launchers write allowlisted per-turn metadata to the private local SQLite database: event category, turn ID, elapsed milliseconds, token estimates, request/tool counts, a fixed native tool label or generic `mcp_tool`, and exception class names. Safe Firecrawl failures can additionally store a bounded HTTP status, validated request ID, and sanitized server detail. The diagnostic schema rejects arbitrary fields. It does not store prompts, tool arguments/results, page content, or provider response bodies. Inspect the most recent records with `./oryn repl --diagnostics`, or pass a saved ID to filter one chat. Events are local metadata, not an encrypted store; the database permission and privacy limits still apply.
 
 The GitHub Actions workflow installs `requirements.txt`, runs the full Python suite, and runs the offline task set. It needs no personal API keys or OAuth credentials. External-service behavior remains covered by mocks in CI and requires separate live checks.
 
@@ -279,7 +280,7 @@ Durable undo records are scoped by chat and project. A new chat has an empty und
 
 ## 17. Search/command timeouts and oversized context
 
-Narrow the path, pattern, result count, or task. The current system reports bounded failures rather than automatically splitting a huge task into subagents. At 200,000 estimated request tokens it summarizes older complete turns toward a 180,000-token target. A current turn or pinned instructions that remain too large fail clearly; outputs above the per-tool result cap remain truncated rather than archived.
+Narrow the path, pattern, result count, or task. Oryn can delegate an independent inspection to one bounded read-only worker; it does not automatically split every large task. At 200,000 estimated request tokens it summarizes older complete turns toward a 180,000-token target. A current turn or pinned instructions that remain too large fail clearly; outputs above the per-tool result cap remain truncated rather than archived. An explicit reserve for the model's generated response is still an open context-budget improvement.
 
 A turn reaching its round/tool/time allowance is now marked paused, with retained completed pairs and partial text. Ask to continue for a fresh budget, or choose the shared `--max-rounds`, `--max-tool-calls`, and `--max-turn-seconds` launch options within their validated ranges. A pause does not undo work or automatically replay completed actions. A blocking operation may finish after the nominal time allowance; late approvals cannot authorize new actions after it expires.
 
@@ -304,6 +305,6 @@ Avoid pasting complete auth files, all environment variables, or raw database tr
 
 ## 19. What the suite still lacks
 
-There is no complete public benchmark harness, comprehensive multilingual UI suite, full cross-platform terminal matrix, or exhaustive external-account integration suite. The durable undo journal and offline three-task evaluator cover important cases, but race conditions, varied projects, model quality, and terminal/platform combinations need broader evaluation.
+There is no complete public benchmark harness, comprehensive multilingual UI suite, full cross-platform terminal matrix, or exhaustive external-account integration suite. The durable undo journal and six-case offline evaluator cover important mechanisms, but race conditions, varied projects, model quality, and terminal/platform combinations need broader evaluation.
 
 Future checks should follow demonstrated risks: context overflow, uncertain side effects, race conditions, large tool catalogs, unsupported terminals, and actual task completion. Increasing test count alone is not a performance strategy.

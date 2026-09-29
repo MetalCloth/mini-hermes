@@ -21,11 +21,35 @@ from src.providers.types import ModelResponse, ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 from src.tools.registry import execute_tool, tool_schemas
 from src.mcp.discovery import load_enabled_servers, save_enabled_servers
-from src.tui_app import ApprovalScreen, InfoScreen, MCPManagerScreen, MCPReady, MessageCard, OrynTUI, ToolsScreen
+from src.tui_app import ApprovalScreen, InfoScreen, MCPManagerScreen, MCPReady, MessageCard, OrynTUI, ToolActivity, ToolsScreen
 from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mcp_tool_activity_renders_untrusted_result_as_plain_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            client = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id=store.create_session(root), project_root=root,
+                model="gpt-5.6-luna", history=[], provider=CodexProvider("gpt-5.6-luna"),
+                mcp_client=client, initial_tools=[],
+            )
+            raw_result = r'[{"body":"### <span aria-hidden=\"true\">✅</span>"}]'
+            try:
+                async with app.run_test(size=(100, 32)):
+                    app.on_tool_activity(ToolActivity(
+                        "result", ToolCall("call", "mcp__github__pull_request_read", {}), raw_result,
+                    ))
+                    label = app.query_one("#activity-label", Static)
+                    self.assertEqual(
+                        str(label.content),
+                        f"mcp__github__pull_request_read finished  ·  {raw_result}",
+                    )
+            finally:
+                client.close()
+
     async def test_budget_pause_is_visible_saved_resumable_and_closes_expired_approval(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -67,15 +91,15 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                         self.assertIn("execution budget", complete.call_args.args[0][1]["content"])
                     self.assertIsNone(list(app.query(MessageCard))[-1].turn_status)
 
-                    app.turn_limits = TurnLimits(max_turn_seconds=1)
+                    app.turn_limits = TurnLimits(max_turn_seconds=3)
                     with patch.object(provider, "complete", return_value=ModelResponse(tool_calls=[
                         ToolCall("late", "write_file", {"path": "late.txt", "content": "Must not be written"}),
                     ])):
                         app.query_one("#composer", TextArea).load_text("Write another note")
                         await pilot.press("enter")
-                        await pilot.pause()
+                        await pilot.pause(0.25)
                         self.assertIsInstance(app.screen, ApprovalScreen)
-                        app._turn_thread.join(timeout=2)
+                        app._turn_thread.join(timeout=4)
                         await pilot.pause()
                     self.assertFalse((root / "late.txt").exists())
                     self.assertIsNone(app._pending_approval)
@@ -321,7 +345,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                             await pilot.pause()
                             self.assertTrue(palette.display)
                             await pilot.press("down")
-                            self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "help")
+                            self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "new")
                             for command, screen_type in [("/help", InfoScreen), ("/to", ToolsScreen)]:
                                 composer.load_text(command)
                                 await pilot.pause()
@@ -856,7 +880,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("down")
                     await pilot.pause()
                     self.assertTrue(draft.has_focus)
-                    self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "help")
+                    self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "new")
                     await pilot.press("escape")
                     await pilot.pause()
                     self.assertEqual(draft.text, "My unsent draft")

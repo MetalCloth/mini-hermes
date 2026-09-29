@@ -105,6 +105,24 @@ def _read_auth(auth_file: Path) -> dict:
     return auth
 
 
+def auth_setup_warning(auth_file: Path = AUTH_FILE) -> str | None:
+    """Check local Codex login shape at startup without refreshing or revealing secrets."""
+    if not isinstance(auth_file, (str, os.PathLike)):
+        return None
+    try:
+        auth = json.loads(Path(auth_file).read_text(encoding="utf-8"))
+        tokens = auth["tokens"]
+        if (not isinstance(tokens, dict)
+                or not isinstance(tokens.get("access_token"), str) or not tokens["access_token"]
+                or not isinstance(tokens.get("account_id"), str) or not tokens["account_id"]):
+            raise ValueError
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return "Codex login is missing or invalid. Run `codex login`; Oryn will not display token values."
+    if _expired(tokens["access_token"]) and not tokens.get("refresh_token"):
+        return "Codex login has an expired access token without a refresh token. Run `codex login`; token values stay hidden."
+    return None
+
+
 def _response_text(
     lines: Iterable[bytes], on_text_delta: Callable[[str], None] | None = None,
     on_response_data: Callable[[], None] | None = None,

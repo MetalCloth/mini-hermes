@@ -23,16 +23,18 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 | TUI MCP enable/disable/reconnect | Implemented | Management worker, preference persistence, tests |
 | Notion browser OAuth | Implemented | SDK flow/storage; TUI integration mock-tested |
 | Partial text recovery | Implemented | Status persistence plus future-context annotation |
-| Bounded transient recovery | Implemented with limits | Three provider attempts before output; read-only MCP retries; no uncertain mutation replay or durable attempt log |
+| Bounded transient recovery | Implemented with limits | Three provider attempts before output; read-only MCP retries; uncertain mutations are not replayed; retry/turn events are saved locally |
 | Token-aware budgeting/compression | Implemented with estimates | 200k input trigger, 180k target, tool-free rolling summary, original transcript kept |
 | Persistent file undo | Implemented with limits | Latest 20 changes per chat, SQLite snapshots and fingerprint-based recovery |
 | Local turn diagnostics | Implemented, redacted | Metadata only; inspect using `./oryn repl --diagnostics [SESSION_ID]` |
-| Offline task evaluation | Implemented, small baseline | Three deterministic scripted-provider tasks; not a real-model benchmark |
+| Offline task evaluation | Implemented, small baseline | Six deterministic scripted-provider tasks; not a real-model benchmark |
 | On-demand MCP schemas | Implemented | Compact service directory, per-turn loading, existing approvals |
-| Read-only Git tools | Not implemented | Terminal can inspect Git with approval |
-| Subagents | Not implemented | Empty files |
-| General skills/plugins | Not implemented | No working loader/registry/hooks |
-| Scheduler, memory, gateway | Not implemented | Placeholder areas |
+| Read-only Git tools | Implemented | Project-scoped status and staged/unstaged diff previews; no repository mutations |
+| Read-only subagent | Implemented with limits | One isolated child with four read-only tools, bounded task, runtime, rounds, calls, and result |
+| Local skills | Implemented with limits | Valid local `SKILL.md` instructions load selectively; they cannot add tools or execute code |
+| Executable plugins | Not implemented | Trust and permission boundary remains a future design |
+| Scheduler and semantic memory | Not implemented | Placeholder areas; no queued work or cross-session learned facts |
+| Shared local turn/API contract | Implemented | Current interfaces share `run_turn` and SQLite; scheduler and remote gateway are not implemented |
 | Global packaged CLI / desktop installer | Not implemented | Repository `.venv` launcher |
 | Oryn user login/cloud accounts | Not implemented | Codex/MCP authentication is separate |
 | Formal agent benchmark suite | Not implemented | Small offline smoke evaluations exist; broad model-quality benchmark remains |
@@ -41,18 +43,18 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 
 | Issue | Intended work | Current relationship to implementation |
 | --- | --- | --- |
-| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/mini-hermes/issues/1) | Local diagnostic record for each turn and useful redacted failures | Local allowlisted metadata trace is implemented; prompts, arguments, results, and upstream bodies are omitted |
-| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/mini-hermes/issues/2) | Fixed tasks and measurable regression results | Three deterministic offline tasks run through the shared loop; broader task and model scoring remain |
-| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/mini-hermes/issues/3) | Safe recovery from budget/large-output conditions | 200k estimated-token threshold, rolling summary, whole-turn selection; outputs remain capped rather than archived |
-| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/mini-hermes/issues/4) | Undo surviving restart | Latest 20 changes per chat persist and reconcile by file fingerprints |
-| [#5: First supported local release](https://github.com/MetalCloth/mini-hermes/issues/5) | Define/harden/install the release boundary | Working local interfaces; packaging/onboarding/platform scope still unfinished |
-| [#6: Policy-controlled MCP client](https://github.com/MetalCloth/mini-hermes/issues/6) | Connect external tools with discovery and controls | Substantial work implemented, including hosted services and management; open issue does not imply MCP is absent |
-| [#7: Supervised read-only subagent](https://github.com/MetalCloth/mini-hermes/issues/7) | Bounded context-isolated delegated research | Not implemented |
-| [#8: Scoped skills and trusted plugins](https://github.com/MetalCloth/mini-hermes/issues/8) | Instructions and extension boundary | Not implemented as a general subsystem |
-| [#9: Read-only Git status/diff tools](https://github.com/MetalCloth/mini-hermes/issues/9) | Inspect staged, unstaged, untracked work explicitly | Dedicated tools absent; approved terminal available |
-| [#10: Shared gateway](https://github.com/MetalCloth/mini-hermes/issues/10) | Route interfaces/future scheduled work through a common entrypoint | Shared loop exists; gateway files remain empty |
+| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/mini-hermes/issues/1) | Local diagnostic record for each turn and useful redacted failures | Implemented: SQLite traces retain allowlisted turn/tool events and sanitized Firecrawl status, request ID, and detail |
+| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/mini-hermes/issues/2) | Fixed tasks and measurable regression results | Implemented: six deterministic offline scenarios report expected/observed outputs; broad benchmark scoring remains separate |
+| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/mini-hermes/issues/3) | Safe recovery from budget/large-output conditions | Partial: estimated-token compaction, complete-turn selection, visible truncation, and clear current-turn refusal exist; an explicit response-token reserve remains |
+| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/mini-hermes/issues/4) | Undo surviving restart | Implemented: up to 20 applied changes per chat, 1 MB prior-file cap, 30-day retention, fingerprint checks, crash reconciliation, and delete cleanup |
+| [#5: First supported local release](https://github.com/MetalCloth/mini-hermes/issues/5) | Define/harden/install the release boundary | Implemented for a single-user Linux source checkout: clean install steps, loopback-only dashboard, startup login warning, redacted diagnostics, and threat boundary; global packaging stays out of scope |
+| [#6: Policy-controlled MCP client](https://github.com/MetalCloth/mini-hermes/issues/6) | Connect external tools with discovery and controls | Implemented: local stdio and hosted connections, validation, limits, approval policy, and explicit opt-in defaults; local stdio tool use runs through the agent loop |
+| [#7: Supervised read-only subagent](https://github.com/MetalCloth/mini-hermes/issues/7) | Bounded context-isolated delegated research | Implemented with limits: one serialized child per parent turn, isolated task/context, read-only allowlist, bounded execution, structured evidence, cancellation, and failure recovery |
+| [#8: Scoped skills and trusted plugins](https://github.com/MetalCloth/mini-hermes/issues/8) | Instructions and extension boundary | Skills implemented: validated local metadata, selective loading, size caps, audit event; they cannot register tools or execute code. Executable plugins remain deferred as scoped |
+| [#9: Read-only Git status/diff tools](https://github.com/MetalCloth/mini-hermes/issues/9) | Inspect staged, unstaged, untracked work explicitly | Implemented: bounded project-scoped status and staged/unstaged previews; untracked paths are identified separately and no index/worktree mutation occurs |
+| [#10: Shared gateway](https://github.com/MetalCloth/mini-hermes/issues/10) | Route interfaces/future scheduled work through a common entrypoint | Implemented for current local interfaces: shared `run_turn` and SQLite semantics, dashboard API/event contract, and documented future queue lifecycle; no scheduler or remote API |
 
-These issues organize future work. This documentation task did not close them, add comments, or change external repository state.
+Issue #3 remains open because the current request estimator does not reserve an explicit allowance for the generated response. The other issue scopes above are implemented and verified in this snapshot; close state is tracked in GitHub after the final suite passes.
 
 ## 3. Five practical next targets
 
@@ -103,7 +105,7 @@ flowchart TD
 
 The important design is classification. A read-only documentation request can be retried more safely than a mutation whose acknowledgement was lost. Model HTTP 429/500/502/503/504, eligible temporary connection failures, and metadata-only interrupted streams qualify before any response text/function data. Partial streams, permanent failures, TLS errors, Playwright calls, and uncertain mutations do not qualify. The native Firecrawl snapshot/action distinction remains a separate, smaller retry path.
 
-Requests permit three attempts total with cancellable backoff and bounded Retry-After handling. MCP retries share the existing 90-second call deadline. Retry and budget-pause events use the current interfaces; per-turn traces remain proposed. The loop also now accepts validated round/tool/time limits and retains completed pairs before UI result callbacks, so a paused turn can continue from known work.
+Requests permit three attempts total with cancellable backoff and bounded Retry-After handling. MCP retries share the existing 90-second call deadline. Retry and budget-pause events reach the current interfaces and are recorded in the local per-turn trace. The loop also accepts validated round/tool/time limits and retains completed pairs before UI result callbacks, so a paused turn can continue from known work.
 
 Avoid retrying forever, hiding all failures, repeating a form submission, or changing models without explaining the altered task conditions.
 
@@ -198,7 +200,7 @@ flowchart TD
     FIX --> RUN
 ```
 
-`src/evaluation/run.py` now exercises three controlled tasks with a scripted provider and temporary project directories: a direct answer, a file read, and a denied write. It reports pass/fail checks, elapsed time, model requests, tool calls, and estimated context size. It uses no model credentials or network. This is a smoke baseline for harness mechanisms, not a model-quality benchmark or public benchmark score.
+`src/evaluation/run.py` now exercises six controlled tasks with a scripted provider and temporary project directories: a direct answer, a file read, a denied write, a provider failure, an interrupted tool cycle, and an oversized current turn. It reports pass/fail checks, expected and observed evidence, elapsed time, model requests, tool calls, and estimated context size. It uses no model credentials or network. This is a smoke baseline for harness mechanisms, not a model-quality benchmark or public benchmark score.
 
 Useful next tasks include a known bug fix, symbol search, guarded edit, partial-reply recovery, and correct documentation-tool use. Public benchmark integration can follow after broader tasks, pinned model/provider conditions, artifact capture, and repeatable scoring are in place.
 

@@ -13,7 +13,7 @@ SERVER_NAMES = (
     "firecrawl", "exa", "linear", "notion", "playwright",
     "computer",
 )
-_DEFAULT_ENABLED = set(SERVER_NAMES) - {"computer"}
+_DEFAULT_ENABLED: set[str] = set()
 _LEGACY_SERVERS = {"context7", "github", "playwright"}
 
 
@@ -36,7 +36,7 @@ def mcp_settings_path() -> Path:
 
 
 def load_enabled_servers(path: Path | None = None) -> set[str]:
-    """Load user MCP switches, defaulting to the servers Oryn already starts."""
+    """Load explicit user MCP switches; never connect to a server by default."""
     try:
         data = json.loads((path or mcp_settings_path()).read_text(encoding="utf-8"))
         enabled = data["enabled_servers"]

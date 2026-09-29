@@ -163,13 +163,13 @@ class MCPTests(unittest.TestCase):
                     main(["enable", "github"])
                 save.assert_called_once_with({"context7", "github"})
 
-    def test_hosted_presets_migrate_preferences_and_keep_secrets_out_of_urls(self):
+    def test_hosted_presets_preserve_explicit_preferences_and_keep_secrets_out_of_urls(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "settings.json"
             path.write_text(json.dumps({"enabled_servers": ["context7", "playwright"]}))
             enabled = load_enabled_servers(path)
             self.assertNotIn("github", enabled)
-            self.assertIn("notion", enabled)
+            self.assertNotIn("notion", enabled)
             save_enabled_servers({"context7"}, path)
             self.assertEqual(load_enabled_servers(path), {"context7"})
         with patch("src.mcp.discovery.local_secret", return_value="test-secret"):
@@ -373,10 +373,60 @@ finally:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("PLAYWRIGHT_STARTUP_NOTICE", result.stderr)
 
-    def test_server_preferences_default_to_current_servers_and_persist(self):
+    def test_local_stdio_read_tool_runs_through_the_existing_agent_loop(self):
+        server = '''
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    method = request["method"]
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "local-read-test", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "read_marker", "description": "Read a fixed marker.",
+                  "inputSchema": {"type": "object", "properties": {}, "required": []},
+                  "annotations": {"readOnlyHint": True}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "ORYN_STDIO_MARKER"}], "isError": False}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            client = MCPClient([MCPServerConfig(
+                "github", sys.executable, ("-u", "-c", server), {},
+                access="Local read-only fixture.",
+            )])
+            try:
+                statuses = client.start()
+                self.assertTrue(statuses and "Connected" in statuses[0], statuses)
+                complete = Mock(side_effect=[
+                    ModelResponse(tool_calls=[ToolCall(
+                        "load", "load_mcp_tools", {"server": "github"},
+                    )]),
+                    ModelResponse(tool_calls=[ToolCall(
+                        "read", "mcp__github__read_marker", {},
+                    )]),
+                    ModelResponse("The local MCP returned ORYN_STDIO_MARKER."),
+                ])
+                history = [{"role": "user", "content": "Read the marker from the local MCP."}]
+                answer = run_turn(
+                    history, complete, tool_schemas(client.tool_schemas()), root,
+                    Mock(), Mock(), mcp_client=client,
+                )
+                self.assertIn("ORYN_STDIO_MARKER", answer)
+                self.assertIn("ORYN_STDIO_MARKER", history[-1]["content"])
+            finally:
+                client.close()
+
+    def test_server_preferences_require_explicit_opt_in_and_persist(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "prefs" / "mcp-settings.json"
-            self.assertEqual(load_enabled_servers(path), set(SERVER_NAMES))
+            self.assertEqual(load_enabled_servers(path), set())
+            self.assertFalse(any(config.enabled for config in server_configs(set())))
 
             enabled = {"context7", "playwright"}
             save_enabled_servers(enabled, path)
@@ -643,7 +693,8 @@ finally:
         try:
             with tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
-                answer = run_turn(history, complete, inventory, root, Mock(), Mock(), mcp_client=client)
+                with patch("src.agent.skills.discover_skills", return_value=({}, [])):
+                    answer = run_turn(history, complete, inventory, root, Mock(), Mock(), mcp_client=client)
                 self.assertEqual(answer, "Found your repositories.")
                 self.assertEqual(inventory, initial_inventory)
                 self.assertEqual([tool["name"] for tool in requests[0]],
@@ -671,7 +722,8 @@ finally:
                 # Saved tool names do not automatically load schemas in the next user turn.
                 history.append({"role": "user", "content": "Now something else"})
                 fresh = Mock(return_value=ModelResponse("Hello"))
-                run_turn(history, fresh, inventory, root, Mock(), Mock(), mcp_client=client)
+                with patch("src.agent.skills.discover_skills", return_value=({}, [])):
+                    run_turn(history, fresh, inventory, root, Mock(), Mock(), mcp_client=client)
                 self.assertEqual([tool["name"] for tool in fresh.call_args.args[1]],
                                  [tool["name"] for tool in native] + ["load_mcp_tools"])
 

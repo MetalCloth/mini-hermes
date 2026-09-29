@@ -2,9 +2,9 @@
 
 [Handbook index](README.md) · [Previous: architecture](architecture.md) · [Next: provider](03-provider-and-models.md)
 
-## 1. Supported setup versus future product packaging
+## 1. Supported first local release
 
-The current entrypoint is the executable `oryn` script in this repository. It expects a `.venv` beside the source. Oryn is usable from other project folders, but it is not yet distributed as a global packaged command or a standalone desktop installer.
+The first supported target is one person running the checkout on their own Linux machine. The executable `oryn` script expects a `.venv` beside the source and works on any selected project folder. This is a local source-checkout release boundary, not a global package, standalone desktop installer, hosted multi-user service, or promise of cross-platform terminal support.
 
 The documented development environment uses Linux and Python 3.14. Dependency metadata allows Python 3.10 for MCP and 3.9 for Textual, but the MCP error-unwrapping code uses Python's `BaseExceptionGroup`, introduced in 3.11. **Use Python 3.11 or newer for this snapshot.** The project's existing short README previously stated 3.10+, which did not account for that runtime path.
 
@@ -31,6 +31,11 @@ python3 -m venv .venv
 codex login
 ./oryn
 ```
+
+For a fresh checkout, install Python requirements before launch. `./oryn dashboard` also needs
+Node/npm; the launcher installs the locked web dependencies with `npm ci` and builds the UI.
+Oryn checks the local Codex login shape at startup and shows a generic `codex login` warning
+when it is missing or invalid. The check does not refresh credentials or display token values.
 
 The launcher directly invokes `.venv/bin/python`, so activating the environment is optional for these commands. If you prefer activation:
 
@@ -144,7 +149,53 @@ Vite proxies `/api` to the local backend on port 9119. Its configuration adjusts
 
 The database and OAuth cache are owner-readable/writable only in the implemented local paths. Credential files should also be restricted to the owner.
 
-## 6. Native Tavily and Firecrawl setup
+## 6. Upgrade and stop
+
+Stop Oryn with Ctrl+C, then update the checkout and reinstall declared dependencies:
+
+```bash
+git pull --ff-only
+.venv/bin/python -m pip install -r requirements.txt
+npm --prefix web ci
+```
+
+The next `./oryn dashboard` build refreshes the bundled frontend. SQLite schema additions are
+applied when the store opens. Keep `~/.mini-hermes/` and `~/.codex/` across upgrades; they hold
+sessions, settings, credentials, and undo snapshots. Back up those local files before manual
+database or credential edits. The app does not automatically upgrade itself.
+
+When Oryn stops, it closes MCP connections, browser sessions, and its in-memory terminal jobs.
+Terminal jobs do not resume after restart; completed file changes and their bounded undo records
+remain in SQLite.
+
+## 7. Local security boundary
+
+Oryn is single-user software running with the current OS user's permissions. It is designed for
+the user to work in a chosen project, not to safely execute hostile projects or share one process
+among untrusted accounts. A malicious project file or `AGENTS.md` can try to influence the model;
+prompt instructions are not a sandbox. Local skills are instructions only and do not gain code
+execution or tool-registration powers.
+
+The dashboard binds to `127.0.0.1`, validates the local Host/Origin, and requires its random
+process token for mutations. It has no remote-bind option or public authentication layer. Do not
+expose it through a reverse proxy, tunnel, or LAN port. The TUI, REPL, dashboard, and MCP OAuth
+callback all use loopback for local web access.
+
+File writes, edits, undo, terminal commands/input, and MCP tools that are not recognized as
+read-only require interface approval. Native file tools validate project paths and reject named
+private paths; the terminal command is approved and uses Bubblewrap to restrict filesystem writes
+to the selected project on Linux. This does not defend against every hostile program, kernel
+vulnerability, or secret deliberately copied into the project. Native web/browser actions can
+send user-requested data to remote services; do not enter passwords or private secrets in a remote
+Firecrawl browser.
+
+Codex credentials are reused by the provider, configured MCP servers run as subprocesses or are
+contacted remotely, and model requests send conversation context to the selected provider.
+Allowlisted diagnostics omit prompt text, tool arguments, and tool results, but the local SQLite
+database itself is not encrypted. Treat the OS account and its configuration directory as the
+security boundary.
+
+## 8. Native Tavily and Firecrawl setup
 
 Create the configuration directory, then create the needed files in your editor:
 
@@ -191,7 +242,7 @@ flowchart TD
 
 Repository `.env.example` documents native placeholders. Oryn does not automatically load every `.env` file from the active project.
 
-## 7. MCP configuration
+## 9. MCP configuration
 
 Copy [mcp.env.example](../../mcp.env.example) to the local location, then fill only the services you want:
 
@@ -238,7 +289,7 @@ Reconnect reloads default-preset credentials, so changing the key file does not 
 
 Connections with missing required credentials are marked unavailable. One connection failing does not disable native tools or all other connections.
 
-## 8. Projects and sessions
+## 10. Projects and sessions
 
 The project root must be an existing allowed directory. File tools receive project-relative paths such as `src/example.py`. The root is not the same as the current chat title or model ID.
 
@@ -246,7 +297,7 @@ A saved chat is bound to its project. Resuming it restores that root; attempting
 
 The legacy `main` session is retained for backward compatibility. New sessions use UUID-based IDs. Different current directories and explicit project selection create/use the corresponding session flow rather than requiring a path hardcoded for one person.
 
-## 9. Common setup mistakes
+## 11. Common setup mistakes
 
 | Mistake | Result | Fix |
 | --- | --- | --- |
@@ -261,6 +312,6 @@ The legacy `main` session is retained for backward compatibility. New sessions u
 | Launch dashboard without build via direct module | Static UI may return a build error | Use the launcher or run the frontend build |
 | Catalog advertises stale client version | Newer models may reject the request | Upgrade/refresh Codex and its local catalog |
 
-## 10. What setup does not include yet
+## 12. What setup does not include yet
 
 There is no first-run wizard, account login page for Oryn itself, packaged desktop binary, global `pipx` release workflow, automatic installation of system tools, or general UI for adding arbitrary MCP URLs. The implemented MCP manager controls the known presets. These are product roadmap items, not hidden setup options.

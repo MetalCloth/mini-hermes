@@ -2,7 +2,7 @@
 
 [Handbook index](README.md) · [Previous: provider](03-provider-and-models.md) · [Next: sessions and recovery](05-session-storage-and-recovery.md)
 
-Sources: [conversation_loop.py](../agent/conversation_loop.py), [context.py](../agent/context.py), [system_prompt.py](../agent/system_prompt.py), [project_context.py](../agent/project_context.py).
+Sources: [conversation_loop.py](../agent/conversation_loop.py), [context.py](../agent/context.py), [system_prompt.py](../agent/system_prompt.py), [project_context.py](../agent/project_context.py), [skills.py](../agent/skills.py), [subagents.py](../agent/subagents.py).
 
 ## 1. What a turn means
 
@@ -83,7 +83,7 @@ The IDs associate each result with its request. A tool result is not merely a pa
 
 The loop builds an assistant call message and appends each completed call and its output to history before reporting the result to the UI. If cancellation or a budget stop occurs between calls, only the completed pairs are retained. Calls that have not run do not become unanswered function calls in saved history.
 
-Previously, a result-event callback could fail before the batch was recorded, losing evidence of an executed action. Recording the completed pair first fixes that boundary; tests verify the pair survives a callback failure. This updates live history, which interfaces save when the turn finishes. It does not imply every external side effect can be reconstructed after process failure; durable per-turn traces remain a roadmap item.
+Previously, a result-event callback could fail before the batch was recorded, losing evidence of an executed action. Recording the completed pair first fixes that boundary; tests verify the pair survives a callback failure. This updates live history, which interfaces save when the turn finishes. It does not imply every external side effect can be reconstructed after process failure; local traces preserve bounded metadata, not the full conversation or effects.
 
 ## 4. Tool errors become information the model can use
 
@@ -212,8 +212,47 @@ The UI sets a cancellation event. The loop checks it before requests, while emit
 
 Stopping is not a rollback transaction. A command or approved file edit that already completed remains completed. The application records available partial text and completion status; file undo is a separate explicit operation.
 
-## 11. Extension points that are real
+## 11. Local skills: load instructions only when selected
 
-The loop already accepts callbacks, tool schemas, a provider completion callable, and an MCP client. These are current seams for changing rendering or adding a tool. The empty `agent.py`, `turn.py`, and `prompt_builder.py` files do not provide another working extension API.
+Oryn scans at most 32 skill folders under the active project's `.agents/skills/` and the user's
+`~/.agents/skills/`. Each supported `SKILL.md` starts with a small frontmatter block containing
+only `name` and `description`; the body must be UTF-8 text under 16,000 bytes. Names must be
+lowercase letters, numbers, and hyphens; descriptions are limited to 300 characters. Project
+skills are considered first. Duplicate names, symlinks, malformed metadata, missing files, and
+oversized instructions are skipped and reported through status/diagnostics.
 
-A future subagent supervisor would need its own task lifecycle and bounded context design. Passing “you are a subagent” in the current prompt would not create those missing mechanisms.
+The model gets a compact name/description catalog and can call `load_skill` for one exact name.
+Only that file body is added to the current turn. It cannot register tools or execute code, and
+loaded names are saved in local diagnostics. A skill is user-provided guidance, not a security
+boundary; it cannot authorize actions or replace system/developer/user instructions. Oryn does
+not download or run skills from a registry and does not load executable plugins.
+
+## 12. One bounded read-only subagent
+
+`delegate_read_only` is for an independent inspection question. The worker receives only the
+assigned task and the active project's root `AGENTS.md` as guidance; it does not inherit the
+parent chat, saved summary, prior model messages, or loaded MCP catalog.
+
+```mermaid
+flowchart LR
+    P["Parent turn"] -->|"task, max 2,000 chars"| C["Isolated worker context"]
+    C --> T["read_file · search_files · git_status · git_diff"]
+    T --> C
+    C -->|"status, bounded findings and evidence"| P
+    P --> A["Parent writes the user-facing answer"]
+```
+
+The worker can make at most 4 model rounds, 8 tool calls, and 90 seconds. It runs one worker at a
+time, cannot delegate again, and has no write, terminal, browser, or MCP tools. The parent
+cancellation signal is relayed to the worker. Results include status, up to 8,000 characters of
+findings, up to eight bounded evidence excerpts, and usage counts; the existing turn tool-result
+cap still applies. Timeout and provider/tool failures return structured results to the parent,
+which can continue without delegation. Start/end records appear in the parent's local diagnostics.
+
+## 13. Extension points that are real
+
+The loop already accepts callbacks, tool schemas, a provider completion callable, and an MCP
+client. These remain the seams for rendering and tool integration. `run_turn` is the shared turn
+entry point used by the TUI, REPL, and dashboard; their local API and lifecycle contract is in
+[chapter 17](17-shared-turn-gateway-and-api.md). The empty `agent.py`, `turn.py`, and
+`prompt_builder.py` files do not provide another working extension API.

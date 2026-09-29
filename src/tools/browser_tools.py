@@ -15,6 +15,62 @@ API_URL = "https://api.firecrawl.dev/v2"
 MAX_RESPONSE_BYTES = 2_000_000
 MAX_SNAPSHOT_CHARS = 12_000
 ELEMENT_REF = re.compile(r"@e[1-9][0-9]{0,5}\Z")
+_SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
+_SECRET_TEXT = re.compile(
+    r"(?i)\b(?:Bearer\s+\S+|(?:fc|tvly|sk|ghp|github_pat|lin_api|ntn)[_-][A-Za-z0-9_-]{8,})"
+)
+_NAMED_SECRET = re.compile(r"(?i)\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret|authorization)\s*[:=]\s*[^\s,;]+")
+
+
+class FirecrawlHTTPError(RuntimeError):
+    """HTTP failure with only bounded, redacted upstream metadata for local traces."""
+
+    def __init__(self, message: str, *, status_code: int, request_id: str | None = None,
+                 detail: str | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.request_id = request_id
+        self.detail = detail
+
+
+def _error_metadata(error: HTTPError) -> tuple[str | None, str | None]:
+    headers = error.headers or {}
+    header_id = next((headers.get(name) for name in ("X-Request-ID", "Request-ID", "CF-Ray")
+                      if headers.get(name)), None)
+    try:
+        payload = json.loads(error.read(4096).decode("utf-8", errors="replace"))
+    except (AttributeError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = None
+    finally:
+        error.close()
+    body_id = payload.get("requestId") or payload.get("request_id") if isinstance(payload, dict) else None
+    request_id = header_id or body_id
+    if not isinstance(request_id, str) or not _SAFE_REQUEST_ID.fullmatch(request_id):
+        request_id = None
+    if not isinstance(payload, dict):
+        return request_id, None
+    value = payload.get("error") or payload.get("message")
+    if isinstance(value, dict):
+        value = value.get("message")
+    if not isinstance(value, str):
+        return request_id, None
+    detail = " ".join("".join(char if char.isprintable() else " " for char in value).split())
+    detail = re.sub(r"https?://\S+", "[URL redacted]", detail)
+    detail = _NAMED_SECRET.sub("[redacted]", detail)
+    detail = _SECRET_TEXT.sub("[redacted]", detail)
+    return request_id, detail[:300] or None
+
+
+def _firecrawl_http_error(error: HTTPError, message: str) -> FirecrawlHTTPError:
+    request_id, detail = _error_metadata(error)
+    parts = [message]
+    if detail:
+        parts.append(f"Firecrawl detail: {detail}")
+    if request_id:
+        parts.append(f"Request ID: {request_id}")
+    return FirecrawlHTTPError(
+        " ".join(parts), status_code=error.code, request_id=request_id, detail=detail,
+    )
 
 
 def _request(path: str, key: str, method: str = "POST", body: dict | None = None,
@@ -32,29 +88,39 @@ def _request(path: str, key: str, method: str = "POST", body: dict | None = None
             break
         except HTTPError as exc:
             if method == "DELETE" and exc.code in {404, 410}:
+                exc.close()
                 return {"success": True}
             if retry_safe and attempt == 0 and exc.code in {500, 502, 503, 504}:
+                exc.close()
                 time.sleep(0.5)
                 continue
             if exc.code in {401, 403}:
-                raise RuntimeError("Firecrawl rejected the API key. Check ~/.mini-hermes/firecrawl.env.") from exc
+                raise _firecrawl_http_error(
+                    exc, "Firecrawl rejected the API key. Check ~/.mini-hermes/firecrawl.env."
+                ) from exc
             if exc.code == 402:
-                raise RuntimeError("Firecrawl browser access needs available credits or a supported plan.") from exc
+                raise _firecrawl_http_error(
+                    exc, "Firecrawl browser access needs available credits or a supported plan."
+                ) from exc
             if exc.code in {404, 409, 410}:
-                raise RuntimeError("Firecrawl browser session expired. Open the page again.") from exc
+                raise _firecrawl_http_error(
+                    exc, "Firecrawl browser session expired. Open the page again."
+                ) from exc
             if exc.code == 429:
-                raise RuntimeError("Firecrawl is rate limited. Try again later.") from exc
+                raise _firecrawl_http_error(exc, "Firecrawl is rate limited. Try again later.") from exc
             if exc.code in {500, 502, 503, 504} and method == "POST" and "/interact" in path:
                 if retry_safe:
-                    raise RuntimeError(
-                        f"Firecrawl returned HTTP {exc.code} during the snapshot. "
+                    raise _firecrawl_http_error(
+                        exc, f"Firecrawl returned HTTP {exc.code} during the snapshot. "
                         "Try browser_snapshot again."
                     ) from exc
-                raise RuntimeError(
-                    f"Firecrawl returned HTTP {exc.code}. The browser action may have run; "
+                raise _firecrawl_http_error(
+                    exc, f"Firecrawl returned HTTP {exc.code}. The browser action may have run; "
                     "use browser_snapshot before repeating it."
                 ) from exc
-            raise RuntimeError(f"Firecrawl browser returned HTTP {exc.code}. Try again later.") from exc
+            raise _firecrawl_http_error(
+                exc, f"Firecrawl browser returned HTTP {exc.code}. Try again later."
+            ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             if retry_safe and attempt == 0:
                 time.sleep(0.5)

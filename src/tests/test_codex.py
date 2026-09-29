@@ -17,6 +17,27 @@ from src.providers.types import ModelResponse, ProviderRequestError, ToolCall, r
 from src.providers.codex import _response_text
 
 
+class CodexStartupTests(unittest.TestCase):
+    def test_startup_auth_check_warns_without_refreshing_or_showing_credentials(self):
+        with tempfile.TemporaryDirectory() as folder:
+            auth_file = Path(folder) / "auth.json"
+            warning = codex.auth_setup_warning(auth_file)
+            self.assertIn("codex login", warning)
+            self.assertNotIn("token", warning.casefold().replace("token values", ""))
+
+            secret = "local-access-token-value"
+            auth_file.write_text(json.dumps({"tokens": {
+                "access_token": secret, "account_id": "account-id",
+            }}))
+            with patch.object(codex, "_refresh") as refresh:
+                self.assertIsNone(codex.auth_setup_warning(auth_file))
+                refresh.assert_not_called()
+            self.assertNotIn(secret, repr(warning))
+
+            auth_file.write_text("not-json")
+            self.assertIn("invalid", codex.auth_setup_warning(auth_file))
+
+
 class CodexStreamTests(unittest.TestCase):
     def test_image_messages_use_catalog_capability_and_responses_image_parts(self):
         from PIL import Image
