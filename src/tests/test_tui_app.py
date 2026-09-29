@@ -102,16 +102,12 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(tui_app, "CodexProvider", side_effect=lambda model: CodexProvider(model, root / "auth.json")), \
                  patch.object(tui_app, "MCPClient", side_effect=lambda: MCPClient(configs=[])), \
                  patch.object(OrynTUI, "run", autospec=True) as run:
-                fresh_ids = set()
                 for arguments in ([], [], ["--new"], ["--project", str(root)]):
                     tui_app.main(arguments)
                     app = run.call_args.args[0]
-                    self.assertNotEqual(app.session_id, "main")
-                    self.assertNotIn(app.session_id, fresh_ids)
-                    fresh_ids.add(app.session_id)
-                    self.assertEqual(store.load_messages(app.session_id), [])
+                    self.assertEqual(app.session_id, "")
+                    self.assertEqual(store.list_sessions(), ["main"])
                     self.assertFalse(any(m["role"] in {"user", "assistant"} for m in app.history))
-                    self.assertEqual(store.session_project_root(app.session_id), str(root))
                 self.assertEqual(store.load_messages("main"), old_messages)
                 self.assertEqual(store.session_model("main"), "gpt-6-sol")
                 tui_app.main(["--resume", "main"])
@@ -225,6 +221,12 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     call("edit_file", {"path": "app.py", "old_text": "a = 1", "new_text": "a = 2"})
                     self.assertIs(app.undo_history, initial_undo)
                     await app._new_session()
+                    self.assertEqual(app.session_id, "")
+                    with patch.object(app.provider, "complete", return_value=ModelResponse("Ready.")):
+                        app.query_one("#composer", TextArea).load_text("Chat B")
+                        await pilot.press("enter")
+                        app._turn_thread.join(timeout=2)
+                        await pilot.pause()
                     session_b = app.session_id
                     store.rename_session(session_b, "Chat B")
                     history_b = app.undo_history
@@ -263,8 +265,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     other_root = root / "other-project"
                     other_root.mkdir()
                     (other_root / "notes.txt").write_text("Other project's note\n")
-                    app._switch_project(str(other_root))
-                    await app.workers.wait_for_complete()
+                    await app._switch_project(str(other_root))
                     self.assertEqual(app.undo_history, [])
                     self.assertIn("no recent", call("undo_file_change", {}))
                     self.assertEqual((other_root / "notes.txt").read_text(), "Other project's note\n")
@@ -341,15 +342,12 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                             self.assertEqual(composer.text, "/")
                             await pilot.press("escape")
                             self.assertEqual(composer.text, "Keep my next message")
-                            for command in ("/models", "/new"):
-                                composer.load_text(command)
-                                await pilot.pause()
-                                await pilot.press("enter")
-                                self.assertEqual(composer.text, command)
-                                self.assertTrue(palette.display)
-                                self.assertEqual(app.session_id, session)
-                                self.assertEqual(app.model, "gpt-5.6-luna")
-                                self.assertIn("Finish the current turn", str(app.query_one("#activity-label", Static).content))
+                            composer.load_text("/models")
+                            await pilot.press("enter")
+                            await pilot.pause()
+                            self.assertEqual(len(app.screen_stack), 2)
+                            self.assertTrue(app.turn_active)
+                            await pilot.press("escape")
                             composer.load_text("/mcps")
                             await pilot.pause()
                             await pilot.press("enter")
@@ -513,11 +511,8 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     await app._load_session(session)
                     self.assertEqual(app._model_settings(), {"reasoning_effort": "high", "service_tier": "priority"})
                     app.turn_active = True
-                    app.action_choose_effort()
-                    app.action_choose_speed()
-                    self.assertEqual(len(app.screen_stack), 1)
                     await app._execute_command("speed", "standard")
-                    self.assertEqual(app.provider.service_tier, "priority")
+                    self.assertEqual(app.provider.service_tier, "default")
                     app.turn_active = False
                     await pilot.resize_terminal(64, 24)
                     await pilot.pause()

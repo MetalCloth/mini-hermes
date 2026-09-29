@@ -58,7 +58,7 @@ COMMANDS = (
     ("exit", "Exit the app"),
 )
 COMMAND_ALIASES = {"model": "models", "mcp": "mcps", "quit": "exit", "q": "exit"}
-COMMANDS_DURING_TURN = {"help", "tools", "mcps", "computer"}
+COMMANDS_DURING_TURN = {"help", "tools", "mcps", "computer", "models", "effort", "speed", "sessions", "new"}
 
 
 class StreamChunk(Message):
@@ -295,6 +295,8 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool:
         if action in {"pin_session", "delete_session", "rename_session"}:
+            if action == "delete_session" and self.app.turn_active:
+                return False
             return self.store is not None and self._renaming is None
         return True
 
@@ -776,6 +778,7 @@ class OrynTUI(App[None]):
         self.history = history
         self.saved_count = len(history)
         self.provider = provider
+        self._draft_model_settings: dict[str, dict[str, str]] = {}
         self._restore_model_settings()
         self.mcp_client = mcp_client
         self.tools = initial_tools
@@ -783,9 +786,9 @@ class OrynTUI(App[None]):
         self.file_change_history: dict[str, list[FileChange]] = {
             session_id: undo_history if undo_history is not None else [],
         }
-        self.terminal_jobs: dict[str, TerminalJobManager] = {
-            session_id: TerminalJobManager(project_root),
-        }
+        self.terminal_jobs: dict[str, TerminalJobManager] = (
+            {session_id: TerminalJobManager(project_root)} if session_id else {}
+        )
         self.mcp_statuses: list[str] = []
         self.mcp_ready = False
         self.mcp_servers = [
@@ -805,6 +808,7 @@ class OrynTUI(App[None]):
         self._partial_reply_text = ""
         self._turn_start = 0
         self._turn_started_at: float | None = None
+        self._pending_navigation: str | None = None
         self._pending_approval: ApprovalRequest | None = None
         self._palette_draft: str | None = None
         self.pending_images: list[dict[str, Any]] = []
@@ -984,7 +988,14 @@ class OrynTUI(App[None]):
             self.store.append_messages(self.history[self.saved_count:], self.session_id)
             self.saved_count = len(self.history)
         except Exception as exc:
+            self._pending_navigation = None
             self._set_activity(f"Could not save this session: {exc}", working=False, error=True)
+            return
+        target, self._pending_navigation = self._pending_navigation, None
+        if target:
+            navigation = self._new_session() if target == "__new_session__" else self._load_session(target)
+            self.run_worker(navigation, group="navigation", exclusive=True)
+            return
         if len(self.screen_stack) == 1:
             self.query_one("#composer", TextArea).focus()
 
@@ -1097,20 +1108,38 @@ class OrynTUI(App[None]):
             self._set_activity("Oryn is still working. Your draft is safe; send it when this turn finishes.", working=True)
             return
 
+        user_message = {"role": "user", "content": prompt}
+        images = list(self.pending_images)
+        if images:
+            user_message["images"] = images
+        if not self.session_id:
+            new_id = ""
+            try:
+                new_id = self.store.create_session(self.project_root)
+                self.store.set_session_model(new_id, self.model)
+                self._draft_model_settings[self.model] = self._model_settings()
+                for model, settings in self._draft_model_settings.items():
+                    self.store.set_session_model_settings(new_id, model, settings)
+                self.store.append_messages([user_message], new_id)
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                if new_id:
+                    self.store.delete_session(new_id)
+                self._set_activity(f"Could not save this session: {exc}", working=False, error=True)
+                return
+            self.session_id = new_id
+            self._draft_model_settings.clear()
+            self.saved_count += 1
+
         self._turn_started_at = monotonic()
         welcome = self.query("#welcome")
         if welcome:
             await welcome.remove()
         transcript = self.query_one("#transcript", VerticalScroll)
-        images = list(self.pending_images)
         await transcript.mount(MessageCard("user", prompt, images=images))
         self._current_reply = MessageCard("assistant")
         await transcript.mount(self._current_reply)
         self._scroll_to_bottom()
         composer.clear()
-        user_message = {"role": "user", "content": prompt}
-        if images:
-            user_message["images"] = images
         self.history.append(user_message)
         self.pending_images.clear()
         self._refresh_attachments()
@@ -1146,7 +1175,7 @@ class OrynTUI(App[None]):
             self._hide_palette()
 
     async def action_new_session(self) -> None:
-        if not self.turn_active and len(self.screen_stack) == 1:
+        if len(self.screen_stack) == 1:
             await self._new_session()
 
     def action_stop_or_quit(self) -> None:
@@ -1162,19 +1191,19 @@ class OrynTUI(App[None]):
             self.pop_screen()
 
     def action_open_sessions(self) -> None:
-        if not self.turn_active and len(self.screen_stack) == 1:
+        if len(self.screen_stack) == 1:
             self.run_worker(self._show_sessions(), group="commands", exclusive=True)
 
     def action_choose_model(self) -> None:
-        if not self.turn_active and len(self.screen_stack) == 1:
+        if len(self.screen_stack) == 1:
             self.run_worker(self._change_model(), group="commands", exclusive=True)
 
     def action_choose_effort(self) -> None:
-        if not self.turn_active and len(self.screen_stack) == 1:
+        if len(self.screen_stack) == 1:
             self.run_worker(self._change_setting("reasoning_effort"), group="commands", exclusive=True)
 
     def action_choose_speed(self) -> None:
-        if not self.turn_active and len(self.screen_stack) == 1:
+        if len(self.screen_stack) == 1:
             self.run_worker(self._change_setting("service_tier"), group="commands", exclusive=True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -1210,7 +1239,7 @@ class OrynTUI(App[None]):
 
     def _select_palette_command(self, name: str, argument: str | None = None) -> None:
         if self.turn_active and COMMAND_ALIASES.get(name, name) not in COMMANDS_DURING_TURN:
-            self._set_activity("Finish the current turn before changing sessions or settings.", working=True)
+            self._set_activity("Finish the current turn before using this command.", working=True)
             return
         if self._palette_draft is None:
             self.query_one("#composer", TextArea).clear()
@@ -1220,7 +1249,7 @@ class OrynTUI(App[None]):
     async def _execute_command(self, name: str, argument: str | None = None) -> None:
         name = COMMAND_ALIASES.get(name, name)
         if self.turn_active and name not in COMMANDS_DURING_TURN:
-            self._set_activity("Finish the current turn before changing sessions or settings.", working=True)
+            self._set_activity("Finish the current turn before using this command.", working=True)
             return
         if name in {"new", "clear"}:
             await self._new_session()
@@ -1371,10 +1400,17 @@ class OrynTUI(App[None]):
         await self._disconnect_computer()
 
     async def _new_session(self) -> None:
-        self.session_id = self.store.create_session(self.project_root)
-        self.store.set_session_model(self.session_id, self.model)
-        self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
-        await self._load_session(self.session_id)
+        if self._queue_navigation("__new_session__"):
+            return
+        await self._disarm_computer()
+        self.session_id = ""
+        self._draft_model_settings = {self.model: self._model_settings()}
+        self.file_change_history[""] = []
+        self.pending_images.clear()
+        self._refresh_attachments()
+        self.history = _base_history(self.project_root)
+        self.saved_count = len(self.history)
+        await self._refresh_transcript()
         self._set_activity("New session ready", working=False)
 
     async def _show_sessions(self) -> None:
@@ -1395,6 +1431,8 @@ class OrynTUI(App[None]):
             title = entry["title"]
             if not title:
                 messages = self.store.load_messages(session_id)
+                if not messages:
+                    continue
                 title = next((
                     " ".join(str(message.get("content", "")).split())[:64]
                     for message in messages if message.get("role") == "user"
@@ -1412,6 +1450,10 @@ class OrynTUI(App[None]):
         return choices
 
     async def _load_session(self, session_id: str) -> None:
+        if self.turn_active and session_id == self.session_id:
+            return
+        if self._queue_navigation(session_id):
+            return
         await self._disarm_computer()
         saved_root = self.store.session_project_root(session_id)
         project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
@@ -1509,27 +1551,37 @@ class OrynTUI(App[None]):
         self.query_one("#composer", TextArea).focus()
 
     def _save_model(self, model: str) -> None:
-        if self._computer_target is not None:
+        model = model.strip()
+        try:
+            if self.session_id:
+                self.store.set_session_model(self.session_id, model)
+            elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", model):
+                raise ValueError("Model ID must be 1 to 120 letters, digits, dots, underscores, or hyphens.")
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            self._set_activity(str(exc), working=False, error=True)
+            return
+        if not self.session_id:
+            self._draft_model_settings[self.model] = self._model_settings()
+        if self._computer_target is not None and not self.turn_active:
             self._computer_target = None
             self._refresh_computer_chip()
             self._close_computer_stop()
             self.run_worker(self._disconnect_computer(), group="computer-disconnect", exclusive=True)
-        try:
-            self.store.set_session_model(self.session_id, model)
-        except ValueError as exc:
-            self._set_activity(str(exc), working=False, error=True)
-            return
-        self.model = model.strip()
+        self.model = model
         self.provider = CodexProvider(self.model, self.provider.auth_file)
         self._restore_model_settings()
         self._refresh_header()
-        self._set_activity(f"Model set to {self.model}", working=False)
+        self._set_activity(
+            f"Model set to {self.model}" + (" for the next reply" if self.turn_active else ""),
+            working=self.turn_active,
+        )
 
     def _model_settings(self) -> dict[str, str]:
         return {"reasoning_effort": self.provider.reasoning_effort, "service_tier": self.provider.service_tier}
 
     def _restore_model_settings(self) -> None:
-        saved = self.store.session_model_settings(self.session_id, self.model)
+        saved = (self.store.session_model_settings(self.session_id, self.model) if self.session_id
+                 else self._draft_model_settings.get(self.model, {}))
         options = self.provider.model_options()
         self.provider.configure(**{
             key: saved.get(key, "default") if saved.get(key, "default") in dict(choices) else "default"
@@ -1566,14 +1618,22 @@ class OrynTUI(App[None]):
             previous = self._model_settings()
             settings = {**previous, field: value}
             try:
-                self.provider.configure(**settings)
-                self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
+                next_provider = CodexProvider(self.model, self.provider.auth_file)
+                next_provider.configure(**settings)
+                if self.session_id:
+                    self.store.set_session_model_settings(self.session_id, self.model, settings)
+                else:
+                    self._draft_model_settings[self.model] = settings
             except (ValueError, OSError, sqlite3.Error) as exc:
-                self.provider.configure(**previous)
                 self._set_activity(str(exc), working=False, error=True)
             else:
+                self.provider = next_provider
                 self._refresh_header()
-                self._set_activity(f"{self._effort_label()} · {self._speed_label()}", working=False)
+                self._set_activity(
+                    f"{self._effort_label()} · {self._speed_label()}"
+                    + (" for the next reply" if self.turn_active else ""),
+                    working=self.turn_active,
+                )
         self.query_one("#composer", TextArea).focus()
 
     async def _choose_project(self) -> None:
@@ -1591,22 +1651,12 @@ class OrynTUI(App[None]):
         except (ValueError, OSError) as exc:
             self._set_activity(str(exc), working=False, error=True)
             return
-        await self._disarm_computer()
         self.project_root = project_root
-        self.pending_images.clear()
-        self._refresh_attachments()
-        self.session_id = self.store.create_session(project_root)
-        self.terminal_jobs[self.session_id] = TerminalJobManager(project_root)
-        self.store.set_session_model(self.session_id, self.model)
-        self.store.set_session_model_settings(self.session_id, self.model, self._model_settings())
-        self.history = _base_history(project_root)
-        self.saved_count = len(self.history)
-        self._refresh_header()
-        self.run_worker(self._refresh_transcript(), group="ui")
+        await self._new_session()
         self._set_activity(f"Project opened · {project_root}", working=False)
 
     def _refresh_header(self) -> None:
-        title = self.store.session_title(self.session_id) or next((
+        title = (self.store.session_title(self.session_id) if self.session_id else None) or next((
             " ".join(str(message.get("content", "")).split())[:64]
             for message in self.history if message.get("role") == "user"
         ), "New session")
@@ -1659,6 +1709,20 @@ class OrynTUI(App[None]):
     def _cancel_active_turn(self) -> None:
         if hasattr(self, "_cancel_event") and self._cancel_event:
             self._cancel_event.set()
+
+    def _queue_navigation(self, target: str) -> bool:
+        if not self.turn_active:
+            return False
+        self._pending_navigation = target
+        self._cancel_active_turn()
+        self._set_activity("Stopping current reply before switching chats…", working=True)
+        if self._pending_approval:
+            request = self._pending_approval
+            self._pending_approval = None
+            request.resolve(False)
+            if isinstance(self.screen, ApprovalScreen):
+                self.pop_screen()
+        return True
 
     def _run_turn(
         self,
@@ -1810,14 +1874,17 @@ def main(argv: list[str] | None = None) -> None:
                 store.bind_session_to_project(session_id, project_root)
         else:
             project_root = _resolve_project_root(args.project or Path("."))
-            session_id = store.create_session(project_root)
-        if args.model:
+            session_id = ""
+        if args.model and session_id:
             store.set_session_model(session_id, args.model)
+        elif args.model and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", args.model):
+            parser.error("Model ID must be 1 to 120 letters, digits, dots, underscores, or hyphens.")
         model = args.model or store.session_model(session_id) or DEFAULT_MODEL
-        if store.session_model(session_id) is None:
+        if session_id and store.session_model(session_id) is None:
             store.set_session_model(session_id, model)
         history = _base_history(project_root)
-        history.extend(store.load_messages(session_id))
+        if session_id:
+            history.extend(store.load_messages(session_id))
         mcp_client = MCPClient()
         app = OrynTUI(
             store=store,
@@ -1829,14 +1896,17 @@ def main(argv: list[str] | None = None) -> None:
             mcp_client=mcp_client,
             initial_tools=tool_schemas(),
             turn_limits=limits,
-            undo_history=store.load_file_change_history(session_id, project_root),
+            undo_history=store.load_file_change_history(session_id, project_root) if session_id else [],
         )
         if args.effort or args.speed:
             app.provider.configure(
                 reasoning_effort=args.effort or app.provider.reasoning_effort,
                 service_tier=args.speed or app.provider.service_tier,
             )
-            store.set_session_model_settings(session_id, model, app._model_settings())
+            if session_id:
+                store.set_session_model_settings(session_id, model, app._model_settings())
+            else:
+                app._draft_model_settings[model] = app._model_settings()
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     except Exception as exc:
