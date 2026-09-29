@@ -65,15 +65,15 @@ You can also type `/effort high`, `/effort default`, `/speed fast`, or `/speed s
 
 Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
+## Computer mode (selected Codex model)
+
+On a Hyprland desktop, install `grim` and [wdotool](https://github.com/cushycush/wdotool), and sign in with `codex login`. Oryn also finds `wdotool` in this checkout's `.venv/bin`. Screenshots of the focused monitor are resized to at most 800 pixels wide and sent through Oryn's existing Codex provider and login. `/computer` uses the model, reasoning effort, and speed currently selected in Oryn. The model must support image input. The default model is `gpt-5.6-luna`; you can choose another with `/models`. `/computer` does not use the OpenRouter key.
+
+Select `/computer` from the command list, or type `/computer` and press Enter. A slim line above the composer shows that your next message will control the desktop. Type the task normally and press Enter; the line disappears as soon as that message is sent. Press Esc to cancel before sending. You can also enter `/computer open Settings` as a one-message shortcut. You have one second to switch to the target app before the first screenshot. The selected model receives the task and screenshot and returns a checked JSON plan with up to three click, double-click, right-click, type, key, scroll, or wait actions. The local driver runs only these allowlisted actions, then Oryn takes a fresh screenshot and asks the model to verify progress. The model can ask you a clarification; actions it marks as sending, deleting, buying, publishing, or submitting require your approval before execution. After answering or approving in Oryn, switch back to the same target window within one second. Oryn checks that window again; an approved action also needs the model to confirm it on a fresh screenshot. If focus changes while the model plans or before an action, the task stops without sending that action. The loop stops when the model confirms completion, after 20 model calls or 5 minutes, after a second desktop-driver failure, or when you stop the active turn.
+
+Use `/computer --dry-run open Settings` to preview the first proposed action batch without sending desktop input.
+
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
-
-## Local computer preview
-
-On Linux, `/computer` starts a local `computer-use-linux` MCP driver and lets you select an already-open **galculator** window. Send one task after selecting it. Oryn observes that window, uses pointer clicks, and disconnects the driver after the turn if `/computer` started it. This preview allows 20 desktop tool calls and 120 seconds per task; other apps and Oryn's normal tools are unavailable to the model during that task. Connecting `computer` in `/mcps` alone does not arm desktop control.
-
-Install Node.js/npm, `galculator`, and a Wayland input helper such as `wtype`; check desktop readiness with `npx -y @agent-sh/computer-use-linux@0.7.5 doctor`. Your desktop may ask for screen-sharing permission on the first capture. Screenshots are sent to the selected image-capable model for the current turn only and are not saved in chat history. Textual accessibility results are saved as tool messages.
-
-Use `/computer stop` or `Ctrl+C` while Oryn has focus. When the agent has focused Calculator, bind `./oryn computer stop` to a desktop-wide shortcut so you can stop it without returning to the terminal. The first preview supports only screenshot observation and pointer clicks; broader desktop and keyboard control come later.
 
 ## Turn budgets and recovery
 
@@ -126,8 +126,7 @@ only explicitly enabled servers. MCP definitions load on demand in the REPL, TUI
 Each model request includes native tools and, when a server is enabled, `load_mcp_tools` with a
 compact server directory. The model selects a server; its full schemas become callable in the
 next request and remain available for that user turn. `/tools` shows the complete discovered
-inventory, including tools not yet loaded into a model request. Desktop tools require `/computer`
-even if their MCP connection is enabled.
+inventory, including tools not yet loaded into a model request.
 
 | Connection | Official endpoint | Authentication |
 | --- | --- | --- |
@@ -173,7 +172,8 @@ If an MCP server is missing or cannot start, Oryn continues with its built-in to
 ## Project structure
 
 - `src/agent/` — prompt/context preparation and the conversation/tool loop
-- `src/providers/` — Codex model API client
+- `src/providers/` — Codex API client and computer planning adapter
+- `src/computer.py` and `src/tools/computer_driver.py` — screenshot/action loop and local input driver
 - `src/tools/` — terminal, file, web, and browser tools
 - `src/session/` — SQLite chat history
 - `src/mcp/` — hosted/local connections, discovery, policy, and Notion OAuth

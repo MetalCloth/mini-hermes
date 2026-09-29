@@ -2,11 +2,7 @@
 
 import json
 import re
-import base64
-from dataclasses import dataclass
 from typing import Any
-
-from src.images import prepare_image
 
 
 _MODEL_TOOL_NAME = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
@@ -74,25 +70,3 @@ def result_text(result: Any) -> str:
     if result.is_error:
         return f"MCP server reported a tool error:\n{text}"
     return text
-
-
-@dataclass(frozen=True)
-class MCPImageResult:
-    text: str
-    images: list[dict[str, Any]]
-
-
-def result_with_images(result: Any) -> str | MCPImageResult:
-    """Keep desktop screenshots for one model request, without saving them in chat history."""
-    text = result_text(result)
-    if result.is_error:
-        return text
-    images = []
-    for block in result.content or []:
-        if getattr(block, "type", None) != "image":
-            continue
-        raw = base64.b64decode(block.data, validate=True)
-        images.append(prepare_image(raw, "Computer screenshot"))
-        if len(images) >= 1:
-            break
-    return MCPImageResult(text, images) if images else text

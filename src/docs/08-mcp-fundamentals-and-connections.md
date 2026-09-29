@@ -134,9 +134,9 @@ An accepted input schema must be a dictionary whose type is `object`. Descriptio
 
 The result adapter joins readable text blocks. If no text is present, it serializes structured content. Otherwise it returns a clear “no readable text” message. Server error flags are reflected in the result.
 
-The local `computer` result path forwards one validated screenshot as an ephemeral model input for the current turn. It does not save the image in SQLite. Other MCP result paths remain text-focused; audio blocks are not forwarded.
+MCP result paths are text-focused; image and audio blocks are not forwarded.
 
-## 6. The eleven configured connections
+## 6. The ten configured connections
 
 These are the exact presets in this source snapshot. Endpoints and server-advertised capabilities may change independently of Oryn. The table records configuration and intended role; `/tools` is the authoritative inventory for the currently connected account.
 
@@ -152,7 +152,6 @@ These are the exact presets in this source snapshot. Endpoints and server-advert
 | `linear` | Hosted: `https://mcp.linear.app/mcp` | Required `LINEAR_API_KEY` in this implementation | Issues, projects, comments, and advertised operations |
 | `notion` | Hosted: `https://mcp.notion.com/mcp` | Explicit browser OAuth, or an actual `NOTION_ACCESS_TOKEN` | Authorized workspace pages/databases and advertised operations |
 | `playwright` | Local stdio through `npx` | No company account key in preset | Isolated headless browser operations |
-| `computer` | Local stdio through pinned `@agent-sh/computer-use-linux@0.7.5` | Desktop permissions; no company account key | Explicit `/computer` one-window Calculator preview |
 
 GitHub and Context7 originally belonged to the first locally launched MCP set. Their current presets are hosted. Playwright remains local.
 

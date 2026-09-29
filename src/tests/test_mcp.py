@@ -435,6 +435,15 @@ for line in sys.stdin:
             configs = server_configs(enabled)
             self.assertEqual({config.name for config in configs if config.enabled}, enabled)
 
+    def test_removed_preset_does_not_discard_other_saved_preferences(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "mcp-settings.json"
+            path.write_text(json.dumps({
+                "enabled_servers": ["context7", "retired_preset"],
+                "known_servers": ["context7", "retired_preset"],
+            }))
+            self.assertEqual(load_enabled_servers(path), {"context7"})
+
     def test_preferences_reject_unknown_server_names(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaisesRegex(ValueError, "Unknown MCP server"):

@@ -26,6 +26,93 @@ from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
+    async def test_computer_selection_arms_one_plain_message_then_clears(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            client = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id="", project_root=root, model="gpt-5.6-luna", history=[],
+                provider=CodexProvider("gpt-5.6-luna", root / "auth.json"),
+                mcp_client=client, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    composer = app.query_one("#composer", TextArea)
+                    banner = app.query_one("#computer-mode", Static)
+                    self.assertFalse(banner.display)
+                    with patch.object(tui_app, "START_DELAY", 0), \
+                         patch.object(tui_app, "run_computer", return_value="Computer model reports: typed") as computer:
+                        composer.load_text("/computer")
+                        await pilot.press("enter")
+                        await pilot.pause()
+                        self.assertTrue(banner.display)
+                        self.assertEqual(banner.region.height, 1)
+                        self.assertEqual(banner.region.bottom, composer.region.y)
+                        self.assertEqual(composer.text, "")
+                        self.assertFalse(app.turn_active)
+
+                        composer.load_text('type "hello" in the focused box')
+                        await pilot.press("enter")
+                        app._turn_thread.join(timeout=5)
+                        await pilot.pause()
+                        self.assertEqual(computer.call_args.args[0], 'type "hello" in the focused box')
+                        self.assertFalse(banner.display)
+                        self.assertFalse(app._computer_armed)
+                        self.assertEqual(store.load_messages(app.session_id)[0]["content"], 'type "hello" in the focused box')
+
+                        composer.load_text("/computer")
+                        await pilot.pause()
+                        await pilot.click("#palette-options", offset=(2, 0))
+                        await pilot.pause()
+                        self.assertTrue(banner.display)
+                        await pilot.press("escape")
+                        self.assertFalse(banner.display)
+            finally:
+                client.close()
+
+    async def test_computer_command_uses_its_own_loop_and_saves_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "models_cache.json").write_text(json.dumps({"models": [{
+                "slug": "gpt-6-sol",
+                "supported_reasoning_levels": [{"effort": "high"}],
+                "service_tiers": [{"id": "priority"}],
+            }]}))
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            client = MCPClient(configs=[])
+            provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
+            app = OrynTUI(
+                store=store, session_id="", project_root=root, model=provider.model, history=[],
+                provider=provider, mcp_client=client, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    app._save_model("gpt-6-sol")
+                    await app._change_setting("reasoning_effort", "high")
+                    await app._change_setting("service_tier", "priority")
+                    selected_provider = app.provider
+                    with patch.object(tui_app, "START_DELAY", 0), \
+                         patch.object(tui_app, "run_computer", return_value="Dry run: click (400, 200)") as computer, \
+                         patch.object(selected_provider, "complete") as codex:
+                        app.query_one("#composer", TextArea).load_text("/computer --dry-run click Settings")
+                        await pilot.press("enter")
+                        app._turn_thread.join(timeout=5)
+                        await pilot.pause()
+                    self.assertFalse(app.turn_active)
+                    self.assertEqual(computer.call_args.args[0], "click Settings")
+                    self.assertTrue(computer.call_args.kwargs["dry_run"])
+                    self.assertIs(computer.call_args.kwargs["provider"].codex, selected_provider)
+                    self.assertEqual(selected_provider.model, "gpt-6-sol")
+                    self.assertEqual(selected_provider.reasoning_effort, "high")
+                    self.assertEqual(selected_provider.service_tier, "priority")
+                    codex.assert_not_called()
+                    messages = store.load_messages(app.session_id)
+                    self.assertEqual(messages[0]["content"], "/computer --dry-run click Settings")
+                    self.assertEqual(messages[1]["content"], "Dry run: click (400, 200)")
+            finally:
+                client.close()
+
     async def test_mcp_tool_activity_renders_untrusted_result_as_plain_text(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -344,7 +431,6 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                             composer.load_text("/")
                             await pilot.pause()
                             self.assertTrue(palette.display)
-                            await pilot.press("down")
                             self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "new")
                             for command, screen_type in [("/help", InfoScreen), ("/to", ToolsScreen)]:
                                 composer.load_text(command)
@@ -877,7 +963,6 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     self.assertEqual(draft.text, "/")
                     self.assertTrue(app.query_one("#palette-overlay").display)
-                    await pilot.press("down")
                     await pilot.pause()
                     self.assertTrue(draft.has_focus)
                     self.assertEqual(app.query_one("#palette-options", OptionList).highlighted_option.id, "new")

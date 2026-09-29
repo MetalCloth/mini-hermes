@@ -61,6 +61,10 @@ VerticalScroll, OptionList, TextArea {
     border: none; border-left: solid $oryn-blue;
     background: $oryn-panel; padding: 1 2;
 }
+#computer-mode {
+    display: none; height: 1; width: 1fr;
+    padding: 0 1; background: $oryn-element; color: $oryn-peach;
+}
 #composer {
     height: auto; min-height: 2; max-height: 6;
     border: none; padding: 0; background: transparent; color: $oryn-ink;
@@ -79,7 +83,6 @@ VerticalScroll, OptionList, TextArea {
 #effort-chip:hover, #effort-chip:focus,
 #speed-chip:hover, #speed-chip:focus { background: $oryn-element; color: $oryn-peach; border: none; }
 #provider-chip { width: auto; color: $oryn-muted; }
-#computer-chip { width: auto; color: $oryn-peach; text-style: bold; display: none; }
 #composer-footer { height: 1; padding: 0 2; color: $oryn-muted; }
 #send-hint { width: 1fr; color: $oryn-muted; }
 #composer-commands { width: auto; color: $oryn-muted; }

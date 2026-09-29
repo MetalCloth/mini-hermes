@@ -14,9 +14,6 @@ if [[ "${1:-}" == "mcp" ]]; then
     shift
     exec "$app_python" -m src.mcp.oauth "$@"
 fi
-if [[ "${1:-}" == "computer" && "${2:-}" == "stop" ]]; then
-    exec "$app_python" -m src.computer stop
-fi
 if [[ "${1:-}" == "dashboard" ]]; then
     shift
     if ! command -v npm >/dev/null 2>&1; then

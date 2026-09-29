@@ -12,11 +12,7 @@ from threading import Event, Timer
 from typing import Any
 
 from src.agent.compression import compact_for_request
-from src.computer import (
-    MAX_CALLS as COMPUTER_MAX_CALLS, MAX_SECONDS as COMPUTER_MAX_SECONDS,
-    ComputerBoundaryError, ComputerScope, calculator_windows,
-)
-from src.mcp.adapter import MCPImageResult, mcp_loader_tool
+from src.mcp.adapter import mcp_loader_tool
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 from src.tools.browser_tools import BrowserSession, FirecrawlHTTPError
 from src.tools.file_tools import FileChange
@@ -86,7 +82,6 @@ def run_turn(
     terminal_jobs: TerminalJobManager | None = None,
     on_diagnostic: Callable[[str, dict[str, Any]], None] | None = None,
     tool_allowlist: set[str] | None = None,
-    computer_scope: ComputerScope | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -94,11 +89,6 @@ def run_turn(
         tool for tool in tools
         if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
     ]
-    if computer_scope is not None:
-        native_tools = []
-        tool_allowlist = {"load_mcp_tools"} | {
-            f"mcp__computer__{name}" for name in ("get_app_state", "click")
-        }
     local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
     from src.agent.skills import discover_skills, skill_loader_tool
     if tool_allowlist is None or "load_skill" in tool_allowlist:
@@ -108,10 +98,6 @@ def run_turn(
     loaded_skills: set[str] = set()
     loaded_servers: set[str] = set()
     limits = limits or TurnLimits()
-    if computer_scope is not None:
-        limits = TurnLimits(limits.max_rounds, min(limits.max_tool_calls, COMPUTER_MAX_CALLS),
-                            min(limits.max_turn_seconds, COMPUTER_MAX_SECONDS))
-    transient_images: dict[str, list[dict[str, Any]]] = {}
     turn_cancel = cancel_event if cancel_event is not None else Event()
     deadline = time.monotonic() + limits.max_turn_seconds
     timer = Timer(limits.max_turn_seconds, turn_cancel.set)
@@ -162,7 +148,7 @@ def run_turn(
     confirm_undo = guarded_approval(confirm_undo)
     confirm_mcp = guarded_approval(confirm_mcp)
 
-    def call_mcp(call: ToolCall, arguments: dict[str, Any] | None = None) -> str | MCPImageResult:
+    def call_mcp(call: ToolCall) -> str:
         kwargs = {"cancel_event": turn_cancel}
 
         def retry(attempt: int, delay: float) -> None:
@@ -171,7 +157,7 @@ def run_turn(
                 on_status(f"Temporary MCP read failure · {call.name} · retry {attempt}/3 in {delay:g}s")
 
         kwargs["on_retry"] = retry
-        return mcp_client.call_tool(call.name, arguments if arguments is not None else call.arguments, **kwargs)
+        return mcp_client.call_tool(call.name, call.arguments, **kwargs)
 
     try:
         saved_summary = load_context_summary() if load_context_summary else None
@@ -190,16 +176,12 @@ def run_turn(
                 tools.append(skill_loader_tool(remaining_skills))
             if mcp_client is not None:
                 directory = mcp_client.tool_directory()
-                if computer_scope is not None:
-                    directory = [entry for entry in directory if entry["server"] == "computer"]
-                else:
-                    directory = [entry for entry in directory if entry["server"] != "computer"]
                 if directory:
                     tools.append(mcp_loader_tool(directory))
                 for server in sorted(loaded_servers):
                     try:
                         schemas = mcp_client.tool_schemas(server)
-                        tools.extend(computer_scope.schemas(schemas) if computer_scope else schemas)
+                        tools.extend(schemas)
                     except ValueError:
                         # A disconnected server must not remain callable from stale definitions.
                         loaded_servers.discard(server)
@@ -243,14 +225,6 @@ def run_turn(
                         save_summary=save_context_summary,
                         model=getattr(getattr(complete, "__self__", None), "model", None),
                     )
-                    if transient_images:
-                        request_messages = [
-                            {**message, "images": transient_images[message["tool_call_id"]]}
-                            if message.get("role") == "tool" and message.get("tool_call_id") in transient_images
-                            else message for message in request_messages
-                        ]
-                    if computer_scope is not None:
-                        request_messages.append({"role": "developer", "content": computer_scope.instruction()})
                     model_requests += 1
                     diagnostic(
                         "model_request", round=round_number,
@@ -355,13 +329,7 @@ def run_turn(
                         server = call.arguments["server"]
                         if not isinstance(server, str) or not server:
                             raise ValueError("server must be a name from the MCP directory, e.g. github.")
-                        if server == "computer" and computer_scope is None:
-                            raise ValueError("Use /computer to arm a selected desktop window first.")
-                        if computer_scope is not None and server != "computer":
-                            raise ValueError("Only the selected computer server is available for this task.")
                         schemas = mcp_client.tool_schemas(server)
-                        if computer_scope is not None:
-                            schemas = computer_scope.schemas(schemas)
                         if not schemas:
                             raise ValueError("This server has no usable tools. Reconnect it in /mcps.")
                         loaded_servers.add(server)
@@ -377,47 +345,7 @@ def run_turn(
                                 "This MCP tool is not loaded for this request. Use load_mcp_tools "
                                 "with a connected server from the MCP directory, then choose an advertised tool."
                             )
-                        if computer_scope is not None:
-                            tool_name = call.name.removeprefix("mcp__computer__")
-                            arguments = computer_scope.prepare(tool_name, call.arguments)
-                            raw_windows = mcp_client.call_tool(
-                                "mcp__computer__list_windows", {}, cancel_event=turn_cancel,
-                            )
-                            try:
-                                current = next((window for window in calculator_windows(raw_windows)
-                                                if window["window_id"] == computer_scope.window_id), None)
-                            except ValueError as exc:
-                                raise ComputerBoundaryError("Could not verify the selected Calculator window.") from exc
-                            if current is None or (current["width"], current["height"]) != (
-                                computer_scope.width, computer_scope.height,
-                            ):
-                                raise ComputerBoundaryError(
-                                    "Selected Calculator window changed; /computer must be armed again."
-                                )
-                            focus = mcp_client.call_tool(
-                                "mcp__computer__activate_window",
-                                {"window_id": computer_scope.window_id}, cancel_event=turn_cancel,
-                            )
-                            try:
-                                focused = isinstance(focus, str) and json.loads(focus).get("focus", {}).get(
-                                    "exact_window_focused"
-                                ) is True
-                            except (ValueError, AttributeError):
-                                focused = False
-                            if not focused:
-                                raise ComputerBoundaryError("Could not focus the selected Calculator window.")
-                            result = call_mcp(call, arguments)
-                            text_result = result.text if isinstance(result, MCPImageResult) else result
-                            if text_result.startswith("MCP server reported a tool error:"):
-                                raise ComputerBoundaryError(text_result[:500])
-                            if tool_name == "click":
-                                try:
-                                    clicked = json.loads(text_result).get("ok") is True
-                                except (ValueError, AttributeError):
-                                    clicked = False
-                                if not clicked:
-                                    raise ComputerBoundaryError("Calculator click failed; computer task stopped.")
-                        elif mcp_client.requires_approval(call.name, call.arguments):
+                        if mcp_client.requires_approval(call.name, call.arguments):
                             if confirm_mcp is None:
                                 raise RuntimeError("This MCP action needs user approval; no approval handler is available.")
                             preview = json.dumps(call.arguments, ensure_ascii=False, indent=2)
@@ -461,8 +389,6 @@ def run_turn(
                 except TurnLimitReached as exc:
                     tool_error_class = type(exc).__name__
                     result = f"Tool paused before completion: {exc}"
-                except ComputerBoundaryError:
-                    raise
                 except Exception as exc:
                     tool_error_class = type(exc).__name__
                     if isinstance(exc, FirecrawlHTTPError):
@@ -472,9 +398,6 @@ def run_turn(
                             **({"upstream_detail": exc.detail} if exc.detail else {}),
                         }
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
-                result_images = []
-                if isinstance(result, MCPImageResult):
-                    result_images, result = result.images, result.text
                 result_lower = result.casefold()
                 tool_succeeded = (
                     tool_error_class is None
@@ -496,9 +419,6 @@ def run_turn(
                     "role": "tool", "tool_call_id": call.id,
                     "name": call.name, "content": result,
                 })
-                if result_images:
-                    transient_images.clear()
-                    transient_images[call.id] = result_images
                 diagnostic(
                     "tool_end", tool_name=diagnostic_tool_name, success=tool_succeeded,
                     elapsed_ms=round((time.monotonic() - tool_started) * 1000),
