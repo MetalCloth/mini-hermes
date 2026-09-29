@@ -119,6 +119,14 @@ class ApprovalRequest(Message):
         self.event.set()
 
 
+class TranscriptScroll(VerticalScroll):
+    follow_output = True
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        self.follow_output = new_value >= self.max_scroll_y - 1
+
+
 class MessageCard(Vertical):
     def __init__(
         self, role: str, content: str = "", turn_status: str | None = None,
@@ -825,7 +833,7 @@ class OrynTUI(App[None]):
             with Horizontal(id="topbar"):
                 yield Static("Oryn", id="topbar-title")
                 yield Static(self.project_root.name or "Project", id="topbar-project")
-            with VerticalScroll(id="transcript"):
+            with TranscriptScroll(id="transcript"):
                 visible = [
                     message for message in self.history
                     if message.get("role") in {"user", "assistant"}
@@ -873,7 +881,7 @@ class OrynTUI(App[None]):
         self._sync_home()
         self._refresh_header()
         self.query_one("#composer", TextArea).focus()
-        self.call_after_refresh(self._scroll_to_bottom)
+        self._scroll_to_bottom(force=True)
         # MCP startup can be slow; keep it outside Textual's executor and event loop.
         self._mcp_thread = threading.Thread(
             target=self._connect_mcp, name="oryn-mcp-connect", daemon=True,
@@ -1138,7 +1146,7 @@ class OrynTUI(App[None]):
         await transcript.mount(MessageCard("user", prompt, images=images))
         self._current_reply = MessageCard("assistant")
         await transcript.mount(self._current_reply)
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=True)
         composer.clear()
         self.history.append(user_message)
         self.pending_images.clear()
@@ -1491,7 +1499,7 @@ class OrynTUI(App[None]):
             await transcript.mount(Welcome(id="welcome"))
         self._sync_home()
         self._refresh_header()
-        self._scroll_to_bottom()
+        self._scroll_to_bottom(force=True)
 
     def _refresh_attachments(self) -> None:
         widget = self.query_one("#image-attachments", Static)
@@ -1688,8 +1696,18 @@ class OrynTUI(App[None]):
             not working and not error and text.startswith("Ready"), "idle",
         )
 
-    def _scroll_to_bottom(self) -> None:
-        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+    def _scroll_to_bottom(self, *, force: bool = False) -> None:
+        transcript = self.query_one("#transcript", TranscriptScroll)
+        if force:
+            transcript.follow_output = True
+        if not transcript.follow_output:
+            return
+
+        def follow() -> None:
+            if transcript.follow_output:
+                transcript.scroll_end(animate=False, immediate=True)
+
+        self.call_after_refresh(follow)
 
     def _resolve_approval(self, request: ApprovalRequest, approved: bool) -> None:
         request.resolve(approved)
