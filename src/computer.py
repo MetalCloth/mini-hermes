@@ -63,7 +63,7 @@ def _action(action: object, size: tuple[int, int]) -> dict:
         key = action["key"]
         if not isinstance(key, str) or not KEY.fullmatch(key):
             raise ValueError("The selected model returned an invalid key combination.")
-        action["key"] = "+".join(key.lower().replace("+", " ").split())
+        action["key"] = "+".join(key.replace("+", " ").split())
         if len(action["key"].split("+")) > 3:
             raise ValueError("The selected model returned too many keys in one combination.")
     elif name == "type":

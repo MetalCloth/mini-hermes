@@ -115,13 +115,14 @@ class ComputerTests(unittest.TestCase):
         parsed = parse_plan({
             "status": "actions", "summary": "Search the site", "question": "",
             "actions": [
-                {"type": "key", "key": "Ctrl L"},
+                {"type": "key", "key": "ctrl l"},
                 {"type": "type", "text": "example query"},
-                {"type": "key", "key": "Return"},
+                {"type": "key", "key": " Super_L "},
             ], "expected_result": "Search results appear", "requires_confirmation": False,
             "confirmation_reason": "",
         }, (800, 450))
         self.assertEqual(parsed["actions"][0]["key"], "ctrl+l")
+        self.assertEqual(parsed["actions"][2]["key"], "Super_L")
         self.assertEqual(len(parsed["actions"]), 3)
 
     def test_plan_parser_rejects_invalid_or_out_of_bounds_actions(self):
