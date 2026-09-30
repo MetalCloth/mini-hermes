@@ -8,9 +8,12 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.computer_logging import ComputerTrace
+
 
 class HyprlandDriver:
-    def __init__(self) -> None:
+    def __init__(self, trace: ComputerTrace | None = None) -> None:
+        self.trace = trace
         local_wdotool = Path(__file__).resolve().parents[2] / ".venv/bin/wdotool"
         self.wdotool = shutil.which("wdotool") or (str(local_wdotool) if local_wdotool.is_file() else None)
         if not self.wdotool or not shutil.which("grim") or not shutil.which("hyprctl"):
@@ -65,31 +68,61 @@ class HyprlandDriver:
                 if image.size != (self.width, self.height):
                     raise ValueError("monitor resolution changed")
                 image = image.convert("RGB")
-                image.thumbnail((800, 800), Image.Resampling.LANCZOS)
                 size = image.size
                 output = io.BytesIO()
-                image.save(output, format="JPEG", quality=80)
+                image.save(output, format="JPEG", quality=95)
                 return output.getvalue(), size
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             raise RuntimeError("Could not capture the selected monitor.") from exc
 
     def _input(self, *args: str, input_data: bytes | None = None) -> None:
+        command = [self.wdotool, "--backend", "wlr-protocols", *args]
+        stdin = input_data.decode("utf-8", errors="replace") if input_data is not None else None
+        if self.trace:
+            self.trace.write("wdotool_start", argv=command, stdin=stdin)
         try:
-            subprocess.run(
-                [self.wdotool, "--backend", "wlr-protocols", *args],
+            result = subprocess.run(
+                command,
                 input=input_data, capture_output=True, check=True, timeout=10,
             )
-        except subprocess.SubprocessError as exc:
-            raise RuntimeError(f"Desktop input failed during {args[0]}.") from exc
+        except subprocess.CalledProcessError as exc:
+            stderr = _output_text(exc.stderr)
+            if self.trace:
+                self.trace.write(
+                    "wdotool_result", returncode=exc.returncode,
+                    stdout=_output_text(exc.stdout)[:4000], stderr=stderr[:4000],
+                )
+            detail = f": {stderr[:400]}" if stderr else ""
+            raise RuntimeError(
+                f"Desktop input failed during {args[0]} (exit {exc.returncode}){detail}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            stderr = _output_text(exc.stderr)
+            if self.trace:
+                self.trace.write(
+                    "wdotool_result", returncode=None, timed_out=True,
+                    stdout=_output_text(exc.stdout)[:4000], stderr=stderr[:4000],
+                )
+            raise RuntimeError(f"Desktop input timed out during {args[0]}.") from exc
+        except OSError as exc:
+            if self.trace:
+                self.trace.write("wdotool_result", returncode=None, error=str(exc))
+            raise RuntimeError(f"Desktop input failed during {args[0]}: {exc}") from exc
+        if self.trace:
+            self.trace.write(
+                "wdotool_result", returncode=result.returncode,
+                stdout=_output_text(result.stdout)[:4000],
+                stderr=_output_text(result.stderr)[:4000],
+            )
 
-    def _move(self, point: tuple[int, int], image_size: tuple[int, int]) -> None:
-        x = min(self.width - 1, round(point[0] * self.width / image_size[0]))
-        y = min(self.height - 1, round(point[1] * self.height / image_size[1]))
+    def _move(self, point: tuple[int, int]) -> None:
+        x = min(self.width - 1, point[0])
+        y = min(self.height - 1, point[1])
         self._input("mousemove", "--output", self.output, str(x), str(y))
 
-    def execute(self, name: str, args: dict, image_size: tuple[int, int]) -> None:
+    def execute(self, name: str, args: dict) -> None:
         if name in {"click", "left_double", "right_single", "scroll"}:
-            self._move(args["point"], image_size)
+            self._move(args["point"])
         if name in {"click", "left_double", "right_single"}:
             button = "3" if name == "right_single" else "1"
             self._input("click", button)
@@ -108,3 +141,9 @@ class HyprlandDriver:
                 self._input("key", "Return")
             else:
                 self._input("type", "--file", "-", input_data=content.encode("utf-8"))
+
+
+def _output_text(value: bytes | str | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""

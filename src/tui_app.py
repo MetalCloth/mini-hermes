@@ -31,6 +31,7 @@ from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
 from src.computer import ComputerCancelled, START_DELAY, run_computer
+from src.computer_logging import ComputerTrace
 from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
@@ -1195,7 +1196,7 @@ class OrynTUI(App[None]):
         if computer_task:
             self._turn_thread = threading.Thread(
                 target=self._run_computer_task,
-                args=(computer_task, self._cancel_event, ComputerPlanner(self.provider)),
+                args=(computer_task, self._cancel_event, self.provider),
                 name="oryn-computer-turn", daemon=True,
             )
         else:
@@ -1790,12 +1791,15 @@ class OrynTUI(App[None]):
         finished.elapsed_seconds = max(0.0, monotonic() - started_at)
         self.post_message(finished)
 
-    def _run_computer_task(self, task: str, cancel_event: threading.Event, planner: ComputerPlanner) -> None:
+    def _run_computer_task(self, task: str, cancel_event: threading.Event, provider: CodexProvider) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         dry_run = task.startswith("--dry-run ")
         if dry_run:
             task = task.removeprefix("--dry-run ").strip()
+        trace = None
         try:
+            trace = ComputerTrace.from_environment()
+            planner = ComputerPlanner(provider, trace)
             self.post_message(TurnProgress(f"Switch to the target app now · starting in {START_DELAY} second"))
             if cancel_event.wait(START_DELAY):
                 raise ComputerCancelled("Stopped by you.")
@@ -1804,13 +1808,23 @@ class OrynTUI(App[None]):
                 on_status=lambda status: self.post_message(TurnProgress(status)),
                 confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
                 ask_user=lambda question: self._ask_computer_question(question, cancel_event),
+                trace=trace,
             )
         except ComputerCancelled as exc:
+            if trace:
+                trace.write("computer_task_cancelled", error=str(exc))
             finished = TurnFinished(None, str(exc), cancelled=True)
         except Exception as exc:
+            if trace:
+                trace.write("computer_task_failed", error_type=type(exc).__name__, error=str(exc))
             finished = TurnFinished(None, str(exc))
         else:
+            if trace:
+                trace.write("computer_task_finished", answer=answer)
             finished = TurnFinished(answer, None)
+        finally:
+            if trace:
+                trace.close()
         finished.elapsed_seconds = max(0.0, monotonic() - started_at)
         self.post_message(finished)
 

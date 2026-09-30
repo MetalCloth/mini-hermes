@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from src.computer import ComputerCancelled, ComputerFocusChanged, parse_plan, run_computer
+from src.computer import ComputerCancelled, parse_plan, run_computer
 from src.providers.codex import CodexProvider
 from src.providers.computer import ComputerPlanner
 from src.providers.types import ModelResponse
@@ -52,11 +52,11 @@ class FakeDriver:
         self.captures += 1
         return b"fake screenshot", (800, 450)
 
-    def execute(self, name, args, size):
+    def execute(self, name, args):
         if self.failures:
             self.failures -= 1
             raise RuntimeError("input failed")
-        self.actions.append((name, args, size))
+        self.actions.append((name, args))
         if self.change_after_action:
             self.active = "other"
 
@@ -75,6 +75,32 @@ class FakeProvider:
 
 
 class ComputerTests(unittest.TestCase):
+    def test_screenshot_preserves_native_monitor_resolution(self):
+        driver = HyprlandDriver.__new__(HyprlandDriver)
+        driver.output = "eDP-1"
+        driver.width, driver.height = 1920, 1080
+        raw = io.BytesIO()
+        Image.new("RGB", (1920, 1080), "red").save(raw, format="PNG")
+
+        with patch("src.tools.computer_driver.subprocess.run") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, raw.getvalue(), b"")
+            screenshot, size = driver.screenshot()
+
+        self.assertEqual(size, (1920, 1080))
+        with Image.open(io.BytesIO(screenshot)) as image:
+            self.assertEqual(image.size, (1920, 1080))
+
+    def test_full_resolution_click_coordinates_map_to_native_monitor(self):
+        driver = HyprlandDriver.__new__(HyprlandDriver)
+        driver.output = "eDP-1"
+        driver.width, driver.height = 1920, 1080
+
+        with patch.object(driver, "_input") as send:
+            driver.execute("click", {"point": (1440, 900)})
+
+        self.assertEqual(send.call_args_list[0].args, ("mousemove", "--output", "eDP-1", "1440", "900"))
+        self.assertEqual(send.call_args_list[1].args, ("click", "1"))
+
     def test_driver_identifies_only_window_on_selected_monitor(self):
         driver = HyprlandDriver.__new__(HyprlandDriver)
         driver.monitor_id = 2
@@ -207,51 +233,74 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(driver.captures, 3)
         self.assertIn("no desktop input was sent yet", provider.calls[1][4])
 
-    def test_focus_change_while_model_plans_stops_without_input(self):
+    def test_focus_change_while_model_plans_discards_plan_and_reobserves(self):
         driver = FakeDriver()
-        provider = FakeProvider(action_plan(), on_call=lambda: setattr(driver, "active", "other"))
-        with self.assertRaisesRegex(ComputerFocusChanged, "while the model planned"):
-            run_computer("Click the button", driver=driver, provider=provider)
+        provider = FakeProvider(
+            action_plan(), done_plan(), on_call=lambda: setattr(driver, "active", "other"),
+        )
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            result = run_computer("Click the button", driver=driver, provider=provider)
+        self.assertIn("complete", result)
         self.assertEqual(driver.actions, [])
+        self.assertEqual(driver.captures, 2)
+        self.assertIn("Discard that plan", provider.calls[1][4])
 
-    def test_focus_change_during_batch_stops_remaining_actions(self):
+    def test_focus_change_during_screenshot_discards_that_capture(self):
+        driver = FakeDriver()
+        screenshot = driver.screenshot
+
+        def switch_after_first_capture():
+            result = screenshot()
+            if driver.captures == 1:
+                driver.active = "other"
+            return result
+
+        driver.screenshot = switch_after_first_capture
+        provider = FakeProvider(done_plan())
+        result = run_computer("Check the screen", driver=driver, provider=provider)
+        self.assertIn("complete", result)
+        self.assertEqual(driver.captures, 2)
+        self.assertEqual(len(provider.calls), 1)
+
+    def test_focus_change_during_batch_discards_remaining_actions_and_replans(self):
         driver = FakeDriver(change_after_action=True)
         provider = FakeProvider(action_plan([
             {"type": "click", "x": 400, "y": 200},
             {"type": "type", "text": "hello"},
-        ]))
+        ]), done_plan())
         with patch("src.computer.threading.Event.wait", return_value=False):
-            with self.assertRaisesRegex(ComputerFocusChanged, "before a desktop action"):
-                run_computer("Fill the form", driver=driver, provider=provider)
+            result = run_computer("Fill the form", driver=driver, provider=provider)
+        self.assertIn("complete", result)
         self.assertEqual(len(driver.actions), 1)
+        self.assertEqual(driver.captures, 2)
+        self.assertIn("before the action batch finished", provider.calls[1][4])
 
-    def test_approval_requires_return_to_same_window(self):
+    def test_approval_expires_if_focus_changes(self):
         driver = FakeDriver()
         sensitive = action_plan(requires_confirmation=True, confirmation_reason="Send this message")
-        provider = FakeProvider(sensitive)
+        provider = FakeProvider(sensitive, done_plan())
 
         def approve(_preview):
             driver.active = "oryn"
             return True
 
         with patch("src.computer.threading.Event.wait", return_value=False):
-            with self.assertRaisesRegex(ComputerFocusChanged, "original target window"):
-                run_computer("Send a message", driver=driver, provider=provider, confirm_action=approve)
+            run_computer("Send a message", driver=driver, provider=provider, confirm_action=approve)
         self.assertEqual(driver.actions, [])
-        self.assertEqual(driver.captures, 1)
+        self.assertIn("it was not sent", provider.calls[1][4])
 
-    def test_approval_requires_same_action_on_fresh_screenshot(self):
+    def test_changed_approved_action_expires_and_replans(self):
         driver = FakeDriver()
         sensitive = action_plan(requires_confirmation=True, confirmation_reason="Send this message")
         different = action_plan(
             [{"type": "click", "x": 401, "y": 200}],
             requires_confirmation=True, confirmation_reason="Send this message",
         )
-        provider = FakeProvider(sensitive, different)
+        provider = FakeProvider(sensitive, different, done_plan())
         with patch("src.computer.threading.Event.wait", return_value=False):
-            with self.assertRaisesRegex(ComputerFocusChanged, "approved action changed"):
-                run_computer("Send a message", driver=driver, provider=provider, confirm_action=lambda _: True)
+            run_computer("Send a message", driver=driver, provider=provider, confirm_action=lambda _: True)
         self.assertEqual(driver.actions, [])
+        self.assertIn("changed the approved action", provider.calls[2][4])
 
     def test_driver_error_gets_one_screenshot_guided_recovery(self):
         driver = FakeDriver(failures=1)
@@ -283,21 +332,22 @@ class ComputerTests(unittest.TestCase):
     def test_computer_planner_uses_selected_codex_model_and_image_path(self):
         plan = done_plan()
         screenshot = io.BytesIO()
-        Image.new("RGB", (800, 450), "red").save(screenshot, format="JPEG")
+        Image.new("RGB", (1920, 1080), "red").save(screenshot, format="JPEG")
         cancel = threading.Event()
         codex = CodexProvider("gpt-6-sol")
         with patch.object(codex, "complete", return_value=ModelResponse(json.dumps(plan), [])) as complete:
             result = ComputerPlanner(codex).next_plan(
-                "Finish task", screenshot.getvalue(), (800, 450), [], "", cancel,
+                "Finish task", screenshot.getvalue(), (1920, 1080), [], "", cancel,
             )
         self.assertEqual(result, plan)
         self.assertEqual(codex.model, "gpt-6-sol")
         messages = complete.call_args.args[0]
         self.assertEqual(messages[0]["role"], "developer")
         self.assertIn("Return one JSON object", messages[0]["content"])
+        self.assertIn("The screenshot is 1920x1080; coordinates start at the top-left.", messages[0]["content"])
         self.assertIn("Finish task", messages[1]["content"])
         image = messages[1]["images"][0]
-        self.assertEqual((image["mime_type"], image["width"], image["height"]), ("image/jpeg", 800, 450))
+        self.assertEqual((image["mime_type"], image["width"], image["height"]), ("image/jpeg", 1920, 1080))
         self.assertTrue(base64.b64decode(image["base64_data"]).startswith(b"\xff\xd8"))
         self.assertIs(complete.call_args.kwargs["cancel_event"], cancel)
 

@@ -1,6 +1,7 @@
 .venv/
 .env
 mcp.env
+logs/
 __pycache__/
 *.py[cod]
 web/node_modules/
