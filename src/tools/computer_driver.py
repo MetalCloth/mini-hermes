@@ -136,7 +136,7 @@ class HyprlandDriver:
             self._input("key", args["key"])
         elif name == "type":
             content = args["content"]
-            sleep(0.12)
+            sleep(0.15)
             if content.endswith("\n"):
                 if content[:-1]:
                     self._input("type", "--file", "-", input_data=content[:-1].encode("utf-8"))

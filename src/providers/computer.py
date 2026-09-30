@@ -2,16 +2,22 @@
 
 import json
 import threading
+from pathlib import Path
 
+from src.agent.skills import load_skill
 from src.images import prepare_image
 from src.computer_logging import ComputerTrace
 from src.providers.codex import CodexProvider
+
+
+_COMPUTER_SKILL_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ComputerPlanner:
     def __init__(self, codex: CodexProvider, trace: ComputerTrace | None = None) -> None:
         self.codex = codex
         self.trace = trace
+        self.wdotool_guide = load_skill(_COMPUTER_SKILL_ROOT, "computer-wdotool").instructions
 
     def next_plan(
         self, task: str, screenshot: bytes, size: tuple[int, int],
@@ -38,7 +44,6 @@ class ComputerPlanner:
             '{"type":"scroll","x":120,"y":80,"direction":"down"}\n'
             '{"type":"key","key":"ctrl+l"}\n'
             '{"type":"type","text":"text to type"}\n'
-            '{"type":"wait","seconds":1}\n'
             "Coordinates must be inside the screenshot. Keep typed text exact and under 2000 characters. "
             "Set question to an empty string unless status is ask_user; set actions to an empty list "
             "unless status is actions. Keep expected_result empty except for action plans.\n"
@@ -48,6 +53,7 @@ class ComputerPlanner:
             "repeat the exact approved action with requires_confirmation=true only if it is still valid. "
             "Otherwise set requires_confirmation=false and an empty reason."
         )
+        instructions += "\n\nOryn wdotool operating guide:\n" + self.wdotool_guide
         image = prepare_image(screenshot, "Desktop screenshot")
         if (image["width"], image["height"]) != size:
             raise ValueError("Desktop screenshot dimensions changed during capture.")

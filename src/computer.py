@@ -45,7 +45,6 @@ def _action(action: object, size: tuple[int, int]) -> dict:
         "scroll": {"type", "x", "y", "direction"},
         "key": {"type", "key"},
         "type": {"type", "text"},
-        "wait": {"type", "seconds"},
     }
     if name not in expected or set(action) != expected[name]:
         raise ValueError("The selected model returned an unsupported desktop action.")
@@ -70,8 +69,6 @@ def _action(action: object, size: tuple[int, int]) -> dict:
         content = action["text"]
         if not isinstance(content, str) or not content or len(content) > 2000:
             raise ValueError("The selected model returned invalid text to type.")
-    elif name == "wait" and (type(action["seconds"]) is not int or not 1 <= action["seconds"] <= 5):
-        raise ValueError("The selected model returned an invalid wait duration.")
     return action
 
 
@@ -134,7 +131,7 @@ def _action_label(action: dict) -> str:
         return f"press {action['key']}"
     if name == "type":
         return f"type {action['text']!r}"
-    return f"wait {action['seconds']} seconds"
+    raise ValueError("The selected model returned an unsupported desktop action.")
 
 
 def _driver_action(action: dict) -> tuple[str, dict]:
@@ -150,7 +147,9 @@ def _driver_action(action: dict) -> tuple[str, dict]:
         return driver_name, args
     if name == "key":
         return "hotkey", {"key": action["key"]}
-    return "type", {"content": action["text"]}
+    if name == "type":
+        return "type", {"content": action["text"]}
+    raise ValueError("The selected model returned an unsupported desktop action.")
 
 
 def _check_cancel(cancel_event: threading.Event) -> None:
@@ -330,14 +329,10 @@ def run_computer(
                     trace.write("action_start", turn=turn, label=label, action=action)
                 if on_status:
                     on_status(f"Computer action: {label[:120]}")
-                if action["type"] == "wait":
-                    if cancel_event.wait(action["seconds"]):
-                        raise ComputerCancelled("Stopped by you.")
-                else:
-                    name, args = _driver_action(action)
-                    driver.execute(name, args)
-                    if cancel_event.wait(0.35):
-                        raise ComputerCancelled("Stopped by you.")
+                name, args = _driver_action(action)
+                driver.execute(name, args)
+                if cancel_event.wait(0.35):
+                    raise ComputerCancelled("Stopped by you.")
                 if trace:
                     trace.write("action_complete", turn=turn, label=label)
                 completed.append(label)

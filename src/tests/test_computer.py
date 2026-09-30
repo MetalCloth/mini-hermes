@@ -133,7 +133,7 @@ class ComputerTests(unittest.TestCase):
             action_plan([{"type": "click", "x": 1, "y": 2, "extra": "ignored"}]),
             action_plan([{"type": "scroll", "x": 1, "y": 2, "direction": []}]),
             action_plan([{"type": "type", "text": ""}]),
-            action_plan([{"type": "wait", "seconds": 0}]),
+            action_plan([{"type": "wait", "seconds": 3}]),
             action_plan([{"type": "click", "x": 1, "y": 2}] * 4),
             action_plan([{"type": "click", "x": 1, "y": 2}], requires_confirmation=True),
         ]
@@ -345,6 +345,9 @@ class ComputerTests(unittest.TestCase):
         messages = complete.call_args.args[0]
         self.assertEqual(messages[0]["role"], "developer")
         self.assertIn("Return one JSON object", messages[0]["content"])
+        self.assertIn("Oryn wdotool operating guide:", messages[0]["content"])
+        self.assertIn("`Super_L` and `super_l` are not interchangeable", messages[0]["content"])
+        self.assertNotIn("120 ms", messages[0]["content"])
         self.assertIn("The screenshot is 1920x1080; coordinates start at the top-left.", messages[0]["content"])
         self.assertIn("Finish task", messages[1]["content"])
         image = messages[1]["images"][0]
