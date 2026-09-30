@@ -22,6 +22,11 @@ case "$mode" in
         ;;
     follow)
         mkdir -p "$logs_dir"
+        raw=false
+        if [[ "${1:-}" == "--raw" ]]; then
+            raw=true
+            shift
+        fi
         if (($#)); then
             log_file="$1"
         else
@@ -33,6 +38,9 @@ case "$mode" in
             fi
             log_file="$(printf '%s\n' "${log_files[@]}" | sort | tail -n 1)"
         fi
-        exec tail -n +1 -F -- "$log_file"
+        if [[ "$raw" == true ]]; then
+            exec tail -n +1 -F -- "$log_file"
+        fi
+        tail -n +1 -F -- "$log_file" | python3 -u "$repo_dir/scripts/computer_log_view.py"
         ;;
 esac

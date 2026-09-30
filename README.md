@@ -76,6 +76,8 @@ Use `/computer --dry-run open Settings` to preview the first proposed action bat
 For a live computer-mode trace, start Oryn with `./scripts/computer-log.sh run` and run
 `./scripts/computer-log.sh follow` in another terminal. Traces are saved under `logs/` as
 private JSONL files; they include model prompts/plans and text sent to desktop input, but not screenshots.
+The live view summarizes plans, actions, and driver errors without repeating the full prompt; use
+`./scripts/computer-log.sh follow --raw` to display the raw JSONL records.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 
