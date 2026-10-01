@@ -38,7 +38,8 @@ class ComputerLoggingTests(unittest.TestCase):
                     provider, "complete", return_value=ModelResponse(json.dumps(plan), []),
                 ):
                     self.assertEqual(
-                        planner.next_plan("Open Brave", image.getvalue(), (800, 450), [], ""), plan,
+                        planner.next_plan("Open Brave", image.getvalue(), (800, 450), [], ""),
+                        json.dumps(plan),
                     )
             finally:
                 trace.close()

@@ -75,6 +75,14 @@ class FakeProvider:
 
 
 class ComputerTests(unittest.TestCase):
+    def test_computer_loop_allows_30_model_calls(self):
+        driver = FakeDriver()
+        provider = FakeProvider(*[action_plan() for _ in range(30)])
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "after 30 model calls"):
+                run_computer("Keep going", driver=driver, provider=provider)
+        self.assertEqual(len(provider.calls), 30)
+
     def test_screenshot_preserves_native_monitor_resolution(self):
         driver = HyprlandDriver.__new__(HyprlandDriver)
         driver.output = "eDP-1"
@@ -254,6 +262,23 @@ class ComputerTests(unittest.TestCase):
         self.assertIn("1–3 allowed actions", provider.calls[1][4])
         self.assertIn("no desktop input was sent", provider.calls[1][3][-1])
 
+    def test_non_json_preface_gets_retried_without_sending_input(self):
+        driver = FakeDriver()
+        provider = FakeProvider(
+            "We need click the first result. " + json.dumps(action_plan()),
+            action_plan(),
+            done_plan(),
+        )
+
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            result = run_computer("Click the first result", driver=driver, provider=provider)
+
+        self.assertIn("complete", result)
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(len(driver.actions), 1)
+        self.assertIn("No desktop input was sent", provider.calls[1][4])
+        self.assertIn("exactly one raw JSON object", provider.calls[1][4])
+
     def test_second_invalid_plan_stops_without_sending_desktop_input(self):
         driver = FakeDriver()
         invalid = action_plan([{"type": "click", "x": 10, "y": 10}] * 4)
@@ -429,15 +454,21 @@ class ComputerTests(unittest.TestCase):
             result = ComputerPlanner(codex).next_plan(
                 "Finish task", screenshot.getvalue(), (1920, 1080), [], "", cancel,
             )
-        self.assertEqual(result, plan)
+        self.assertEqual(result, json.dumps(plan))
         self.assertEqual(codex.model, "gpt-6-sol")
         messages = complete.call_args.args[0]
         self.assertEqual(messages[0]["role"], "developer")
-        self.assertIn("Return one JSON object", messages[0]["content"])
+        self.assertIn("Return only one JSON object as the entire response", messages[0]["content"])
+        self.assertIn("no preamble, explanation", messages[0]["content"])
         self.assertIn("Never return four or more actions", messages[0]["content"])
         self.assertIn("do not click the page first", messages[0]["content"])
         self.assertIn("Oryn dotool operating guide:", messages[0]["content"])
         self.assertIn("Do not send an unprefixed XKB name like `Super_L`", messages[0]["content"])
+        self.assertIn("Caelestia Hyprland environment profile:", messages[0]["content"])
+        self.assertIn("Tapping and releasing it by itself opens the Caelestia launcher.", messages[0]["content"])
+        self.assertIn("`Super+W` opens Brave", messages[0]["content"])
+        self.assertIn("`Super+F` focuses or isolates the current screen/window", messages[0]["content"])
+        self.assertIn("`Super+Alt+F` fullscreen the active window", messages[0]["content"])
         self.assertNotIn("120 ms", messages[0]["content"])
         self.assertIn("The screenshot is 1920x1080; coordinates start at the top-left.", messages[0]["content"])
         self.assertIn("Finish task", messages[1]["content"])
@@ -445,6 +476,17 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual((image["mime_type"], image["width"], image["height"]), ("image/jpeg", 1920, 1080))
         self.assertTrue(base64.b64decode(image["base64_data"]).startswith(b"\xff\xd8"))
         self.assertIs(complete.call_args.kwargs["cancel_event"], cancel)
+
+    def test_computer_planner_passes_malformed_text_to_strict_plan_validator(self):
+        screenshot = io.BytesIO()
+        Image.new("RGB", (8, 8), "black").save(screenshot, format="JPEG")
+        response_text = 'We need click the first result. ' + json.dumps(done_plan())
+        codex = CodexProvider("gpt-6-sol")
+        with patch.object(codex, "complete", return_value=ModelResponse(response_text, [])):
+            result = ComputerPlanner(codex).next_plan(
+                "Click the first result", screenshot.getvalue(), (8, 8), [], "",
+            )
+        self.assertEqual(result, response_text)
 
 
 if __name__ == "__main__":

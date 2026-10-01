@@ -11,7 +11,7 @@ from src.providers.computer import ComputerPlanner
 from src.tools.computer_driver import HyprlandDriver
 
 
-MAX_TURNS = 20
+MAX_TURNS = 30
 MAX_ACTIONS_PER_TURN = 3
 MAX_SECONDS = 300
 START_DELAY = 1
@@ -245,8 +245,9 @@ def run_computer(
             history.append(f"Turn {turn}: Oryn rejected the invalid plan; no desktop input was sent.")
             last_result = (
                 f"Oryn rejected your previous plan: {exc} No desktop input was sent. "
-                "Recheck the fresh screenshot and return a corrected plan with 1–3 allowed "
-                "actions, or use ask_user/done with an empty actions list."
+                "Recheck the fresh screenshot and return exactly one raw JSON object, with no "
+                "text before or after it. Use 1–3 allowed actions, or ask_user/done with an "
+                "empty actions list."
             )
             continue
         if trace:
