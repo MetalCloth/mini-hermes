@@ -69,18 +69,23 @@ Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboar
 
 ## Computer mode (selected model)
 
-On a Hyprland desktop, install `grim` and [wdotool](https://github.com/cushycush/wdotool), and configure the selected provider: `codex login` for Codex or `GEMINI_API_KEY` for Gemini. Oryn also finds `wdotool` in this checkout's `.venv/bin`. Screenshots of the focused monitor are sent at the monitor's native resolution. `/computer` uses the model, reasoning effort, and speed currently selected in Oryn. The model must support image input. The default model is `gpt-5.6-luna`; you can choose another with `/models`. `/computer` does not use the OpenRouter key.
+On a Hyprland desktop, install `grim` and [dotool](https://github.com/nick-tgcs/dotool), and configure the selected provider: `codex login` for Codex or `GEMINI_API_KEY` for Gemini. Dotool needs permission to write to `/dev/uinput`; package udev rules or the setup in its manual must grant that permission. Oryn also finds `dotool` in this checkout's `.venv/bin`. Screenshots of the focused monitor are sent at the monitor's native resolution. `/computer` uses the model, reasoning effort, and speed currently selected in Oryn. The model must support image input. The default model is `gpt-5.6-luna`; you can choose another with `/models`. `/computer` does not use the OpenRouter key.
 
 Select `/computer` from the command list, or type `/computer` and press Enter. A slim line above the composer shows that your next message will control the desktop. Type the task normally and press Enter; the line disappears as soon as that message is sent. Press Esc to cancel before sending. You can also enter `/computer open Settings` as a one-message shortcut. You have one second to switch to the target app before the first screenshot. The selected model receives the task and screenshot and returns a checked JSON plan with up to three click, double-click, right-click, type, key, or scroll actions. The local driver runs only these allowlisted actions, then Oryn takes a fresh screenshot and asks the model to verify progress. The model can ask you a clarification; actions it marks as sending, deleting, buying, publishing, or submitting require your approval before execution. After answering or approving in Oryn, switch back to the target app within one second. Oryn takes a fresh screenshot before acting. If the active window changes while Oryn captures the screen or the model plans, it discards that screenshot or plan and reobserves; if it changes during an action batch, completed actions are kept and remaining actions are replanned. An approved action expires if the active window changes or the model proposes a different action. The loop stops when the model confirms completion, after 20 model calls or 5 minutes, after a second desktop-driver failure, or when you stop the active turn.
 
-Text-typing actions use `wdotool type --delay 0`: the driver adds no startup pause or per-character delay.
+If the model returns an invalid plan, Oryn sends no desktop input and gives it one fresh screenshot to correct the plan. A second invalid plan stops the task.
+
+The local driver sends dotool action streams through stdin. Text is typed with dotool's `type` action, and each planned action is sent in one dotool process. Dotool's documented defaults are 2 ms between typed characters and an 8 ms key hold; Oryn adds no separate typing delay. Mouse coordinates are translated from the focused monitor's screenshot into the Hyprland desktop layout for dotool's normalized `mouseto` action.
 
 Use `/computer --dry-run open Settings` to preview the first proposed action batch without sending desktop input.
 
 For a live computer-mode trace, start Oryn with `./scripts/computer-log.sh run` and run
 `./scripts/computer-log.sh follow` in another terminal. Traces are saved under `logs/` as
 private JSONL files; they include model prompts/plans and text sent to desktop input, but not screenshots.
-The live view summarizes plans, actions, and driver errors without repeating the full prompt; use
+The live view shows model settings, socket timeout, request duration, and whether a Codex failure happened
+while opening the connection or reading the response stream. It also displays the provider request ID when
+one is returned. A timeout without response headers cannot reveal server-internal queue or processing causes.
+The view summarizes plans, actions, and driver errors without repeating the full prompt; use
 `./scripts/computer-log.sh follow --raw` to display the raw JSONL records.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.

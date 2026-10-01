@@ -27,6 +27,7 @@ ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_VERSION = "0.157.1"
+REQUEST_SOCKET_TIMEOUT_SECONDS = 120
 AUTH_FILE = Path.home() / ".codex" / "auth.json"
 
 
@@ -55,6 +56,27 @@ def _jwt_payload(token: str) -> dict:
 def _expired(token: str) -> bool:
     exp = _jwt_payload(token).get("exp")
     return isinstance(exp, (int, float)) and exp * 1000 - 60_000 < time.time() * 1000
+
+
+def _request_id(headers: Any) -> str | None:
+    if not headers:
+        return None
+    value = headers.get("x-request-id") or headers.get("request-id")
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", value) else None
+
+
+def _connection_error_detail(
+    phase: str, error: object, *, output_seen: bool, request_id: str | None,
+) -> str:
+    detail = "".join(char for char in str(error) if char.isprintable())[:300]
+    errno = getattr(error, "errno", None)
+    code = f", errno {errno}" if isinstance(errno, int) else ""
+    request = f"; request_id={request_id}" if request_id else "; request_id unavailable"
+    return (
+        f"Codex request failed during {phase} ({type(error).__name__}{code}): "
+        f"{detail or 'no error detail'}; model output received={str(output_seen).lower()}"
+        f"{request}"
+    )
 
 
 def _refresh(auth: dict, auth_file: Path) -> None:
@@ -224,6 +246,7 @@ class CodexProvider:
     """Translate Oryn messages and tools for the Codex Responses endpoint."""
 
     label = "ChatGPT"
+    request_timeout_seconds = REQUEST_SOCKET_TIMEOUT_SECONDS
 
     def __init__(
         self, model: str, auth_file: Path = AUTH_FILE, *,
@@ -439,8 +462,12 @@ class CodexProvider:
             nonlocal saw_stream_data
             saw_stream_data = True
 
+        phase = "opening connection and waiting for HTTP response headers"
+        request_id = None
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=self.request_timeout_seconds) as response:
+                phase = "reading the response stream"
+                request_id = _request_id(getattr(response, "headers", None))
                 finished = threading.Event()
                 watcher = None
                 if cancel_event:
@@ -475,6 +502,9 @@ class CodexProvider:
                     detail = detail.replace(secret, "[redacted]")
             detail = re.sub(r"(?i)Bearer\s+[^\s\"']+", "Bearer [redacted]", detail)
             detail = "".join(char for char in detail if char.isprintable() or char in "\n\t")[:2000]
+            request_id = _request_id(exc.headers)
+            if request_id:
+                detail += f" (request_id={request_id})"
             raise ProviderRequestError(
                 f"Codex endpoint returned HTTP {exc.code}: {detail}",
                 retryable=not saw_stream_data and exc.code in {429, 500, 502, 503, 504},
@@ -483,15 +513,20 @@ class CodexProvider:
         except urllib.error.URLError as exc:
             if cancel_event and cancel_event.is_set():
                 raise InterruptedError("Codex request cancelled") from exc
+            reason = exc.reason
             raise ProviderRequestError(
-                f"Could not reach Codex endpoint: {exc.reason}",
-                retryable=not saw_stream_data and _temporary_connection_error(exc.reason),
+                _connection_error_detail(
+                    phase, reason, output_seen=saw_stream_data, request_id=request_id,
+                ),
+                retryable=not saw_stream_data and _temporary_connection_error(reason),
             ) from exc
         except OSError as exc:
             if cancel_event and cancel_event.is_set():
                 raise InterruptedError("Codex request cancelled") from exc
             raise ProviderRequestError(
-                f"Codex connection failed ({type(exc).__name__}).",
+                _connection_error_detail(
+                    phase, exc, output_seen=saw_stream_data, request_id=request_id,
+                ),
                 retryable=not saw_stream_data and _temporary_connection_error(exc),
             ) from exc
 

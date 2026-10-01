@@ -236,16 +236,52 @@ class CodexFailureTests(unittest.TestCase):
 
     def test_http_error_includes_status_and_body(self):
         error = urllib.error.HTTPError(
-            codex.ENDPOINT, 502, "Bad Gateway", {}, io.BytesIO(b"upstream unavailable"),
+            codex.ENDPOINT, 502, "Bad Gateway", {"x-request-id": "req-http-123"},
+            io.BytesIO(b"upstream unavailable"),
         )
         with patch.object(codex.urllib.request, "urlopen", side_effect=error):
-            with self.assertRaisesRegex(RuntimeError, "HTTP 502: upstream unavailable"):
+            with self.assertRaisesRegex(ProviderRequestError, "HTTP 502: upstream unavailable") as failure:
                 codex.CodexProvider("gpt-5.6-luna").complete([{"role": "user", "content": "Hi"}])
+        self.assertIn("request_id=req-http-123", str(failure.exception))
 
     def test_network_error_is_reported_as_endpoint_unavailable(self):
         with patch.object(codex.urllib.request, "urlopen", side_effect=urllib.error.URLError("DNS blocked")):
-            with self.assertRaisesRegex(RuntimeError, "Could not reach Codex endpoint: DNS blocked"):
+            with self.assertRaisesRegex(ProviderRequestError, "waiting for HTTP response headers.*DNS blocked"):
                 codex.CodexProvider("gpt-5.6-luna").complete([{"role": "user", "content": "Hi"}])
+
+    def test_timeout_reports_whether_it_happened_before_headers_or_during_stream(self):
+        provider = codex.CodexProvider("gpt-6-luna")
+        messages = [{"role": "user", "content": "Hi"}]
+        with patch.object(
+            codex.urllib.request, "urlopen",
+            side_effect=TimeoutError("The read operation timed out"),
+        ) as urlopen:
+            with self.assertRaises(ProviderRequestError) as failure:
+                provider.complete(messages)
+        self.assertIn("opening connection and waiting for HTTP response headers", str(failure.exception))
+        self.assertIn("The read operation timed out", str(failure.exception))
+        self.assertIn("model output received=false", str(failure.exception))
+        self.assertIn("request_id unavailable", str(failure.exception))
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], provider.request_timeout_seconds)
+
+        class TimedOutStream:
+            headers = {"x-request-id": "req-123456"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def __iter__(self):
+                raise TimeoutError("The read operation timed out")
+                yield b""
+
+        with patch.object(codex.urllib.request, "urlopen", return_value=TimedOutStream()):
+            with self.assertRaises(ProviderRequestError) as failure:
+                provider.complete(messages)
+        self.assertIn("reading the response stream", str(failure.exception))
+        self.assertIn("request_id=req-123456", str(failure.exception))
 
     def test_cancelled_request_never_contacts_endpoint(self):
         cancel = threading.Event()

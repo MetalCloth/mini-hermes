@@ -11,11 +11,27 @@ class ComputerLogViewTests(unittest.TestCase):
             "time_utc": "2026-09-30T10:18:15.120+00:00",
             "event": "model_request",
             "model": "gpt-5.6-luna",
+            "reasoning_effort": "max",
+            "service_tier": "priority",
+            "socket_timeout_seconds": 120,
             "developer_instructions": "a very long repeated prompt",
             "screenshot": {"width": 1920, "height": 1080, "size_bytes": 150225},
         })
         self.assertIn("MODEL INPUT · gpt-5.6-luna · screen 1920×1080", request)
+        self.assertIn("effort max · speed priority · socket timeout 120s", request)
         self.assertNotIn("repeated prompt", request)
+
+        timeout = format_record({
+            "time_utc": "2026-09-30T10:18:43.797+00:00",
+            "event": "model_error",
+            "elapsed_seconds": 125.0,
+            "error_type": "ProviderRequestError",
+            "error": "Codex request failed during opening connection and waiting for HTTP response headers "
+                     "(TimeoutError): timed out; model output received=false; request_id unavailable",
+        })
+        self.assertIn("MODEL ERROR · 125.0s", timeout)
+        self.assertIn("waiting for HTTP response headers", timeout)
+        self.assertIn("model output received=false", timeout)
 
         plan = format_record({
             "time_utc": "2026-09-30T10:18:43.766+00:00",
@@ -31,22 +47,40 @@ class ComputerLogViewTests(unittest.TestCase):
 
         failure = format_record({
             "time_utc": "2026-09-30T10:18:43.797+00:00",
-            "event": "wdotool_result",
+            "event": "dotool_result",
             "returncode": 1,
-            "stderr": "\x1b[2mINFO using forced backend\x1b[0m\nError: keysym 'super_l' not found",
+            "success": False,
+            "stderr": "\x1b[2mdotool: WARNING\x1b[0m\nimpossible key for layout: super_l",
         })
         self.assertIn("INPUT FAILED · exit 1", failure)
-        self.assertIn("keysym 'super_l' not found", failure)
+        self.assertIn("impossible key for layout: super_l", failure)
         self.assertNotIn("\x1b", failure)
+
+        input_command = format_record({
+            "time_utc": "2026-09-30T10:18:43.797+00:00",
+            "event": "dotool_start",
+            "argv": ["/usr/bin/dotool"],
+            "stdin": "mouseto 0.5 0.5\nclick left\n",
+        })
+        self.assertIn("INPUT · dotool", input_command)
+        self.assertIn("Actions:", input_command)
+
+        warning = format_record({
+            "time_utc": "2026-09-30T10:18:43.797+00:00",
+            "event": "dotool_result",
+            "returncode": 0,
+            "success": False,
+            "stderr": "dotool: WARNING: impossible key for layout: windows",
+        })
+        self.assertIn("INPUT FAILED · exit 0", warning)
 
         task_failure = format_record({
             "time_utc": "2026-09-30T10:18:50.582+00:00",
             "event": "computer_task_failed",
             "error_type": "RuntimeError",
-            "error": "INFO using forced backend backend=\"wlr-protocols\"\nError: keysym 'super' not found",
+            "error": "dotool: WARNING: impossible key for layout: super",
         })
-        self.assertIn("keysym 'super' not found", task_failure)
-        self.assertNotIn("INFO using forced backend", task_failure)
+        self.assertIn("impossible key for layout: super", task_failure)
 
 
 if __name__ == "__main__":

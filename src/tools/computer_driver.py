@@ -14,16 +14,17 @@ from src.computer_logging import ComputerTrace
 class HyprlandDriver:
     def __init__(self, trace: ComputerTrace | None = None) -> None:
         self.trace = trace
-        local_wdotool = Path(__file__).resolve().parents[2] / ".venv/bin/wdotool"
-        self.wdotool = shutil.which("wdotool") or (str(local_wdotool) if local_wdotool.is_file() else None)
-        if not self.wdotool or not shutil.which("grim") or not shutil.which("hyprctl"):
-            raise RuntimeError("Computer mode needs Hyprland, grim, and wdotool. See README.md.")
+        local_dotool = Path(__file__).resolve().parents[2] / ".venv/bin/dotool"
+        self.dotool = shutil.which("dotool") or (str(local_dotool) if local_dotool.is_file() else None)
+        if not self.dotool or not shutil.which("grim") or not shutil.which("hyprctl"):
+            raise RuntimeError("Computer mode needs Hyprland, grim, and dotool. See README.md.")
         try:
             result = subprocess.run(
                 ["hyprctl", "monitors", "-j"], capture_output=True, check=True, timeout=5,
             )
             monitors = json.loads(result.stdout)
-            monitor = next((item for item in monitors if item.get("focused") and not item.get("disabled")), None)
+            active_monitors = [item for item in monitors if not item.get("disabled")]
+            monitor = next((item for item in active_monitors if item.get("focused")), None)
             if not monitor:
                 raise ValueError("no focused monitor")
             self.output = monitor["name"]
@@ -31,8 +32,31 @@ class HyprlandDriver:
             self.width, self.height = int(monitor["width"]), int(monitor["height"])
             if self.width <= 0 or self.height <= 0:
                 raise ValueError("invalid monitor size")
+            layouts = []
+            for item in active_monitors:
+                scale = float(item.get("scale", 1))
+                if scale <= 0:
+                    raise ValueError("invalid monitor scale")
+                x, y = float(item["x"]), float(item["y"])
+                width = float(item["width"]) / scale
+                height = float(item["height"]) / scale
+                if width <= 0 or height <= 0:
+                    raise ValueError("invalid monitor geometry")
+                layouts.append((x, y, width, height))
+            selected = next(item for item in active_monitors if item["id"] == self.monitor_id)
+            scale = float(selected.get("scale", 1))
+            self.monitor_rect = (
+                float(selected["x"]), float(selected["y"]),
+                float(selected["width"]) / scale, float(selected["height"]) / scale,
+            )
+            self.desktop_bounds = (
+                min(rect[0] for rect in layouts),
+                min(rect[1] for rect in layouts),
+                max(rect[0] + rect[2] for rect in layouts),
+                max(rect[1] + rect[3] for rect in layouts),
+            )
         except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
-            raise RuntimeError("Could not find a focused Hyprland monitor.") from exc
+            raise RuntimeError("Could not read the focused Hyprland monitor layout.") from exc
 
     def active_window(self) -> str | None:
         """Identify the window receiving input on the selected monitor."""
@@ -75,72 +99,80 @@ class HyprlandDriver:
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             raise RuntimeError("Could not capture the selected monitor.") from exc
 
-    def _input(self, *args: str, input_data: bytes | None = None) -> None:
-        command = [self.wdotool, "--backend", "wlr-protocols", *args]
-        stdin = input_data.decode("utf-8", errors="replace") if input_data is not None else None
+    def _input(self, actions: list[str]) -> None:
+        """Send dotool's stdin action stream in one process."""
+        command = [self.dotool]
+        stdin = "\n".join(actions) + "\n"
+        input_data = stdin.encode("utf-8")
+        action = actions[0].split(maxsplit=1)[0]
         if self.trace:
-            self.trace.write("wdotool_start", argv=command, stdin=stdin)
+            self.trace.write("dotool_start", argv=command, stdin=stdin)
         try:
             result = subprocess.run(
-                command,
-                input=input_data, capture_output=True, check=True, timeout=10,
+                command, input=input_data, capture_output=True, timeout=10,
             )
-        except subprocess.CalledProcessError as exc:
-            stderr = _output_text(exc.stderr)
-            if self.trace:
-                self.trace.write(
-                    "wdotool_result", returncode=exc.returncode,
-                    stdout=_output_text(exc.stdout)[:4000], stderr=stderr[:4000],
-                )
-            detail = f": {stderr[:400]}" if stderr else ""
-            raise RuntimeError(
-                f"Desktop input failed during {args[0]} (exit {exc.returncode}){detail}"
-            ) from exc
         except subprocess.TimeoutExpired as exc:
             stderr = _output_text(exc.stderr)
             if self.trace:
                 self.trace.write(
-                    "wdotool_result", returncode=None, timed_out=True,
+                    "dotool_result", returncode=None, success=False, timed_out=True,
                     stdout=_output_text(exc.stdout)[:4000], stderr=stderr[:4000],
                 )
-            raise RuntimeError(f"Desktop input timed out during {args[0]}.") from exc
+            raise RuntimeError(f"Desktop input timed out during {action}.") from exc
         except OSError as exc:
             if self.trace:
-                self.trace.write("wdotool_result", returncode=None, error=str(exc))
-            raise RuntimeError(f"Desktop input failed during {args[0]}: {exc}") from exc
+                self.trace.write("dotool_result", returncode=None, success=False, error=str(exc))
+            raise RuntimeError(f"Desktop input failed during {action}: {exc}") from exc
+        stdout, stderr = _output_text(result.stdout), _output_text(result.stderr)
+        success = result.returncode == 0 and not stderr
         if self.trace:
             self.trace.write(
-                "wdotool_result", returncode=result.returncode,
-                stdout=_output_text(result.stdout)[:4000],
-                stderr=_output_text(result.stderr)[:4000],
+                "dotool_result", returncode=result.returncode, success=success,
+                stdout=stdout[:4000], stderr=stderr[:4000],
+            )
+        # dotool reports some rejected keys as stderr warnings with exit code 0.
+        if not success:
+            detail = f": {stderr[:400]}" if stderr else ""
+            raise RuntimeError(
+                f"Desktop input failed during {action} (exit {result.returncode}){detail}"
             )
 
-    def _move(self, point: tuple[int, int]) -> None:
-        x = min(self.width - 1, point[0])
-        y = min(self.height - 1, point[1])
-        self._input("mousemove", "--output", self.output, str(x), str(y))
+    def _move(self, point: tuple[int, int]) -> str:
+        """Convert screenshot pixels to dotool's normalized desktop coordinates."""
+        x = min(self.width - 1, max(0, point[0]))
+        y = min(self.height - 1, max(0, point[1]))
+        left, top, width, height = self.monitor_rect
+        desktop_left, desktop_top, desktop_right, desktop_bottom = self.desktop_bounds
+        global_x = left + x / self.width * width
+        global_y = top + y / self.height * height
+        screen_x = (global_x - desktop_left) / (desktop_right - desktop_left)
+        screen_y = (global_y - desktop_top) / (desktop_bottom - desktop_top)
+        return f"mouseto {screen_x:.6f} {screen_y:.6f}"
 
     def execute(self, name: str, args: dict) -> None:
+        actions = []
         if name in {"click", "left_double", "right_single", "scroll"}:
-            self._move(args["point"])
+            actions.append(self._move(args["point"]))
         if name in {"click", "left_double", "right_single"}:
-            button = "3" if name == "right_single" else "1"
-            self._input("click", button)
+            button = "right" if name == "right_single" else "left"
+            actions.append(f"click {button}")
             if name == "left_double":
-                self._input("click", button)
+                actions.append(f"click {button}")
         elif name == "scroll":
-            delta = {"up": (0, -3), "down": (0, 3), "left": (-3, 0), "right": (3, 0)}[args["direction"]]
-            self._input("scroll", str(delta[0]), str(delta[1]))
+            scroll = {"up": "wheel 3", "down": "wheel -3", "left": "hwheel 3", "right": "hwheel -3"}
+            actions.append(scroll[args["direction"]])
         elif name == "hotkey":
-            self._input("key", args["key"])
+            actions.append(f"key {args['key']}")
         elif name == "type":
-            content = args["content"]
-            if content.endswith("\n"):
-                if content[:-1]:
-                    self._input("type", "--delay", "0", "--file", "-", input_data=content[:-1].encode("utf-8"))
-                self._input("key", "Return")
-            else:
-                self._input("type", "--delay", "0", "--file", "-", input_data=content.encode("utf-8"))
+            lines = args["content"].split("\n")
+            for index, line in enumerate(lines):
+                if line:
+                    actions.append(f"type {line}")
+                if index < len(lines) - 1:
+                    actions.append("key enter")
+        else:
+            raise ValueError(f"Unsupported desktop action: {name}")
+        self._input(actions)
 
 
 def _output_text(value: bytes | str | None) -> str:

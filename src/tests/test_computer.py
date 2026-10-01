@@ -94,12 +94,64 @@ class ComputerTests(unittest.TestCase):
         driver = HyprlandDriver.__new__(HyprlandDriver)
         driver.output = "eDP-1"
         driver.width, driver.height = 1920, 1080
+        driver.monitor_rect = (0, 0, 1920, 1080)
+        driver.desktop_bounds = (0, 0, 1920, 1080)
 
         with patch.object(driver, "_input") as send:
             driver.execute("click", {"point": (1440, 900)})
 
-        self.assertEqual(send.call_args_list[0].args, ("mousemove", "--output", "eDP-1", "1440", "900"))
-        self.assertEqual(send.call_args_list[1].args, ("click", "1"))
+        send.assert_called_once_with(["mouseto 0.750000 0.833333", "click left"])
+
+    def test_coordinates_include_selected_monitor_position_in_desktop_layout(self):
+        driver = HyprlandDriver.__new__(HyprlandDriver)
+        driver.width, driver.height = 1920, 1080
+        driver.monitor_rect = (1920, 0, 1920, 1080)
+        driver.desktop_bounds = (0, 0, 3840, 1080)
+
+        self.assertEqual(driver._move((960, 540)), "mouseto 0.750000 0.500000")
+
+    def test_monitor_layout_mapping_accounts_for_scaled_outputs(self):
+        monitors = [
+            {"id": 1, "name": "DP-1", "width": 3840, "height": 2160,
+             "x": 0, "y": 0, "scale": 2, "focused": False, "disabled": False},
+            {"id": 2, "name": "eDP-1", "width": 1920, "height": 1080,
+             "x": 1920, "y": 0, "scale": 1, "focused": True, "disabled": False},
+        ]
+        driver = HyprlandDriver.__new__(HyprlandDriver)
+        with (
+            patch("src.tools.computer_driver.shutil.which", return_value="/usr/bin/tool"),
+            patch("src.tools.computer_driver.subprocess.run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess([], 0, json.dumps(monitors).encode(), b"")
+            HyprlandDriver.__init__(driver)
+
+        self.assertEqual(driver.output, "eDP-1")
+        self.assertEqual(driver.monitor_rect, (1920, 0, 1920, 1080))
+        self.assertEqual(driver.desktop_bounds, (0, 0, 3840, 1080))
+        self.assertEqual(driver._move((960, 540)), "mouseto 0.750000 0.500000")
+
+    def test_dotool_clicks_scrolls_and_types_as_stdin_action_streams(self):
+        driver = HyprlandDriver.__new__(HyprlandDriver)
+        driver.width, driver.height = 800, 450
+        driver.monitor_rect = (0, 0, 800, 450)
+        driver.desktop_bounds = (0, 0, 800, 450)
+
+        with patch.object(driver, "_input") as send:
+            driver.execute("left_double", {"point": (10, 20)})
+            send.assert_called_once_with([
+                "mouseto 0.012500 0.044444", "click left", "click left",
+            ])
+            send.reset_mock()
+            for direction, command in (
+                ("up", "wheel 3"), ("down", "wheel -3"),
+                ("left", "hwheel 3"), ("right", "hwheel -3"),
+            ):
+                with self.subTest(direction=direction):
+                    driver.execute("scroll", {"point": (400, 200), "direction": direction})
+                    send.assert_called_once_with(["mouseto 0.500000 0.444444", command])
+                    send.reset_mock()
+            driver.execute("type", {"content": "first\nsecond\n"})
+            send.assert_called_once_with(["type first", "key enter", "type second", "key enter"])
 
     def test_driver_identifies_only_window_on_selected_monitor(self):
         driver = HyprlandDriver.__new__(HyprlandDriver)
@@ -124,6 +176,8 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(parsed["actions"][0]["key"], "ctrl+l")
         self.assertEqual(parsed["actions"][2]["key"], "Super_L")
         self.assertEqual(len(parsed["actions"]), 3)
+        parsed = parse_plan(action_plan([{"type": "key", "key": "x:Super_L"}]), (800, 450))
+        self.assertEqual(parsed["actions"][0]["key"], "x:Super_L")
 
     def test_plan_parser_rejects_invalid_or_out_of_bounds_actions(self):
         invalid = [
@@ -177,6 +231,41 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual([item[0] for item in driver.actions], ["hotkey", "type"])
         self.assertIn("Expected visible result", provider.calls[1][4])
         self.assertIn("executed press ctrl+l, type 'example.com'", provider.calls[1][3][0])
+
+    def test_invalid_plan_gets_one_fresh_screenshot_retry_without_partial_input(self):
+        driver = FakeDriver()
+        provider = FakeProvider(
+            action_plan([{"type": "click", "x": 10, "y": 10}] * 4),
+            action_plan([
+                {"type": "key", "key": "ctrl+l"},
+                {"type": "type", "text": "youtube.com"},
+                {"type": "key", "key": "enter"},
+            ]),
+            done_plan(),
+        )
+
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            result = run_computer("Open YouTube", driver=driver, provider=provider)
+
+        self.assertIn("complete", result)
+        self.assertEqual(driver.captures, 3)
+        self.assertEqual([item[0] for item in driver.actions], ["hotkey", "type", "hotkey"])
+        self.assertIn("No desktop input was sent", provider.calls[1][4])
+        self.assertIn("1–3 allowed actions", provider.calls[1][4])
+        self.assertIn("no desktop input was sent", provider.calls[1][3][-1])
+
+    def test_second_invalid_plan_stops_without_sending_desktop_input(self):
+        driver = FakeDriver()
+        invalid = action_plan([{"type": "click", "x": 10, "y": 10}] * 4)
+        provider = FakeProvider(invalid, invalid)
+
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            with self.assertRaisesRegex(ValueError, "1–3 actions"):
+                run_computer("Open YouTube", driver=driver, provider=provider)
+
+        self.assertEqual(driver.captures, 2)
+        self.assertEqual(driver.actions, [])
+        self.assertIn("No desktop input was sent", provider.calls[1][4])
 
     def test_model_can_ask_user_then_continue_with_answer(self):
         driver = FakeDriver()
@@ -345,8 +434,10 @@ class ComputerTests(unittest.TestCase):
         messages = complete.call_args.args[0]
         self.assertEqual(messages[0]["role"], "developer")
         self.assertIn("Return one JSON object", messages[0]["content"])
-        self.assertIn("Oryn wdotool operating guide:", messages[0]["content"])
-        self.assertIn("`Super_L` and `super_l` are not interchangeable", messages[0]["content"])
+        self.assertIn("Never return four or more actions", messages[0]["content"])
+        self.assertIn("do not click the page first", messages[0]["content"])
+        self.assertIn("Oryn dotool operating guide:", messages[0]["content"])
+        self.assertIn("Do not send an unprefixed XKB name like `Super_L`", messages[0]["content"])
         self.assertNotIn("120 ms", messages[0]["content"])
         self.assertIn("The screenshot is 1920x1080; coordinates start at the top-left.", messages[0]["content"])
         self.assertIn("Finish task", messages[1]["content"])

@@ -16,7 +16,8 @@ MAX_ACTIONS_PER_TURN = 3
 MAX_SECONDS = 300
 START_DELAY = 1
 MAX_RECOVERIES = 1
-KEY = re.compile(r"[a-zA-Z0-9_+ -]{1,60}\Z")
+MAX_PLAN_RECOVERIES = 1
+KEY = re.compile(r"[a-zA-Z0-9_:+ -]{1,60}\Z")
 PLAN_FIELDS = {
     "status", "summary", "question", "actions", "expected_result",
     "requires_confirmation", "confirmation_reason",
@@ -182,6 +183,7 @@ def run_computer(
     action_trace: list[str] = []
     last_result = ""
     recoveries = 0
+    plan_recoveries = 0
     pending_approval: dict | None = None
     pending_approval_window: str | None = None
     if trace:
@@ -229,7 +231,24 @@ def run_computer(
             if trace:
                 trace.write("planning_error", turn=turn, error_type=type(exc).__name__, error=str(exc))
             raise
-        plan = parse_plan(reply, size)
+        try:
+            plan = parse_plan(reply, size)
+        except ValueError as exc:
+            if trace:
+                trace.write(
+                    "planning_error", turn=turn, error_type=type(exc).__name__,
+                    error=str(exc), no_input_sent=True,
+                )
+            if plan_recoveries >= MAX_PLAN_RECOVERIES:
+                raise
+            plan_recoveries += 1
+            history.append(f"Turn {turn}: Oryn rejected the invalid plan; no desktop input was sent.")
+            last_result = (
+                f"Oryn rejected your previous plan: {exc} No desktop input was sent. "
+                "Recheck the fresh screenshot and return a corrected plan with 1–3 allowed "
+                "actions, or use ask_user/done with an empty actions list."
+            )
+            continue
         if trace:
             trace.write("validated_plan", turn=turn, plan=plan)
         _check_cancel(cancel_event)
