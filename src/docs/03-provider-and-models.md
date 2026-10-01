@@ -1,14 +1,14 @@
-# Codex provider and model controls
+# Providers and model controls
 
 [Handbook index](README.md) · [Previous: installation](02-installation-and-configuration.md) · [Next: loop and context](04-agent-loop-and-context.md)
 
-Primary source: [codex.py](../providers/codex.py), [types.py](../providers/types.py). Tests: [test_codex.py](../tests/test_codex.py).
+Primary sources: [codex.py](../providers/codex.py), [gemini.py](../providers/gemini.py), [router.py](../providers/router.py), [types.py](../providers/types.py). Tests: [test_codex.py](../tests/test_codex.py), [test_gemini.py](../tests/test_gemini.py).
 
 ## 1. What the provider is responsible for
 
 The provider translates between Oryn's Python representation and the remote model protocol. It owns authentication, request headers, model settings, Responses input serialization, and SSE response parsing. It does not choose which local file to edit, display an approval dialog, save a chat, or repeat tool rounds; those are other responsibilities.
 
-The concrete class is `CodexProvider`. The other provider modules are placeholders. There is no working multi-provider router at this snapshot.
+The concrete providers are `CodexProvider` and `GeminiProvider`. `provider_for_model()` in `router.py` sends `gemini-*` model IDs to Gemini and other IDs to Codex. Both providers return the same `ModelResponse` and `ToolCall` shapes, leaving tool execution in the shared conversation loop.
 
 The endpoint currently embedded in this implementation is:
 
@@ -268,6 +268,18 @@ The source fallback is `0.157.1` at this snapshot. The installed CLI check has a
 ## 10. Errors and present limits
 
 HTTP errors include the status and a bounded, control-cleaned body excerpt with local auth token values and Bearer credentials redacted. Unreachable endpoints get a connectivity error. `ProviderRequestError` carries an explicit `retryable` classification and a parsed `Retry-After` delay; the conversation loop decides whether to retry.
+
+## 11. Gemini API provider
+
+`GeminiProvider` uses Google's GenerateContent REST API and the standard library's `urllib`. It reads `GEMINI_API_KEY` from the process environment or `~/.mini-hermes/gemini.env`, sends the key in the `x-goog-api-key` header, and streams from `models/{model}:streamGenerateContent?alt=sse`. A missing key produces a local setup message before any request is sent.
+
+The model picker includes Gemini 3 text models. `gemini-3.8-flash` is the current default suggestion in the picker; `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview`, and `gemini-3-flash-preview` are also listed. Additional `gemini-*` IDs can be typed as custom model IDs, subject to Google account/model availability. Picker models expose low, medium, and high thinking levels. Custom IDs keep Google's default because Oryn has no capability metadata for arbitrary models. Gemini has no Codex priority service tier.
+
+The adapter converts Oryn's instructions to `systemInstruction`, messages to Gemini `contents`, images to `inlineData`, and local tools to `functionDeclarations` using their JSON Schemas. Function responses are sent back with the matching function-call ID. Gemini 3 requires the returned `thoughtSignature` to accompany a tool call on the next request, so the provider stores the original Gemini response parts in the assistant's saved history and replays them unchanged. The local loop still decides which tool to run and retains all existing approval and validation boundaries.
+
+Gemini's stream parser emits visible text as it arrives, collects complete function calls, rejects incomplete streams, surfaces blocked prompts, and classifies retryable HTTP/network failures for the shared retry logic. User PNG/JPEG attachments and `/computer` screenshots use the same image path. The Gemini provider does not use Codex login, Codex speed settings, or the OpenRouter key.
+
+Protocol references: Google's [model catalog](https://ai.google.dev/gemini-api/docs/models), [GenerateContent API](https://ai.google.dev/api/generate-content), and [Gemini 3 thought-signature guide](https://ai.google.dev/gemini-api/docs/generate-content/gemini-3).
 
 HTTP 429/500/502/503/504, eligible temporary socket failures, and an incomplete stream that contains only metadata can be retried before response output. Text or function-call data prevents automatic replay even when no UI delta callback is installed. Invalid requests, authentication failures, TLS errors, malformed events, and unknown failures are not classified as safe transient failures. There is no automatic model fallback, request cost meter, or alternate-provider routing.
 

@@ -21,7 +21,7 @@ from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
 from src.mcp.discovery import SERVER_NAMES, mcp_settings_path, save_enabled_servers
-from src.providers.codex import CodexProvider, auth_setup_warning
+from src.providers.router import provider_for_model, provider_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -50,10 +50,11 @@ class DashboardServer(ThreadingHTTPServer):
         project_root: Path,
         port: int = 9119,
         store: SQLiteSessionStore | None = None,
-        provider_factory: Callable[[str], Any] = CodexProvider,
+        provider_factory: Callable[[str], Any] = provider_for_model,
         mcp_client: MCPClient | None = None,
         mcp_settings_file: Path | None = None,
         turn_limits: TurnLimits | None = None,
+        model: str = MODEL,
     ) -> None:
         super().__init__(("127.0.0.1", port), DashboardHandler)
         self.project_root = validate_project_root(project_root.expanduser().resolve(strict=True))
@@ -61,7 +62,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.provider_factory = provider_factory
         self.mcp_client = mcp_client
         self.mcp_settings_file = mcp_settings_file
-        self.model = MODEL
+        self.model = model
         self.turn_limits = turn_limits or TurnLimits()
         self.token = secrets.token_urlsafe(32)
         self.state_lock = threading.Lock()
@@ -550,6 +551,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Local Oryn browser dashboard.")
     parser.add_argument("--project", type=Path, default=Path.cwd(), help="Project folder (default: current folder)")
     parser.add_argument("--port", type=int, default=9119)
+    parser.add_argument("--model", default=MODEL, help="Model ID, such as gpt-5.6-luna or gemini-3.8-flash")
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser tab")
     add_turn_arguments(parser)
     args = parser.parse_args(argv)
@@ -557,8 +559,10 @@ def main(argv: list[str] | None = None) -> None:
         limits = turn_limits_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
-    server = DashboardServer(args.project, args.port, mcp_client=MCPClient(), turn_limits=limits)
-    if warning := auth_setup_warning():
+    server = DashboardServer(
+        args.project, args.port, mcp_client=MCPClient(), turn_limits=limits, model=args.model,
+    )
+    if warning := provider_setup_warning(provider_for_model(server.model)):
         print(f"config> {warning}")
     for status in server.mcp_client.start():
         print(f"mcp> {status}")

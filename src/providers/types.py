@@ -45,3 +45,4 @@ class ToolCall:
 class ModelResponse:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    provider_data: dict[str, Any] = field(default_factory=dict)

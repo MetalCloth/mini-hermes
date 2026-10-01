@@ -37,7 +37,7 @@ class ChatDemoTests(unittest.TestCase):
         with patch("builtins.input", side_effect=KeyboardInterrupt):
             with patch.object(chat_demo, "SQLiteSessionStore") as store:
                 store.return_value.load_messages.return_value = []
-                with patch.object(chat_demo, "CodexProvider") as provider:
+                with patch.object(chat_demo, "provider_for_model") as provider:
                     with contextlib.redirect_stdout(output):
                         chat_demo.main([])
         provider.return_value.complete.assert_not_called()
@@ -72,7 +72,7 @@ class ChatDemoTests(unittest.TestCase):
             return ModelResponse(responses[len(histories) - 1])
 
         with patch("builtins.input", side_effect=["Hi", "What did I say?", "/quit"]):
-            with patch.object(chat_demo, "CodexProvider") as provider:
+            with patch.object(chat_demo, "provider_for_model") as provider:
                 with patch.object(chat_demo, "SQLiteSessionStore") as store:
                     store.return_value.load_messages.return_value = []
                     provider.return_value.complete.side_effect = complete
@@ -102,7 +102,7 @@ class ChatDemoTests(unittest.TestCase):
             store = SQLiteSessionStore(Path(folder) / "sessions.sqlite3")
             with patch.object(chat_demo, "SQLiteSessionStore", return_value=store):
                 with patch("builtins.input", side_effect=["Hi", "/quit"]):
-                    with patch.object(chat_demo, "CodexProvider") as provider:
+                    with patch.object(chat_demo, "provider_for_model") as provider:
                         provider.return_value.complete.return_value = ModelResponse("Hello")
                         with contextlib.redirect_stdout(output):
                             chat_demo.main([])
@@ -113,7 +113,7 @@ class ChatDemoTests(unittest.TestCase):
                     return ModelResponse("Welcome back")
 
                 with patch("builtins.input", side_effect=["Continue", "/quit"]):
-                    with patch.object(chat_demo, "CodexProvider") as provider:
+                    with patch.object(chat_demo, "provider_for_model") as provider:
                         provider.return_value.complete.side_effect = complete
                         with contextlib.redirect_stdout(output):
                             chat_demo.main([])
@@ -150,7 +150,7 @@ class ChatDemoTests(unittest.TestCase):
         with patch("builtins.input", side_effect=["Do something", "Continue", "/quit"]):
             with patch.object(chat_demo, "SQLiteSessionStore") as store:
                 store.return_value.load_messages.return_value = []
-                with patch.object(chat_demo, "CodexProvider") as provider:
+                with patch.object(chat_demo, "provider_for_model") as provider:
                     provider.return_value.complete.side_effect = complete
                     with patch("src.agent.conversation_loop.execute_tool", return_value="Note contents") as execute:
                         with contextlib.redirect_stdout(output):
@@ -197,7 +197,7 @@ class ChatDemoTests(unittest.TestCase):
             output = io.StringIO()
             with patch.object(chat_demo, "SQLiteSessionStore", return_value=store), \
                  patch("builtins.input", side_effect=["Make a note", "y", "Continue", "/quit"]), \
-                 patch.object(chat_demo, "CodexProvider") as provider, contextlib.redirect_stdout(output):
+                 patch.object(chat_demo, "provider_for_model") as provider, contextlib.redirect_stdout(output):
                 provider.return_value.complete.side_effect = [
                     ModelResponse(tool_calls=[ToolCall("write", "write_file", {"path": "note.txt", "content": "Created"})]),
                     ModelResponse("The note is already created."),
@@ -215,7 +215,7 @@ class ChatDemoTests(unittest.TestCase):
                  patch("builtins.input", side_effect=["Make another note", "/quit"]), \
                  patch.object(chat_demo, "_confirm_write", return_value=True), \
                  patch.object(chat_demo, "_approval_preview", side_effect=RuntimeError("Result display failed")), \
-                 patch.object(chat_demo, "CodexProvider") as provider, contextlib.redirect_stdout(io.StringIO()):
+                 patch.object(chat_demo, "provider_for_model") as provider, contextlib.redirect_stdout(io.StringIO()):
                 provider.return_value.complete.return_value = ModelResponse("Creating another note.", [
                     ToolCall("failed-ui", "write_file", {"path": "another.txt", "content": "Created"}),
                 ])

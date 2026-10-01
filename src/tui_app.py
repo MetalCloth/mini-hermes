@@ -36,8 +36,9 @@ from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
 from src.mcp.oauth import login_notion
-from src.providers.codex import CodexProvider, auth_setup_warning
+from src.providers.codex import AUTH_FILE
 from src.providers.computer import ComputerPlanner
+from src.providers.router import available_models, provider_for_model, provider_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -46,7 +47,6 @@ from src.tools.terminal_tool import TerminalJobManager
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
-GEMINI_PLACEHOLDER_ID = "gemini-flash-placeholder"
 COMMANDS = (
     ("new", "New session"),
     ("computer", "Use the computer for the next message"),
@@ -797,7 +797,7 @@ class OrynTUI(App[None]):
         project_root: Path,
         model: str,
         history: list[dict[str, Any]],
-        provider: CodexProvider,
+        provider: Any,
         mcp_client: MCPClient,
         initial_tools: list[dict[str, Any]],
         undo_history: list[FileChange] | None = None,
@@ -808,7 +808,9 @@ class OrynTUI(App[None]):
         self.session_id = session_id
         self.project_root = project_root
         self.model = model
-        self.model_labels = dict(provider.cached_models())
+        self._codex_auth_file = getattr(provider, "auth_file", AUTH_FILE)
+        self.model_labels = {model: label for model, label, _ in available_models(self._codex_auth_file)}
+        self.model_labels.setdefault(model, model)
         self.history = history
         self.saved_count = len(history)
         self.provider = provider
@@ -893,7 +895,7 @@ class OrynTUI(App[None]):
                             yield Button(self.model_labels.get(self.model, self.model), id="model-chip")
                             yield Button(self._effort_label(), id="effort-chip")
                             yield Button(self._speed_label(), id="speed-chip")
-                            yield Static("ChatGPT", id="provider-chip")
+                            yield Static(getattr(self.provider, "label", "ChatGPT"), id="provider-chip")
                     with Horizontal(id="composer-footer"):
                         yield Static("enter send   shift+enter new line", id="send-hint")
                         yield Static("/ commands", id="composer-commands")
@@ -905,7 +907,7 @@ class OrynTUI(App[None]):
     def on_mount(self) -> None:
         self._sync_home()
         self._refresh_header()
-        if warning := auth_setup_warning(getattr(self.provider, "auth_file", None)):
+        if warning := provider_setup_warning(self.provider):
             self._set_activity(warning, working=False, error=True)
         self.query_one("#composer", TextArea).focus()
         self._scroll_to_bottom(force=True)
@@ -1041,7 +1043,7 @@ class OrynTUI(App[None]):
         self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
         self._refresh_mcp_view()
         if not self.turn_active:
-            warning = auth_setup_warning(getattr(self.provider, "auth_file", None))
+            warning = provider_setup_warning(self.provider)
             self._set_activity(
                 warning or ("Ready · MCP connected" if event.schemas else "Ready"),
                 working=False, error=bool(warning),
@@ -1448,7 +1450,7 @@ class OrynTUI(App[None]):
         self.pending_images.clear()
         self._refresh_attachments()
         self.model = self.store.session_model(session_id) or DEFAULT_MODEL
-        self.provider = CodexProvider(self.model, self.provider.auth_file)
+        self.provider = provider_for_model(self.model, self._codex_auth_file)
         self._restore_model_settings()
         self.history = _base_history(project_root)
         self.history.extend(self.store.load_messages(session_id))
@@ -1518,21 +1520,16 @@ class OrynTUI(App[None]):
 
     async def _change_model(self) -> None:
         self._hide_palette()
-        models = dict(self.provider.cached_models())
+        catalog = {model: (label, provider) for model, label, provider in available_models(self._codex_auth_file)}
         for session_id in self.store.list_sessions():
             saved_model = self.store.session_model(session_id)
             if saved_model:
-                models.setdefault(saved_model, saved_model)
-        models.setdefault(self.model, self.model)
-        choices = [(model, label, "ChatGPT") for model, label in models.items()]
-        choices.append((
-            GEMINI_PLACEHOLDER_ID,
-            "Gemini Flash — coming soon (API not connected)",
-            "Gemini",
-        ))
+                catalog.setdefault(saved_model, (saved_model, "Gemini" if saved_model.startswith("gemini-") else "ChatGPT"))
+        catalog.setdefault(self.model, (self.model_labels.get(self.model, self.model),
+                                        getattr(self.provider, "label", "ChatGPT")))
+        choices = [(model, label, provider) for model, (label, provider) in catalog.items()]
         result = await self.push_screen_wait(ChoiceScreen(
             "Select model", choices, self.model, allow_custom=True,
-            disabled_choices={GEMINI_PLACEHOLDER_ID},
         ))
         if result:
             self._save_model(result)
@@ -1551,7 +1548,8 @@ class OrynTUI(App[None]):
         if not self.session_id:
             self._draft_model_settings[self.model] = self._model_settings()
         self.model = model
-        self.provider = CodexProvider(self.model, self.provider.auth_file)
+        self.provider = provider_for_model(self.model, self._codex_auth_file)
+        self.model_labels.setdefault(self.model, self.model)
         self._restore_model_settings()
         self._refresh_header()
         self._set_activity(
@@ -1601,7 +1599,7 @@ class OrynTUI(App[None]):
             previous = self._model_settings()
             settings = {**previous, field: value}
             try:
-                next_provider = CodexProvider(self.model, self.provider.auth_file)
+                next_provider = provider_for_model(self.model, self._codex_auth_file)
                 next_provider.configure(**settings)
                 if self.session_id:
                     self.store.set_session_model_settings(self.session_id, self.model, settings)
@@ -1646,6 +1644,7 @@ class OrynTUI(App[None]):
         self.query_one("#topbar-title", Static).update(title)
         self.query_one("#topbar-project", Static).update(self.project_root.name or "Project")
         self.query_one("#model-chip", Button).label = self.model_labels.get(self.model, self.model)
+        self.query_one("#provider-chip", Static).update(getattr(self.provider, "label", "ChatGPT"))
         self.query_one("#effort-chip", Button).label = self._effort_label()
         self.query_one("#speed-chip", Button).label = self._speed_label()
         self.query_one("#workspace-path", Static).update(self._project_label())
@@ -1745,7 +1744,7 @@ class OrynTUI(App[None]):
     def _run_turn(
         self,
         history: list[dict[str, Any]],
-        provider: CodexProvider,
+        provider: Any,
         tools: list[dict[str, Any]],
         project_root: Path,
         cancel_event: threading.Event,
@@ -1809,7 +1808,7 @@ class OrynTUI(App[None]):
         finished.elapsed_seconds = max(0.0, monotonic() - started_at)
         self.post_message(finished)
 
-    def _run_computer_task(self, task: str, cancel_event: threading.Event, provider: CodexProvider) -> None:
+    def _run_computer_task(self, task: str, cancel_event: threading.Event, provider: Any) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         dry_run = task.startswith("--dry-run ")
         if dry_run:
@@ -1880,7 +1879,7 @@ def _base_history(project_root: Path) -> list[dict[str, Any]]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Open Oryn's full-screen terminal chat.")
-    parser.add_argument("--model", help=f"Codex model slug (saved model when resuming, otherwise {DEFAULT_MODEL})")
+    parser.add_argument("--model", help=f"Model ID (saved model when resuming, otherwise {DEFAULT_MODEL})")
     parser.add_argument("--effort", help="reasoning effort from the model catalog, or default")
     parser.add_argument("--speed", help="standard or fast, when supported by the selected model")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
@@ -1945,7 +1944,7 @@ def main(argv: list[str] | None = None) -> None:
             project_root=project_root,
             model=model,
             history=history,
-            provider=CodexProvider(model),
+            provider=provider_for_model(model),
             mcp_client=mcp_client,
             initial_tools=tool_schemas(),
             turn_limits=limits,

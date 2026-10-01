@@ -10,7 +10,7 @@ from src.agent.conversation_loop import TurnLimitReached, add_turn_arguments, ru
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
-from src.providers.codex import CodexProvider, auth_setup_warning
+from src.providers.router import provider_for_model, provider_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SESSION_ID, SQLiteSessionStore
 from src.tools.file_tools import FileChange
@@ -94,8 +94,8 @@ def _confirm_mcp(name: str, preview: str) -> bool:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Chat with a Codex model.")
-    parser.add_argument("--model", default="gpt-5.6-luna", help="Codex model slug")
+    parser = argparse.ArgumentParser(description="Chat with an Oryn-supported model.")
+    parser.add_argument("--model", default="gpt-5.6-luna", help="Model ID, such as gpt-5.6-luna or gemini-3.8-flash")
     parser.add_argument("--project", type=Path, metavar="DIR", help="project folder (default: current folder)")
     add_turn_arguments(parser)
     session_options = parser.add_mutually_exclusive_group()
@@ -168,8 +168,8 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as exc:
         print(f"Could not access sessions at {DEFAULT_DB_PATH}: {exc}")
         return
-    provider = CodexProvider(args.model)
-    if warning := auth_setup_warning(provider.auth_file):
+    provider = provider_for_model(args.model)
+    if warning := provider_setup_warning(provider):
         print(f"config> {warning}")
     try:
         project_instructions = load_project_instructions(project_root)

@@ -17,6 +17,7 @@ from src.agent.context import select_context
 from src.agent.conversation_loop import TurnCancelled
 from src.mcp.client import MCPClient
 from src.providers.codex import CodexProvider
+from src.providers.gemini import GeminiProvider
 from src.providers.types import ModelResponse, ToolCall
 from src.session.sqlite_store import SQLiteSessionStore
 from src.tools.registry import execute_tool, tool_schemas
@@ -94,7 +95,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     selected_provider = app.provider
                     with patch.object(tui_app, "START_DELAY", 0), \
                          patch.object(tui_app, "run_computer", return_value="Dry run: click (400, 200)") as computer, \
-                         patch.object(selected_provider, "complete") as codex:
+                         patch.object(selected_provider, "complete") as provider_complete:
                         app.query_one("#composer", TextArea).load_text("/computer --dry-run click Settings")
                         await pilot.press("enter")
                         app._turn_thread.join(timeout=5)
@@ -102,11 +103,11 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(app.turn_active)
                     self.assertEqual(computer.call_args.args[0], "click Settings")
                     self.assertTrue(computer.call_args.kwargs["dry_run"])
-                    self.assertIs(computer.call_args.kwargs["provider"].codex, selected_provider)
+                    self.assertIs(computer.call_args.kwargs["provider"].provider, selected_provider)
                     self.assertEqual(selected_provider.model, "gpt-6-sol")
                     self.assertEqual(selected_provider.reasoning_effort, "high")
                     self.assertEqual(selected_provider.service_tier, "priority")
-                    codex.assert_not_called()
+                    provider_complete.assert_not_called()
                     messages = store.load_messages(app.session_id)
                     self.assertEqual(messages[0]["content"], "/computer --dry-run click Settings")
                     self.assertEqual(messages[1]["content"], "Dry run: click (400, 200)")
@@ -210,7 +211,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(tui_app, "SQLiteSessionStore", return_value=store), \
                  patch.object(tui_app, "APP_ROOT", root), \
                  patch.object(tui_app, "_resolve_project_root", return_value=root), \
-                 patch.object(tui_app, "CodexProvider", side_effect=lambda model: CodexProvider(model, root / "auth.json")), \
+                 patch.object(tui_app, "provider_for_model", side_effect=lambda model, auth_file=None: CodexProvider(model, root / "auth.json")), \
                  patch.object(tui_app, "MCPClient", side_effect=lambda: MCPClient(configs=[])), \
                  patch.object(OrynTUI, "run", autospec=True) as run:
                 for arguments in ([], [], ["--new"], ["--project", str(root)]):
@@ -855,23 +856,20 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     gemini = next(
                         options.get_option_at_index(index)
                         for index in range(options.option_count)
-                        if options.get_option_at_index(index).id == tui_app.GEMINI_PLACEHOLDER_ID
+                        if options.get_option_at_index(index).id == "gemini-3.8-flash"
                     )
-                    self.assertTrue(gemini.disabled)
-                    search = app.screen.query_one(Input)
-                    search.value = "Gemini"
+                    self.assertFalse(gemini.disabled)
+                    await pilot.press("escape")
                     await pilot.pause()
-                    await pilot.press("enter")
-                    await pilot.pause()
-                    self.assertEqual(len(app.screen_stack), 2)
                     self.assertEqual(app.model, provider.model)
-                    search.value = ""
                     await pilot.pause()
                     # Repeated shortcuts must not stack dialogs.
                     await pilot.press("f2", "ctrl+o")
                     await pilot.pause()
                     self.assertEqual(len(app.screen_stack), 2)
-                    await pilot.press("down", "enter")
+                    app.screen.query_one(Input).value = "GPT-6-Sol"
+                    await pilot.pause()
+                    await pilot.press("enter")
                     await pilot.pause()
                     self.assertEqual(app.model, "gpt-6-sol")
                     self.assertEqual(store.session_model(current), "gpt-6-sol")
@@ -1012,6 +1010,30 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                                     self.assertGreater(scroll.virtual_size.height, scroll.content_region.height)
                                 await pilot.press("escape")
                                 await pilot.pause()
+            finally:
+                mcp.close()
+
+    async def test_selecting_gemini_model_uses_gemini_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
+            mcp = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id="", project_root=root, model=provider.model,
+                history=[], provider=provider, mcp_client=mcp, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(120, 38)) as pilot:
+                    await pilot.click("#model-chip")
+                    await pilot.pause()
+                    app.screen.query_one(Input).value = "Gemini 3.8"
+                    await pilot.pause()
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(app.model, "gemini-3.8-flash")
+                    self.assertIsInstance(app.provider, GeminiProvider)
+                    self.assertEqual(str(app.query_one("#provider-chip").content), "Gemini")
             finally:
                 mcp.close()
 

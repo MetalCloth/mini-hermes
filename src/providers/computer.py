@@ -1,21 +1,21 @@
-"""Screenshot-to-action planning through Oryn's selected Codex provider."""
+"""Screenshot-to-action planning through Oryn's selected model provider."""
 
 import json
 import threading
 from pathlib import Path
+from typing import Any
 
 from src.agent.skills import load_skill
 from src.images import prepare_image
 from src.computer_logging import ComputerTrace
-from src.providers.codex import CodexProvider
 
 
 _COMPUTER_SKILL_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ComputerPlanner:
-    def __init__(self, codex: CodexProvider, trace: ComputerTrace | None = None) -> None:
-        self.codex = codex
+    def __init__(self, provider: Any, trace: ComputerTrace | None = None) -> None:
+        self.provider = provider
         self.trace = trace
         self.wdotool_guide = load_skill(_COMPUTER_SKILL_ROOT, "computer-wdotool").instructions
 
@@ -69,9 +69,9 @@ class ComputerPlanner:
         if self.trace:
             self.trace.write(
                 "model_request",
-                model=self.codex.model,
-                reasoning_effort=self.codex.reasoning_effort,
-                service_tier=self.codex.service_tier,
+                model=self.provider.model,
+                reasoning_effort=self.provider.reasoning_effort,
+                service_tier=self.provider.service_tier,
                 developer_instructions=instructions,
                 user_content=user_content,
                 screenshot={
@@ -80,7 +80,7 @@ class ComputerPlanner:
                 },
             )
         try:
-            response = self.codex.complete(messages, cancel_event=cancel_event)
+            response = self.provider.complete(messages, cancel_event=cancel_event)
         except Exception as exc:
             if self.trace:
                 self.trace.write("model_error", error_type=type(exc).__name__, error=str(exc))

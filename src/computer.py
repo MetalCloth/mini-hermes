@@ -187,9 +187,9 @@ def run_computer(
     if trace:
         trace.write(
             "computer_task_start", task=task, dry_run=dry_run,
-            model=provider.codex.model,
-            reasoning_effort=provider.codex.reasoning_effort,
-            service_tier=provider.codex.service_tier,
+            model=provider.provider.model,
+            reasoning_effort=provider.provider.reasoning_effort,
+            service_tier=provider.provider.service_tier,
         )
 
     for turn in range(1, MAX_TURNS + 1):

@@ -12,8 +12,10 @@ The word **harness** means this surrounding machinery. A strong harness makes th
 
 | Responsibility | Implemented owner | What it does |
 | --- | --- | --- |
+| Provider selection | [router.py](../providers/router.py) | Routes `gemini-*` model IDs to Gemini and other model IDs to Codex |
 | Codex transport | [codex.py](../providers/codex.py) | Reads login credentials, refreshes tokens, creates Responses requests, parses streaming responses |
-| Provider result types | [types.py](../providers/types.py) | Defines a `ToolCall` and a `ModelResponse` |
+| Gemini transport | [gemini.py](../providers/gemini.py) | Reads the local API key, converts history/tools/images, streams GenerateContent responses |
+| Provider result types | [types.py](../providers/types.py) | Defines a `ToolCall` and a `ModelResponse`, including provider metadata needed to continue tool calls |
 | Turn execution | [conversation_loop.py](../agent/conversation_loop.py) | Repeats model requests and sequential tool execution, enforces round and result limits |
 | Context preparation | [context.py](../agent/context.py), [compression.py](../agent/compression.py) | Estimates request tokens, compacts older completed turns, and selects recent whole turns |
 | Product instructions | [system_prompt.py](../agent/system_prompt.py) | Supplies Oryn identity, formatting guidance, tool discipline, and recovery instructions |

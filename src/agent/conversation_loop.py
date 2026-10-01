@@ -265,6 +265,8 @@ def run_turn(
                 "content": response.text,
                 "tool_calls": [],
             }
+            if response.provider_data:
+                call_message["provider_data"] = response.provider_data
             completed_calls = []
             for call in response.tool_calls:
                 if turn_cancel.is_set():

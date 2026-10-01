@@ -86,6 +86,7 @@ The placeholder paths in examples should be replaced with real directories. The 
 ./oryn --search "a phrase in previous conversations"
 ./oryn --resume SESSION_ID
 ./oryn --model gpt-5.6-luna
+./oryn --model gemini-3.8-flash
 ```
 
 Normal TUI launches open the home page with a fresh chat in the selected project. `--new` remains an explicit spelling of that default. To return to saved messages, use `/sessions`, Ctrl+O, or `--resume SESSION_ID`.
@@ -96,7 +97,7 @@ The TUI also accepts effort and speed flags. Their values must be supported by t
 ./oryn --model gpt-6-astra --effort high --speed fast
 ```
 
-This is an example of setting a model ID, not a promise that that model or priority tier is enabled for every account. Unknown model capabilities retain defaults; unsupported settings are rejected.
+This is an example of setting a model ID, not a promise that a model is enabled for every account. Codex effort and priority choices depend on its local catalog. Gemini reasoning choices depend on the selected Gemini model; Gemini does not use Codex's priority tier.
 
 ### Original terminal REPL
 
@@ -143,7 +144,7 @@ Vite proxies `/api` to the local backend on port 9119. Its configuration adjusts
 | `~/.mini-hermes/sessions.sqlite3` | Saved transcripts and session metadata | SQLite store |
 | `~/.mini-hermes/tavily.env` | Native Tavily search key | Native web tool configuration |
 | `~/.mini-hermes/firecrawl.env` | Native Firecrawl extraction/browser key | Native web tool configuration |
-| `~/.mini-hermes/gemini.env` | Reserved for a future Gemini API key; currently unused | Future Gemini provider |
+| `~/.mini-hermes/gemini.env` | Gemini API key as `GEMINI_API_KEY=...` | Gemini GenerateContent provider |
 | `~/.mini-hermes/mcp.env` | Keys for MCP presets | MCP configuration |
 | `~/.mini-hermes/mcp-settings.json` | Enabled switches and known-server migration information | MCP preferences |
 | `~/.mini-hermes/mcp-notion-auth.json` | Notion OAuth client/token data and metadata | OAuth token storage |
@@ -242,6 +243,17 @@ flowchart TD
 **Important:** the native `web_search` tool reads `tavily.env`, not `mcp.env`. The native Firecrawl tools read `firecrawl.env`. MCP presets can fall back to those native key files. The fallback works from MCP configuration toward native files; merely putting a key in `mcp.env` does not configure the native tool. A process environment variable can configure both paths.
 
 Repository `.env.example` documents native placeholders. Oryn does not automatically load every `.env` file from the active project.
+
+For Gemini, copy the `GEMINI_API_KEY` assignment from [.env.example](../../.env.example) into `~/.mini-hermes/gemini.env`, enter the key after `=`, and restrict the file to your user:
+
+```bash
+mkdir -p ~/.mini-hermes
+chmod 700 ~/.mini-hermes
+nano ~/.mini-hermes/gemini.env
+chmod 600 ~/.mini-hermes/gemini.env
+```
+
+The provider reads the key from `~/.mini-hermes/gemini.env` or the `GEMINI_API_KEY` process environment variable. It does not read a project-local `.env` file. Select a Gemini model with `/models`, `./oryn --model gemini-3.8-flash`, `./oryn repl --model gemini-3.8-flash`, or `./oryn dashboard --model gemini-3.8-flash`.
 
 ## 9. MCP configuration
 

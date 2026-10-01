@@ -1,6 +1,6 @@
 # Oryn
 
-Oryn is a local, educational coding assistant built around a Codex model. It has a Python agent loop and tools, SQLite chat history, a full-screen terminal UI, MCP connections, and a React dashboard.
+Oryn is a local, educational coding assistant with Codex and Gemini model providers. It has a Python agent loop and tools, SQLite chat history, a full-screen terminal UI, MCP connections, and a React dashboard.
 
 ## Detailed documentation
 
@@ -63,13 +63,13 @@ Paste a PNG or JPEG into the composer with Ctrl+V. The draft shows a pasted-imag
 
 You can also type `/effort high`, `/effort default`, `/speed fast`, or `/speed standard` directly. Oryn sends the catalog's client version in provider requests, falling back to the installed `codex --version`, instead of hardcoding the old `0.144.1` version. Open the Codex CLI to refresh its catalog after upgrading it.
 
-The model picker shows a disabled Gemini Flash placeholder for future support. The `GEMINI_API_KEY` entry in [.env.example](.env.example) is only a placeholder; this build does not read it or send Gemini requests. The planned local key file is `~/.mini-hermes/gemini.env`.
+Choose Gemini models from `/models` or launch Oryn with `--model gemini-3.8-flash`. Put `GEMINI_API_KEY=your-key` in `~/.mini-hermes/gemini.env`; the key is read from that file or the `GEMINI_API_KEY` environment variable and sent only in Google's API-key header. Oryn currently lists Gemini 3 text models, supports image input, streamed text, tool calls, and adjustable reasoning. The selected provider is also used by `/computer`.
 
 Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
-## Computer mode (selected Codex model)
+## Computer mode (selected model)
 
-On a Hyprland desktop, install `grim` and [wdotool](https://github.com/cushycush/wdotool), and sign in with `codex login`. Oryn also finds `wdotool` in this checkout's `.venv/bin`. Screenshots of the focused monitor are sent at the monitor's native resolution through Oryn's existing Codex provider and login. `/computer` uses the model, reasoning effort, and speed currently selected in Oryn. The model must support image input. The default model is `gpt-5.6-luna`; you can choose another with `/models`. `/computer` does not use the OpenRouter key.
+On a Hyprland desktop, install `grim` and [wdotool](https://github.com/cushycush/wdotool), and configure the selected provider: `codex login` for Codex or `GEMINI_API_KEY` for Gemini. Oryn also finds `wdotool` in this checkout's `.venv/bin`. Screenshots of the focused monitor are sent at the monitor's native resolution. `/computer` uses the model, reasoning effort, and speed currently selected in Oryn. The model must support image input. The default model is `gpt-5.6-luna`; you can choose another with `/models`. `/computer` does not use the OpenRouter key.
 
 Select `/computer` from the command list, or type `/computer` and press Enter. A slim line above the composer shows that your next message will control the desktop. Type the task normally and press Enter; the line disappears as soon as that message is sent. Press Esc to cancel before sending. You can also enter `/computer open Settings` as a one-message shortcut. You have one second to switch to the target app before the first screenshot. The selected model receives the task and screenshot and returns a checked JSON plan with up to three click, double-click, right-click, type, key, or scroll actions. The local driver runs only these allowlisted actions, then Oryn takes a fresh screenshot and asks the model to verify progress. The model can ask you a clarification; actions it marks as sending, deleting, buying, publishing, or submitting require your approval before execution. After answering or approving in Oryn, switch back to the target app within one second. Oryn takes a fresh screenshot before acting. If the active window changes while Oryn captures the screen or the model plans, it discards that screenshot or plan and reobserves; if it changes during an action batch, completed actions are kept and remaining actions are replanned. An approved action expires if the active window changes or the model proposes a different action. The loop stops when the model confirms completion, after 20 model calls or 5 minutes, after a second desktop-driver failure, or when you stop the active turn.
 

@@ -223,6 +223,8 @@ def _tool_call(item: dict[str, Any]) -> ToolCall:
 class CodexProvider:
     """Translate Oryn messages and tools for the Codex Responses endpoint."""
 
+    label = "ChatGPT"
+
     def __init__(
         self, model: str, auth_file: Path = AUTH_FILE, *,
         reasoning_effort: str = "default", service_tier: str = "default",
