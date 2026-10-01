@@ -63,6 +63,8 @@ Paste a PNG or JPEG into the composer with Ctrl+V. The draft shows a pasted-imag
 
 You can also type `/effort high`, `/effort default`, `/speed fast`, or `/speed standard` directly. Oryn sends the catalog's client version in provider requests, falling back to the installed `codex --version`, instead of hardcoding the old `0.144.1` version. Open the Codex CLI to refresh its catalog after upgrading it.
 
+The model picker shows a disabled Gemini Flash placeholder for future support. The `GEMINI_API_KEY` entry in [.env.example](.env.example) is only a placeholder; this build does not read it or send Gemini requests. The planned local key file is `~/.mini-hermes/gemini.env`.
+
 Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
 ## Computer mode (selected Codex model)
@@ -71,7 +73,7 @@ On a Hyprland desktop, install `grim` and [wdotool](https://github.com/cushycush
 
 Select `/computer` from the command list, or type `/computer` and press Enter. A slim line above the composer shows that your next message will control the desktop. Type the task normally and press Enter; the line disappears as soon as that message is sent. Press Esc to cancel before sending. You can also enter `/computer open Settings` as a one-message shortcut. You have one second to switch to the target app before the first screenshot. The selected model receives the task and screenshot and returns a checked JSON plan with up to three click, double-click, right-click, type, key, or scroll actions. The local driver runs only these allowlisted actions, then Oryn takes a fresh screenshot and asks the model to verify progress. The model can ask you a clarification; actions it marks as sending, deleting, buying, publishing, or submitting require your approval before execution. After answering or approving in Oryn, switch back to the target app within one second. Oryn takes a fresh screenshot before acting. If the active window changes while Oryn captures the screen or the model plans, it discards that screenshot or plan and reobserves; if it changes during an action batch, completed actions are kept and remaining actions are replanned. An approved action expires if the active window changes or the model proposes a different action. The loop stops when the model confirms completion, after 20 model calls or 5 minutes, after a second desktop-driver failure, or when you stop the active turn.
 
-Before each text-typing action, the local driver waits 150 ms before calling `wdotool type`; this short startup pause is intended to reduce the chance that the first character is dropped.
+Text-typing actions use `wdotool type --delay 0`: the driver adds no startup pause or per-character delay.
 
 Use `/computer --dry-run open Settings` to preview the first proposed action batch without sending desktop input.
 

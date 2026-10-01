@@ -143,6 +143,7 @@ Vite proxies `/api` to the local backend on port 9119. Its configuration adjusts
 | `~/.mini-hermes/sessions.sqlite3` | Saved transcripts and session metadata | SQLite store |
 | `~/.mini-hermes/tavily.env` | Native Tavily search key | Native web tool configuration |
 | `~/.mini-hermes/firecrawl.env` | Native Firecrawl extraction/browser key | Native web tool configuration |
+| `~/.mini-hermes/gemini.env` | Reserved for a future Gemini API key; currently unused | Future Gemini provider |
 | `~/.mini-hermes/mcp.env` | Keys for MCP presets | MCP configuration |
 | `~/.mini-hermes/mcp-settings.json` | Enabled switches and known-server migration information | MCP preferences |
 | `~/.mini-hermes/mcp-notion-auth.json` | Notion OAuth client/token data and metadata | OAuth token storage |

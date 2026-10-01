@@ -65,7 +65,7 @@ class ComputerLoggingTests(unittest.TestCase):
             try:
                 with patch("src.tools.computer_driver.subprocess.run") as run:
                     run.return_value = subprocess.CompletedProcess([], 0, b"", b"")
-                    driver._input("type", "--file", "-", input_data=b"hello")
+                    driver._input("type", "--delay", "0", "--file", "-", input_data=b"hello")
                     run.side_effect = subprocess.CalledProcessError(
                         1, [driver.wdotool], stderr=b"unknown key name: windows",
                     )
@@ -77,7 +77,7 @@ class ComputerLoggingTests(unittest.TestCase):
             records = [json.loads(line) for line in path.read_text().splitlines()]
             self.assertEqual(records[0]["event"], "wdotool_start")
             self.assertEqual(records[0]["argv"], [
-                "/repo/.venv/bin/wdotool", "--backend", "wlr-protocols", "type", "--file", "-",
+                "/repo/.venv/bin/wdotool", "--backend", "wlr-protocols", "type", "--delay", "0", "--file", "-",
             ])
             self.assertEqual(records[0]["stdin"], "hello")
             self.assertEqual(records[-1]["stderr"], "unknown key name: windows")
@@ -87,7 +87,7 @@ class ComputerLoggingTests(unittest.TestCase):
         driver = HyprlandDriver.__new__(HyprlandDriver)
         with patch.object(driver, "_input") as send:
             driver.execute("type", {"content": "hello"})
-            send.assert_called_once_with("type", "--file", "-", input_data=b"hello")
+            send.assert_called_once_with("type", "--delay", "0", "--file", "-", input_data=b"hello")
             send.reset_mock()
             driver.execute("type", {"content": "hello\n"})
             self.assertEqual(send.call_count, 2)

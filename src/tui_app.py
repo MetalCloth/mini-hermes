@@ -46,6 +46,7 @@ from src.tools.terminal_tool import TerminalJobManager
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
+GEMINI_PLACEHOLDER_ID = "gemini-flash-placeholder"
 COMMANDS = (
     ("new", "New session"),
     ("computer", "Use the computer for the next message"),
@@ -282,6 +283,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self, title: str, choices: list[tuple[str, str, str]],
         current: str, *, allow_custom: bool = False, store: SQLiteSessionStore | None = None,
         descriptions: dict[str, str] | None = None,
+        disabled_choices: set[str] | None = None,
     ) -> None:
         super().__init__(classes="sessions-picker" if store else "model-picker")
         self.title = title
@@ -290,6 +292,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.allow_custom = allow_custom
         self.store = store
         self.descriptions = descriptions or {}
+        self.disabled_choices = disabled_choices or set()
         self._renaming: str | None = None
         self._deleting: str | None = None
 
@@ -341,7 +344,9 @@ class ChoiceScreen(ModalScreen[str | None]):
             choice for choice in self.choices
             if query.casefold() in " ".join(choice).casefold()
         ]
-        if self.allow_custom and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", query):
+        matched_disabled_choice = any(choice[0] in self.disabled_choices for choice in matches)
+        if (self.allow_custom and not matched_disabled_choice
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", query)):
             if query not in {choice[0] for choice in self.choices}:
                 matches.append((query, f"Use {query}", "Custom model ID"))
         rows: list[Option] = []
@@ -353,7 +358,10 @@ class ChoiceScreen(ModalScreen[str | None]):
                 marker = "●" if choice_id == self.current else ("○" if self.descriptions else " ")
                 if choice_id == self._deleting:
                     label = "Press ctrl+d again to confirm deletion"
-                rows.append(Option(self._choice_prompt(marker, label, choice_id), id=choice_id))
+                rows.append(Option(
+                    self._choice_prompt(marker, label, choice_id), id=choice_id,
+                    disabled=choice_id in self.disabled_choices,
+                ))
         options = self.query_one("#picker-options", OptionList)
         options.set_options(rows)
         options.display = bool(matches)
@@ -363,9 +371,12 @@ class ChoiceScreen(ModalScreen[str | None]):
         description = self.query_one("#picker-description", Static)
         description.display = bool(matches and self.descriptions)
         self.query_one("#picker-details").display = description.display
-        highlighted = next((i for i, row in enumerate(rows) if row.id == (selected or self.current)), None)
+        highlighted = next((
+            i for i, row in enumerate(rows)
+            if row.id == (selected or self.current) and not row.disabled
+        ), None)
         options.highlighted = highlighted if highlighted is not None else next(
-            (i for i, row in enumerate(rows) if row.id), None,
+            (i for i, row in enumerate(rows) if row.id and not row.disabled), None,
         )
         self.call_after_refresh(options.scroll_to_highlight)
 
@@ -408,7 +419,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._choose(event.option.id)
 
     def _choose(self, choice_id: str) -> None:
-        self.dismiss(choice_id)
+        if choice_id not in self.disabled_choices:
+            self.dismiss(choice_id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         self.query_one("#picker-description", Static).update(self.descriptions.get(self._selected_session(), ""))
@@ -1512,9 +1524,15 @@ class OrynTUI(App[None]):
             if saved_model:
                 models.setdefault(saved_model, saved_model)
         models.setdefault(self.model, self.model)
+        choices = [(model, label, "ChatGPT") for model, label in models.items()]
+        choices.append((
+            GEMINI_PLACEHOLDER_ID,
+            "Gemini Flash — coming soon (API not connected)",
+            "Gemini",
+        ))
         result = await self.push_screen_wait(ChoiceScreen(
-            "Select model", [(model, label, "ChatGPT") for model, label in models.items()],
-            self.model, allow_custom=True,
+            "Select model", choices, self.model, allow_custom=True,
+            disabled_choices={GEMINI_PLACEHOLDER_ID},
         ))
         if result:
             self._save_model(result)

@@ -1,6 +1,7 @@
 .venv/
 .env
 mcp.env
+gemini.env
 logs/
 __pycache__/
 *.py[cod]

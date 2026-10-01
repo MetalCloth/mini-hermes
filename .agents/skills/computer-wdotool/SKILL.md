@@ -30,9 +30,9 @@ The local driver explicitly invokes `wdotool --backend wlr-protocols`. It does n
 | `right_click` | Move to `(x, y)`, then `wdotool click 3` (right button). |
 | `scroll` | Move to `(x, y)`, then send a three-unit scroll: up `(0, -3)`, down `(0, 3)`, left `(-3, 0)`, right `(3, 0)`. |
 | `key` | Send one key or chord through `wdotool key <chain>`. Oryn permits at most three key names in a chain. |
-| `type` | Send the exact UTF-8 text to `wdotool type --file -` through stdin. If the text ends with a newline, Oryn removes exactly the final newline and sends `Return` as a separate key action. |
+| `type` | Send the exact UTF-8 text to `wdotool type --delay 0 --file -` through stdin. If the text ends with a newline, Oryn removes exactly the final newline and sends `Return` as a separate key action. |
 
-The checked-in `.venv/bin/wdotool` reports version 0.5.3 and a 12 ms default delay between typed characters. Oryn does not override that per-character delay. The driver prefers a `wdotool` found on `PATH`, so another installed version may have different defaults.
+The checked-in `.venv/bin/wdotool` reports version 0.5.3 and defaults to a 12 ms delay between typed characters. Oryn explicitly passes `--delay 0` and adds no pause before typing. The driver prefers a `wdotool` found on `PATH`, so another installed version may differ in other behavior.
 
 ## Key names and chords
 

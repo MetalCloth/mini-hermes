@@ -5,7 +5,6 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from time import sleep
 
 from PIL import Image
 
@@ -136,13 +135,12 @@ class HyprlandDriver:
             self._input("key", args["key"])
         elif name == "type":
             content = args["content"]
-            sleep(0.15)
             if content.endswith("\n"):
                 if content[:-1]:
-                    self._input("type", "--file", "-", input_data=content[:-1].encode("utf-8"))
+                    self._input("type", "--delay", "0", "--file", "-", input_data=content[:-1].encode("utf-8"))
                 self._input("key", "Return")
             else:
-                self._input("type", "--file", "-", input_data=content.encode("utf-8"))
+                self._input("type", "--delay", "0", "--file", "-", input_data=content.encode("utf-8"))
 
 
 def _output_text(value: bytes | str | None) -> str:

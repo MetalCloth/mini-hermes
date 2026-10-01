@@ -851,6 +851,22 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(app.screen_stack), 2)
                     self.assertEqual(app.screen.styles.background.a, 0)
                     self.assertEqual(app.screen.query_one(OptionList).highlighted_option.id, provider.model)
+                    options = app.screen.query_one(OptionList)
+                    gemini = next(
+                        options.get_option_at_index(index)
+                        for index in range(options.option_count)
+                        if options.get_option_at_index(index).id == tui_app.GEMINI_PLACEHOLDER_ID
+                    )
+                    self.assertTrue(gemini.disabled)
+                    search = app.screen.query_one(Input)
+                    search.value = "Gemini"
+                    await pilot.pause()
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(len(app.screen_stack), 2)
+                    self.assertEqual(app.model, provider.model)
+                    search.value = ""
+                    await pilot.pause()
                     # Repeated shortcuts must not stack dialogs.
                     await pilot.press("f2", "ctrl+o")
                     await pilot.pause()
