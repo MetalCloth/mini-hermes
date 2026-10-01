@@ -13,8 +13,8 @@ from PIL import Image
 
 from src.computer_logging import ComputerTrace
 from src.providers.codex import CodexProvider
-from src.providers.computer import ComputerPlanner
-from src.providers.types import ModelResponse, ProviderRequestError
+from src.providers.computer import COMPUTER_PLAN_TOOL, ComputerPlanner
+from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 from src.tools.computer_driver import HyprlandDriver
 
 
@@ -31,15 +31,24 @@ class ComputerLoggingTests(unittest.TestCase):
                 "expected_result": "The launcher opens", "requires_confirmation": False,
                 "confirmation_reason": "",
             }
+            tool_arguments = {
+                **plan,
+                "actions": [{
+                    "type": "key", "x": None, "y": None,
+                    "direction": None, "key": "super", "text": None,
+                }],
+            }
             provider = CodexProvider("gpt-6-sol")
             planner = ComputerPlanner(provider, trace)
             try:
                 with patch.object(
-                    provider, "complete", return_value=ModelResponse(json.dumps(plan), []),
-                ):
+                    provider, "complete", return_value=ModelResponse(
+                        "", [ToolCall("call-1", "computer_plan", tool_arguments)],
+                    ),
+                ) as complete:
                     self.assertEqual(
                         planner.next_plan("Open Brave", image.getvalue(), (800, 450), [], ""),
-                        json.dumps(plan),
+                        {**plan, "actions": [{"type": "key", "key": "super"}]},
                     )
             finally:
                 trace.close()
@@ -55,8 +64,11 @@ class ComputerLoggingTests(unittest.TestCase):
             )
             self.assertIsInstance(request["screenshot"]["size_bytes"], int)
             self.assertEqual(response["event"], "model_response")
-            self.assertEqual(response["text"], json.dumps(plan))
+            self.assertEqual(response["text"], "")
+            self.assertEqual(response["tool_calls"], [{"name": "computer_plan", "arguments": tool_arguments}])
             self.assertGreaterEqual(response["elapsed_seconds"], 0)
+            self.assertEqual(complete.call_args.kwargs["tools"], [COMPUTER_PLAN_TOOL])
+            self.assertEqual(complete.call_args.kwargs["forced_tool"], "computer_plan")
 
     def test_planner_logs_elapsed_model_failure(self):
         with tempfile.TemporaryDirectory() as directory:

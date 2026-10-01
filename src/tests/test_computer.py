@@ -13,8 +13,8 @@ from PIL import Image
 
 from src.computer import ComputerCancelled, parse_plan, run_computer
 from src.providers.codex import CodexProvider
-from src.providers.computer import ComputerPlanner
-from src.providers.types import ModelResponse
+from src.providers.computer import COMPUTER_PLAN_TOOL, ComputerPlanner, InvalidComputerPlan
+from src.providers.types import ModelResponse, ToolCall
 from src.tools.computer_driver import HyprlandDriver
 
 
@@ -71,7 +71,10 @@ class FakeProvider:
         self.calls.append((task, screenshot, size, list(history), last_result))
         if self.on_call:
             self.on_call()
-        return copy.deepcopy(self.plans.pop(0))
+        plan = self.plans.pop(0)
+        if isinstance(plan, Exception):
+            raise plan
+        return copy.deepcopy(plan)
 
 
 class ComputerTests(unittest.TestCase):
@@ -262,7 +265,7 @@ class ComputerTests(unittest.TestCase):
         self.assertIn("1–3 allowed actions", provider.calls[1][4])
         self.assertIn("no desktop input was sent", provider.calls[1][3][-1])
 
-    def test_non_json_preface_gets_retried_without_sending_input(self):
+    def test_unstructured_text_gets_retried_without_sending_input(self):
         driver = FakeDriver()
         provider = FakeProvider(
             "We need click the first result. " + json.dumps(action_plan()),
@@ -277,7 +280,23 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(len(driver.actions), 1)
         self.assertIn("No desktop input was sent", provider.calls[1][4])
-        self.assertIn("exactly one raw JSON object", provider.calls[1][4])
+        self.assertIn("call computer_plan exactly once", provider.calls[1][4])
+
+    def test_missing_function_call_gets_one_retry_without_sending_input(self):
+        driver = FakeDriver()
+        provider = FakeProvider(
+            InvalidComputerPlan("Expected exactly one computer_plan function call; received none."),
+            action_plan(), done_plan(),
+        )
+
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            result = run_computer("Click the button", driver=driver, provider=provider)
+
+        self.assertIn("complete", result)
+        self.assertEqual(len(provider.calls), 3)
+        self.assertEqual(len(driver.actions), 1)
+        self.assertIn("call computer_plan exactly once", provider.calls[1][4])
+        self.assertIn("no desktop input was sent", provider.calls[1][3][-1])
 
     def test_second_invalid_plan_stops_without_sending_desktop_input(self):
         driver = FakeDriver()
@@ -445,21 +464,26 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(driver.actions, [])
 
     def test_computer_planner_uses_selected_codex_model_and_image_path(self):
-        plan = done_plan()
+        plan = action_plan([{
+            "type": "click", "x": 120, "y": 80, "direction": None, "key": None, "text": None,
+        }])
+        expected = action_plan([{"type": "click", "x": 120, "y": 80}])
         screenshot = io.BytesIO()
         Image.new("RGB", (1920, 1080), "red").save(screenshot, format="JPEG")
         cancel = threading.Event()
         codex = CodexProvider("gpt-6-sol")
-        with patch.object(codex, "complete", return_value=ModelResponse(json.dumps(plan), [])) as complete:
+        with patch.object(codex, "complete", return_value=ModelResponse(
+            "", [ToolCall("call-1", "computer_plan", plan)],
+        )) as complete:
             result = ComputerPlanner(codex).next_plan(
                 "Finish task", screenshot.getvalue(), (1920, 1080), [], "", cancel,
             )
-        self.assertEqual(result, json.dumps(plan))
+        self.assertEqual(result, expected)
         self.assertEqual(codex.model, "gpt-6-sol")
         messages = complete.call_args.args[0]
         self.assertEqual(messages[0]["role"], "developer")
-        self.assertIn("Return only one JSON object as the entire response", messages[0]["content"])
-        self.assertIn("no preamble, explanation", messages[0]["content"])
+        self.assertIn("Call computer_plan exactly once", messages[0]["content"])
+        self.assertNotIn("raw JSON object", messages[0]["content"])
         self.assertIn("Never return four or more actions", messages[0]["content"])
         self.assertIn("do not click the page first", messages[0]["content"])
         self.assertIn("Oryn dotool operating guide:", messages[0]["content"])
@@ -476,17 +500,27 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual((image["mime_type"], image["width"], image["height"]), ("image/jpeg", 1920, 1080))
         self.assertTrue(base64.b64decode(image["base64_data"]).startswith(b"\xff\xd8"))
         self.assertIs(complete.call_args.kwargs["cancel_event"], cancel)
+        self.assertEqual(complete.call_args.kwargs["forced_tool"], "computer_plan")
+        self.assertEqual(complete.call_args.kwargs["tools"], [COMPUTER_PLAN_TOOL])
 
-    def test_computer_planner_passes_malformed_text_to_strict_plan_validator(self):
+    def test_computer_planner_rejects_text_only_wrong_or_multiple_calls(self):
         screenshot = io.BytesIO()
         Image.new("RGB", (8, 8), "black").save(screenshot, format="JPEG")
-        response_text = 'We need click the first result. ' + json.dumps(done_plan())
         codex = CodexProvider("gpt-6-sol")
-        with patch.object(codex, "complete", return_value=ModelResponse(response_text, [])):
-            result = ComputerPlanner(codex).next_plan(
-                "Click the first result", screenshot.getvalue(), (8, 8), [], "",
-            )
-        self.assertEqual(result, response_text)
+        responses = [
+            ModelResponse("I should click the first result."),
+            ModelResponse("", [ToolCall("call-1", "other_tool", done_plan())]),
+            ModelResponse("", [
+                ToolCall("call-1", "computer_plan", done_plan()),
+                ToolCall("call-2", "computer_plan", done_plan()),
+            ]),
+        ]
+        for response in responses:
+            with self.subTest(response=response), patch.object(codex, "complete", return_value=response):
+                with self.assertRaises(InvalidComputerPlan):
+                    ComputerPlanner(codex).next_plan(
+                        "Click the first result", screenshot.getvalue(), (8, 8), [], "",
+                    )
 
 
 if __name__ == "__main__":

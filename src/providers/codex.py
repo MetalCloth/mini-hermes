@@ -355,7 +355,12 @@ class CodexProvider:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        forced_tool: str | None = None,
     ) -> ModelResponse:
+        if forced_tool and not any(
+            isinstance(tool, dict) and tool.get("name") == forced_tool for tool in (tools or [])
+        ):
+            raise ValueError("The forced function must be included in the provided tools.")
         if cancel_event and cancel_event.is_set():
             raise InterruptedError("Codex request cancelled")
         auth = _read_auth(self.auth_file)
@@ -437,7 +442,11 @@ class CodexProvider:
             payload["service_tier"] = self.service_tier
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = (
+                {"type": "function", "name": forced_tool} if forced_tool else "auto"
+            )
+            if forced_tool:
+                payload["parallel_tool_calls"] = False
         body = json.dumps(payload).encode()
         client_version = self.client_version()
         request = urllib.request.Request(

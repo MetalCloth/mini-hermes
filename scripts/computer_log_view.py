@@ -76,6 +76,20 @@ def format_record(record: dict) -> str:
         )
     if event == "model_response":
         text = record.get("text", "")
+        tool_calls = record.get("tool_calls", [])
+        if isinstance(tool_calls, list) and tool_calls:
+            call = tool_calls[0]
+            if isinstance(call, dict):
+                arguments = call.get("arguments", {})
+                if isinstance(arguments, dict) and "status" in arguments:
+                    return (
+                        f"{stamp}  MODEL RESPONSE{_elapsed(record)} · {arguments.get('status', '?')} · "
+                        f"{_short(arguments.get('summary', ''))}"
+                    )
+                return (
+                    f"{stamp}  MODEL RESPONSE{_elapsed(record)} · {call.get('name', 'function')} · "
+                    f"{_short(json.dumps(arguments, ensure_ascii=False))}"
+                )
         try:
             plan = json.loads(text)
         except (json.JSONDecodeError, TypeError):

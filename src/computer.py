@@ -1,13 +1,12 @@
 """Bounded screenshot/action loop for local computer use."""
 
-import json
 import re
 import threading
 from time import monotonic
 from typing import Callable
 
 from src.computer_logging import ComputerTrace
-from src.providers.computer import ComputerPlanner
+from src.providers.computer import ComputerPlanner, InvalidComputerPlan
 from src.tools.computer_driver import HyprlandDriver
 
 
@@ -73,15 +72,8 @@ def _action(action: object, size: tuple[int, int]) -> dict:
     return action
 
 
-def parse_plan(reply: str | dict, size: tuple[int, int]) -> dict:
-    """Validate the model's JSON plan before it can reach the local driver."""
-    if isinstance(reply, str):
-        if len(reply) > 16_000:
-            raise ValueError("The model's plan was too large.")
-        try:
-            reply = json.loads(reply)
-        except json.JSONDecodeError as exc:
-            raise ValueError("The selected model did not return a valid JSON plan.") from exc
+def parse_plan(reply: dict, size: tuple[int, int]) -> dict:
+    """Validate structured function arguments before they can reach the local driver."""
     if not isinstance(reply, dict) or set(reply) != PLAN_FIELDS:
         raise ValueError("The selected model returned an invalid plan format.")
 
@@ -223,31 +215,37 @@ def run_computer(
             continue
         if on_status:
             on_status(f"Computer model is reviewing the screen · turn {turn}/{MAX_TURNS}")
+        invalid_plan: ValueError | None = None
         try:
             reply = provider.next_plan(task, screenshot, size, history, last_result, cancel_event)
         except InterruptedError as exc:
             raise ComputerCancelled("Stopped by you.") from exc
+        except InvalidComputerPlan as exc:
+            invalid_plan = exc
         except Exception as exc:
             if trace:
                 trace.write("planning_error", turn=turn, error_type=type(exc).__name__, error=str(exc))
             raise
-        try:
-            plan = parse_plan(reply, size)
-        except ValueError as exc:
+        if invalid_plan is None:
+            try:
+                plan = parse_plan(reply, size)
+            except ValueError as exc:
+                invalid_plan = exc
+        if invalid_plan is not None:
+            exc = invalid_plan
             if trace:
                 trace.write(
                     "planning_error", turn=turn, error_type=type(exc).__name__,
                     error=str(exc), no_input_sent=True,
                 )
             if plan_recoveries >= MAX_PLAN_RECOVERIES:
-                raise
+                raise exc
             plan_recoveries += 1
             history.append(f"Turn {turn}: Oryn rejected the invalid plan; no desktop input was sent.")
             last_result = (
-                f"Oryn rejected your previous plan: {exc} No desktop input was sent. "
-                "Recheck the fresh screenshot and return exactly one raw JSON object, with no "
-                "text before or after it. Use 1–3 allowed actions, or ask_user/done with an "
-                "empty actions list."
+                f"Oryn rejected your previous computer_plan call: {exc} No desktop input was sent. "
+                "Recheck the fresh screenshot and call computer_plan exactly once with the full "
+                "plan. Use 1–3 allowed actions, or ask_user/done with an empty actions list."
             )
             continue
         if trace:

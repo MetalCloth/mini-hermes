@@ -13,6 +13,7 @@ from PIL import Image
 
 from src.agent.conversation_loop import run_turn
 from src.images import prepare_image
+from src.providers.computer import COMPUTER_PLAN_TOOL
 from src.providers.gemini import GeminiProvider, _content_history, _response_text
 from src.providers.router import available_models, provider_for_model
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
@@ -105,12 +106,37 @@ class GeminiProviderTests(unittest.TestCase):
         self.assertEqual(declarations[0]["name"], "terminal")
         self.assertIn("parametersJsonSchema", declarations[0])
         self.assertNotIn("strict", declarations[0])
+        self.assertNotIn("toolConfig", payload)
         model_parts = payload["contents"][1]["parts"]
         self.assertEqual(model_parts[0]["thoughtSignature"], "keep-me")
         self.assertEqual(payload["contents"][2]["parts"][0]["functionResponse"], {
             "id": "fc-1", "name": "read_file", "response": {"result": "file text"},
         })
         self.assertEqual(response, ModelResponse("Done"))
+
+    def test_request_can_force_one_named_function(self):
+        provider = GeminiProvider("gemini-3.8-flash")
+        response = sse({"candidates": [{
+            "content": {"parts": [{"functionCall": {
+                "id": "plan-1", "name": "computer_plan", "args": {"status": "done"},
+            }}]},
+            "finishReason": "STOP",
+        }]})
+        with patch("src.providers.gemini._api_key", return_value=KEY), \
+             patch("src.providers.gemini.urllib.request.urlopen", return_value=response) as urlopen:
+            result = provider.complete(
+                [{"role": "user", "content": "Plan this screenshot"}],
+                [COMPUTER_PLAN_TOOL], forced_tool="computer_plan",
+            )
+
+        payload = json.loads(urlopen.call_args.args[0].data)
+        declaration = payload["tools"][0]["functionDeclarations"][0]
+        self.assertEqual(declaration["name"], "computer_plan")
+        self.assertEqual(declaration["parametersJsonSchema"], COMPUTER_PLAN_TOOL["parameters"])
+        self.assertEqual(payload["toolConfig"]["functionCallingConfig"], {
+            "mode": "ANY", "allowedFunctionNames": ["computer_plan"],
+        })
+        self.assertEqual(result.tool_calls[0].name, "computer_plan")
 
     def test_tool_call_round_trip_through_shared_loop_preserves_signature(self):
         provider = GeminiProvider("gemini-3.8-flash")

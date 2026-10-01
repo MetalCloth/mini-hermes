@@ -13,6 +13,7 @@ import urllib.error
 from unittest.mock import patch
 
 from src.providers import codex
+from src.providers.computer import COMPUTER_PLAN_TOOL
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall, retry_after_seconds
 from src.providers.codex import _response_text
 
@@ -177,9 +178,28 @@ class CodexStreamTests(unittest.TestCase):
         payload = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(result.text, "Done")
         self.assertEqual(payload["tools"], tools)
+        self.assertEqual(payload["tool_choice"], "auto")
         self.assertEqual(payload["input"][1]["type"], "function_call")
         self.assertEqual(payload["input"][2]["type"], "function_call_output")
         self.assertEqual(payload["input"][2]["output"], "# Mini-Hermes")
+
+    def test_provider_can_force_one_strict_named_function(self):
+        response = io.BytesIO(
+            b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n'
+            b'data: {"type":"response.completed","response":{}}\n\n'
+        )
+        with patch.object(codex, "_read_auth", return_value={"tokens": {"access_token": "a", "account_id": "b"}}):
+            with patch.object(codex.urllib.request, "urlopen", return_value=response) as urlopen:
+                codex.CodexProvider("gpt-6-luna").complete(
+                    [{"role": "user", "content": "Plan this screenshot"}],
+                    [COMPUTER_PLAN_TOOL], forced_tool="computer_plan",
+                )
+
+        payload = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(payload["tool_choice"], {"type": "function", "name": "computer_plan"})
+        self.assertFalse(payload["parallel_tool_calls"])
+        self.assertTrue(payload["tools"][0]["strict"])
+        self.assertEqual(payload["tools"][0]["parameters"]["additionalProperties"], False)
 
     def test_provider_skips_saved_tool_call_without_output(self):
         response = io.BytesIO(b'data: {"type":"response.output_text.delta","delta":"Ready"}\n\ndata: {"type":"response.completed","response":{}}\n\n')

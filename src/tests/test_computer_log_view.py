@@ -6,6 +6,18 @@ from scripts.computer_log_view import format_record
 
 
 class ComputerLogViewTests(unittest.TestCase):
+    def test_formats_structured_computer_plan_function_call(self):
+        response = format_record({
+            "time_utc": "2026-10-02T10:18:43.797+00:00",
+            "event": "model_response",
+            "elapsed_seconds": 4.2,
+            "text": "",
+            "tool_calls": [{"name": "computer_plan", "arguments": {
+                "status": "actions", "summary": "Open the first result",
+            }}],
+        })
+        self.assertIn("MODEL RESPONSE · 4.2s · actions · Open the first result", response)
+
     def test_hides_repeated_prompt_and_formats_plan_and_driver_error(self):
         request = format_record({
             "time_utc": "2026-09-30T10:18:15.120+00:00",

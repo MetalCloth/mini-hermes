@@ -309,7 +309,12 @@ class GeminiProvider:
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        forced_tool: str | None = None,
     ) -> ModelResponse:
+        if forced_tool and not any(
+            isinstance(tool, dict) and tool.get("name") == forced_tool for tool in (tools or [])
+        ):
+            raise ValueError("The forced function must be included in the provided tools.")
         if cancel_event and cancel_event.is_set():
             raise InterruptedError("Gemini request cancelled")
         api_key = _api_key()
@@ -324,6 +329,10 @@ class GeminiProvider:
             payload["systemInstruction"] = {"parts": [{"text": instructions}]}
         if tools:
             payload["tools"] = [{"functionDeclarations": _function_declarations(tools)}]
+            if forced_tool:
+                payload["toolConfig"] = {"functionCallingConfig": {
+                    "mode": "ANY", "allowedFunctionNames": [forced_tool],
+                }}
         if self.reasoning_effort != "default":
             payload["generationConfig"] = {"thinkingConfig": {"thinkingLevel": self.reasoning_effort.upper()}}
 
