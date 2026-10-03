@@ -409,7 +409,7 @@ def run_computer(
                     on_status(f"Computer action: {label[:120]}")
                 name, args = _driver_action(action)
                 driver.execute(name, args)
-                if cancel_event.wait(0.35):
+                if cancel_event.wait(0.15):
                     raise ComputerCancelled("Stopped by you.")
                 if trace:
                     trace.write("action_complete", turn=turn, label=label)
