@@ -500,12 +500,13 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(len(driver.actions), 1)
         self.assertIn("driver failed", provider.calls[1][4])
 
-    def test_second_driver_error_stops_the_run(self):
-        driver = FakeDriver(failures=2)
-        provider = FakeProvider(action_plan(), action_plan())
+    def test_sixth_driver_error_stops_the_run(self):
+        driver = FakeDriver(failures=6)
+        provider = FakeProvider(*[action_plan() for _ in range(6)])
         with patch("src.computer.threading.Event.wait", return_value=False):
             with self.assertRaisesRegex(RuntimeError, "failed again"):
                 run_computer("Click the button", driver=driver, provider=provider)
+        self.assertEqual(len(provider.calls), 6)
 
     def test_cancelled_run_does_not_capture_or_act(self):
         cancel = threading.Event()
