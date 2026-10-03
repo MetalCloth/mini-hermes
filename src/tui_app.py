@@ -49,6 +49,7 @@ from src.tools.terminal_tool import TerminalJobManager
 DEFAULT_MODEL = "gpt-5.6-luna"
 COMMANDS = (
     ("new", "New session"),
+    ("delete", "Delete this session and return home"),
     ("computer", "Use the computer for the next message"),
     ("help", "Show help"),
     ("mcps", "Manage MCP connections"),
@@ -1195,6 +1196,7 @@ class OrynTUI(App[None]):
         composer.clear()
         if computer_task:
             self._set_computer_armed(False)
+        conversation_history = list(self.history)
         self.history.append(user_message)
         self.pending_images.clear()
         self._refresh_attachments()
@@ -1210,7 +1212,7 @@ class OrynTUI(App[None]):
         if computer_task:
             self._turn_thread = threading.Thread(
                 target=self._run_computer_task,
-                args=(computer_task, self._cancel_event, self.provider),
+                args=(computer_task, conversation_history, self.session_id, self._cancel_event, self.provider),
                 name="oryn-computer-turn", daemon=True,
             )
         else:
@@ -1322,6 +1324,8 @@ class OrynTUI(App[None]):
             return
         if name in {"new", "clear"}:
             await self._new_session()
+        elif name == "delete":
+            await self._delete_current_session()
         elif name in {"sessions", "resume", "continue"}:
             await self._show_sessions()
         elif name in {"model", "models"}:
@@ -1353,6 +1357,7 @@ class OrynTUI(App[None]):
             body = (
                 "COMMANDS\n"
                 "/new       Start a new session\n"
+                "/delete    Delete this session and return home\n"
                 "/sessions  Resume a saved session\n"
                 "/models    Change this session's model\n"
                 "/effort    Set reasoning effort for the selected model\n"
@@ -1396,6 +1401,29 @@ class OrynTUI(App[None]):
         self.saved_count = len(self.history)
         await self._refresh_transcript()
         self._set_activity("New session ready", working=False)
+
+    async def _delete_current_session(self) -> None:
+        session_id = self.session_id
+        if not session_id:
+            self._set_activity("No saved session to delete.", working=False)
+            return
+        confirmed = await self.push_screen_wait(ApprovalScreen(
+            "Delete this session?",
+            "This permanently deletes the chat, its saved context, diagnostics, and undo journal, "
+            "and stops terminal jobs belonging to this chat. Project files are kept as they are.",
+        ))
+        if not confirmed:
+            self._set_activity("Session deletion cancelled", working=False)
+            return
+        if not self.store.delete_session(session_id):
+            self._set_activity("This saved session no longer exists.", working=False, error=True)
+            return
+        self.file_change_history.pop(session_id, None)
+        terminal_jobs = self.terminal_jobs.pop(session_id, None)
+        if terminal_jobs:
+            terminal_jobs.close()
+        await self._new_session()
+        self._set_activity("Session deleted · ready for a new chat", working=False)
 
     async def _show_sessions(self) -> None:
         self._hide_palette()
@@ -1808,7 +1836,10 @@ class OrynTUI(App[None]):
         finished.elapsed_seconds = max(0.0, monotonic() - started_at)
         self.post_message(finished)
 
-    def _run_computer_task(self, task: str, cancel_event: threading.Event, provider: Any) -> None:
+    def _run_computer_task(
+        self, task: str, conversation_history: list[dict[str, Any]], session_id: str,
+        cancel_event: threading.Event, provider: Any,
+    ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         dry_run = task.startswith("--dry-run ")
         if dry_run:
@@ -1816,7 +1847,16 @@ class OrynTUI(App[None]):
         trace = None
         try:
             trace = ComputerTrace.from_environment()
-            planner = ComputerPlanner(provider, trace)
+            context_summary = self.store.load_context_summary(session_id) if session_id else None
+            save_context_summary = (
+                lambda summary, count, digest: self.store.save_context_summary(
+                    session_id, summary, count, digest,
+                )
+            ) if session_id else None
+            planner = ComputerPlanner(
+                provider, trace, conversation_history=conversation_history,
+                context_summary=context_summary, save_context_summary=save_context_summary,
+            )
             self.post_message(TurnProgress(f"Switch to the target app now · starting in {START_DELAY} second"))
             if cancel_event.wait(START_DELAY):
                 raise ComputerCancelled("Stopped by you.")

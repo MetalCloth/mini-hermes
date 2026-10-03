@@ -161,9 +161,9 @@ For example, a conversation that inspected `/projects/shop` should not silently 
 
 Search scans recent transcript rows rather than using SQLite FTS. That simple implementation is suitable while local history is small; the source explicitly marks FTS as a later optimization if it becomes slow.
 
-The TUI provides pin, rename, and two-step deletion shortcuts. The dashboard supports rename/delete and groups/searches sessions through its frontend behavior. UI controls and backend store capabilities are related but not identical.
+The TUI session picker provides pin, rename, and two-step deletion shortcuts. `/delete` asks for confirmation, deletes the current session, and returns the TUI to its home layout. The dashboard supports rename/delete and groups/searches sessions through its frontend behavior. UI controls and backend store capabilities are related but not identical.
 
-Deleting a conversation does not undo its file edits, revoke external account permissions, or delete a remote GitHub repository. It removes local chat records and that chat's undo journal; project files remain as they are.
+Deleting a conversation stops that chat's terminal jobs and removes its local chat records, context summary, diagnostics, and undo journal. It does not undo file edits, revoke external account permissions, or delete a remote GitHub repository; project files remain as they are.
 
 ## 8. Model settings are stored per model inside each session
 

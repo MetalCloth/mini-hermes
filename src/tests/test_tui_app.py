@@ -81,10 +81,17 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                 "service_tiers": [{"id": "priority"}],
             }]}))
             store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session_id = store.create_session(root)
+            prior_history = [
+                {"role": "user", "content": "Open Spotify and play Winner Takes It All by ABBA."},
+                {"role": "assistant", "content": "I opened Spotify."},
+            ]
+            store.append_messages(prior_history, session_id)
             client = MCPClient(configs=[])
             provider = CodexProvider("gpt-5.6-luna", root / "auth.json")
             app = OrynTUI(
-                store=store, session_id="", project_root=root, model=provider.model, history=[],
+                store=store, session_id=session_id, project_root=root, model=provider.model,
+                history=list(prior_history),
                 provider=provider, mcp_client=client, initial_tools=[],
             )
             try:
@@ -104,13 +111,54 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(computer.call_args.args[0], "click Settings")
                     self.assertTrue(computer.call_args.kwargs["dry_run"])
                     self.assertIs(computer.call_args.kwargs["provider"].provider, selected_provider)
+                    self.assertEqual(
+                        computer.call_args.kwargs["provider"].conversation_history,
+                        prior_history,
+                    )
                     self.assertEqual(selected_provider.model, "gpt-6-sol")
                     self.assertEqual(selected_provider.reasoning_effort, "high")
                     self.assertEqual(selected_provider.service_tier, "priority")
                     provider_complete.assert_not_called()
                     messages = store.load_messages(app.session_id)
-                    self.assertEqual(messages[0]["content"], "/computer --dry-run click Settings")
-                    self.assertEqual(messages[1]["content"], "Dry run: click (400, 200)")
+                    self.assertEqual(messages[2]["content"], "/computer --dry-run click Settings")
+                    self.assertEqual(messages[3]["content"], "Dry run: click (400, 200)")
+            finally:
+                client.close()
+
+    async def test_delete_command_confirms_removes_current_session_and_returns_home(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            kept_file = root / "project-file.txt"
+            kept_file.write_text("keep this file")
+            store = SQLiteSessionStore(root / "sessions.sqlite3")
+            session_id = store.create_session(root)
+            history = [
+                {"role": "user", "content": "Earlier chat"},
+                {"role": "assistant", "content": "Earlier reply"},
+            ]
+            store.append_messages(history, session_id)
+            client = MCPClient(configs=[])
+            app = OrynTUI(
+                store=store, session_id=session_id, project_root=root,
+                model="gpt-5.6-luna", history=list(history),
+                provider=CodexProvider("gpt-5.6-luna"),
+                mcp_client=client, initial_tools=[],
+            )
+            try:
+                async with app.run_test(size=(100, 32)) as pilot:
+                    app.query_one("#composer", TextArea).load_text("/delete")
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertIsInstance(app.screen, ApprovalScreen)
+                    self.assertTrue(store.session_exists(session_id))
+
+                    await pilot.press("y")
+                    await pilot.pause()
+                    self.assertFalse(store.session_exists(session_id))
+                    self.assertEqual(app.session_id, "")
+                    self.assertFalse(any(message.get("role") == "user" for message in app.history))
+                    self.assertTrue(app.query("#welcome"))
+                    self.assertEqual(kept_file.read_text(), "keep this file")
             finally:
                 client.close()
 

@@ -558,6 +558,26 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(complete.call_args.kwargs["forced_tool"], "computer_plan")
         self.assertEqual(complete.call_args.kwargs["tools"], [COMPUTER_PLAN_TOOL])
 
+    def test_computer_planner_receives_session_chat_history(self):
+        screenshot = io.BytesIO()
+        Image.new("RGB", (8, 8), "black").save(screenshot, format="JPEG")
+        codex = CodexProvider("gpt-6-sol")
+        history = [
+            {"role": "user", "content": "Open Spotify and play Winner Takes It All by ABBA."},
+            {"role": "assistant", "content": "I opened Spotify."},
+        ]
+        with patch.object(codex, "complete", return_value=ModelResponse(
+            "", [ToolCall("call-1", "computer_plan", done_plan())],
+        )) as complete:
+            planner = ComputerPlanner(codex, conversation_history=history)
+            planner.next_plan("do it again", screenshot.getvalue(), (8, 8), [], "")
+
+        messages = complete.call_args.args[0]
+        self.assertEqual(messages[1]["content"], history[0]["content"])
+        self.assertEqual(messages[2]["content"], history[1]["content"])
+        self.assertIn("Earlier approvals never authorize a new action", messages[0]["content"])
+        self.assertIn("User task:\ndo it again", messages[3]["content"])
+
     def test_computer_planner_rejects_text_only_wrong_or_multiple_calls(self):
         screenshot = io.BytesIO()
         Image.new("RGB", (8, 8), "black").save(screenshot, format="JPEG")
