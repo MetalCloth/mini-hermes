@@ -39,7 +39,7 @@ class CuaDriver(HyprlandDriver):
             log = open(Path(self._temporary.name) / "server.log", "wb")
             try:
                 self._server = subprocess.Popen(
-                    [self.binary, "serve", "--socket", str(self.socket)], env=self.env,
+                    [self.binary, "serve", "--no-overlay", "--socket", str(self.socket)], env=self.env,
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 )
             finally:
