@@ -65,6 +65,19 @@ The user subsequently chose CUA as Oryn's default `/computer` driver. The initia
 
 A disposable Brave app window exposed a CUA accessibility tree, but its first-run "Can't update Brave" alert repeatedly took focus during the typing check. The window guard stopped or the field lacked a usable token, so that run did not verify browser text entry. The current dotool keyboard route avoids that CUA call, but it has not yet been checked end-to-end through `/computer` in Brave; a successful standalone dotool test is not the same verification.
 
+## 4 October: numbered controls in Oryn
+
+Oryn now retains actionable CUA `element_index`/`element_token` pairs from each active-window snapshot. The model sees compact `[N] role: label` entries and may return `click_element` for a number in the **current** observation. Oryn validates that number before input, then sends the matching token scoped to the captured window through CUA. A new screenshot discards the old mapping. Coordinate clicks remain available when the tree is sparse. Typing and hotkeys still use dotool.
+
+Live local checks on the 1920×1080 Hyprland desktop:
+
+| App | CUA observation | Input check | Result |
+| --- | --- | --- | --- |
+| Brave | Numbered controls included its address bar; one snapshot had 23 usable controls | Activated the address-bar entry by element token through the full Oryn loop and a deterministic test planner | Two harness turns completed; a separate AT-SPI check changed from `focused=false` to `focused=true`; the prior focused window was restored |
+| Spotify | `get_window_state` returned only a frame and zero numbered controls | Used screenshot coordinates to select Music, then All, through the same loop and test planner | Three harness turns completed after visual state checks; the All filter and prior focused window were restored |
+
+One Brave snapshot immediately after a focus switch omitted the address bar; the next fresh read exposed it. Spotify coordinate clicks reported `global_input` with an `unverifiable` effect. Short verification intervals sometimes observed the old filter before its UI settled, so the successful harness check waited for visible selection changes before continuing. These checks validate the local CUA routes and fallback. They do not measure model speed or prove that the selected model will choose the best control on every page. The historical A/B timing table above used a separate disposable GTK fixture and should not be read as a Brave or Spotify benchmark.
+
 ## Artifacts and scope
 
 The temporary binary, harnesses, and retained JSONL traces are in `/tmp/cua-driver-experiment-v0.32.0`. No Oryn production code, configuration defaults, or provider loop were changed. Pre-existing workspace edits were left untouched. No commit or push was made.

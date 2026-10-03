@@ -207,10 +207,18 @@ class ComputerTests(unittest.TestCase):
             action_plan([{"type": "wait", "seconds": 3}]),
             action_plan([{"type": "click", "x": 1, "y": 2}] * 4),
             action_plan([{"type": "click", "x": 1, "y": 2}], requires_confirmation=True),
+            action_plan([{"type": "click_element", "element_index": 3}]),
         ]
         for plan in invalid:
             with self.subTest(plan=plan), self.assertRaises(ValueError):
                 parse_plan(plan, (800, 450))
+
+    def test_numbered_click_requires_an_element_from_this_snapshot(self):
+        action = {"type": "click_element", "element_index": 12}
+        self.assertEqual(parse_plan(action_plan([action]), (800, 450), {12})["actions"], [action])
+        for index in (13, True, -1):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                parse_plan(action_plan([{"type": "click_element", "element_index": index}]), (800, 450), {12})
 
     def test_plan_parser_requires_confirmation_reason_and_single_action(self):
         plan = action_plan(requires_confirmation=True, confirmation_reason="Send this message")
@@ -430,6 +438,37 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 2)
         self.assertEqual(len(driver.actions), 1)
 
+    def test_numbered_control_flows_from_current_observation_to_driver(self):
+        class SemanticDriver(FakeDriver):
+            def accessibility_observation(self, _window, _size):
+                return {"status": "available", "labels": '[12] entry: "Search"', "element_ids": [12]}
+
+        driver = SemanticDriver()
+        provider = FakeProvider(action_plan([{"type": "click_element", "element_index": 12}]), done_plan())
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            run_computer("Focus search", driver=driver, provider=provider)
+        self.assertEqual(driver.actions, [("click_element", {"element_index": 12})])
+        self.assertIn('[12] entry:', provider.accessibility[0])
+
+    def test_approved_numbered_control_expires_if_target_changes(self):
+        class SemanticDriver(FakeDriver):
+            def accessibility_observation(self, _window, _size):
+                return {"status": "available", "labels": '[12] button: "Send"', "element_ids": [12]}
+
+            def element_identity(self, _index):
+                return ("Send", self.captures)
+
+        driver = SemanticDriver()
+        action = action_plan(
+            [{"type": "click_element", "element_index": 12}],
+            requires_confirmation=True, confirmation_reason="Send the message",
+        )
+        provider = FakeProvider(action, action, done_plan())
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            run_computer("Send a message", driver=driver, provider=provider, confirm_action=lambda _: True)
+        self.assertEqual(driver.actions, [])
+        self.assertIn("approved action", provider.calls[2][4])
+
     def test_focus_change_during_accessibility_discards_both_observations(self):
         driver = FakeDriver()
         provider = FakeProvider(done_plan())
@@ -520,7 +559,8 @@ class ComputerTests(unittest.TestCase):
 
     def test_computer_planner_uses_selected_codex_model_and_image_path(self):
         plan = action_plan([{
-            "type": "click", "x": 120, "y": 80, "direction": None, "key": None, "text": None,
+            "type": "click", "element_index": None, "x": 120, "y": 80,
+            "direction": None, "key": None, "text": None,
         }])
         expected = action_plan([{"type": "click", "x": 120, "y": 80}])
         screenshot = io.BytesIO()
@@ -557,6 +597,23 @@ class ComputerTests(unittest.TestCase):
         self.assertIs(complete.call_args.kwargs["cancel_event"], cancel)
         self.assertEqual(complete.call_args.kwargs["forced_tool"], "computer_plan")
         self.assertEqual(complete.call_args.kwargs["tools"], [COMPUTER_PLAN_TOOL])
+
+    def test_computer_planner_normalizes_numbered_control_action(self):
+        raw = action_plan([{
+            "type": "click_element", "element_index": 12, "x": None, "y": None,
+            "direction": None, "key": None, "text": None,
+        }])
+        screenshot = io.BytesIO()
+        Image.new("RGB", (8, 8), "black").save(screenshot, format="JPEG")
+        codex = CodexProvider("gpt-6-sol")
+        with patch.object(codex, "complete", return_value=ModelResponse(
+            "", [ToolCall("call-1", "computer_plan", raw)],
+        )):
+            result = ComputerPlanner(codex, driver_name="cua").next_plan(
+                "Open the control", screenshot.getvalue(), (8, 8), [], "",
+                accessibility='[12] button: "Open"',
+            )
+        self.assertEqual(result["actions"], [{"type": "click_element", "element_index": 12}])
 
     def test_computer_planner_receives_session_chat_history(self):
         screenshot = io.BytesIO()

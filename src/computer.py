@@ -35,13 +35,14 @@ def _text(value: object, field: str, *, required: bool, limit: int = 500) -> str
     return value
 
 
-def _action(action: object, size: tuple[int, int]) -> dict:
+def _action(action: object, size: tuple[int, int], element_ids: set[int]) -> dict:
     if not isinstance(action, dict) or not isinstance(action.get("type"), str):
         raise ValueError("The selected model returned an invalid desktop action.")
     name = action["type"]
     point_actions = {"click", "double_click", "right_click", "scroll"}
     expected = {
         "click": {"type", "x", "y"},
+        "click_element": {"type", "element_index"},
         "double_click": {"type", "x", "y"},
         "right_click": {"type", "x", "y"},
         "scroll": {"type", "x", "y", "direction"},
@@ -60,6 +61,10 @@ def _action(action: object, size: tuple[int, int]) -> dict:
             or action["direction"] not in {"up", "down", "left", "right"}
         ):
             raise ValueError("The selected model returned an invalid scroll direction.")
+    elif name == "click_element":
+        index = action["element_index"]
+        if type(index) is not int or index not in element_ids:
+            raise ValueError("The selected model selected an element absent from the current snapshot.")
     elif name == "key":
         key = action["key"]
         if not isinstance(key, str) or not KEY.fullmatch(key):
@@ -74,7 +79,7 @@ def _action(action: object, size: tuple[int, int]) -> dict:
     return action
 
 
-def parse_plan(reply: dict, size: tuple[int, int]) -> dict:
+def parse_plan(reply: dict, size: tuple[int, int], element_ids: set[int] | None = None) -> dict:
     """Validate structured function arguments before they can reach the local driver."""
     if not isinstance(reply, dict) or set(reply) != PLAN_FIELDS:
         raise ValueError("The selected model returned an invalid plan format.")
@@ -96,7 +101,7 @@ def parse_plan(reply: dict, size: tuple[int, int]) -> dict:
     if status == "actions":
         if not 1 <= len(plan["actions"]) <= MAX_ACTIONS_PER_TURN:
             raise ValueError(f"The selected model must return 1–{MAX_ACTIONS_PER_TURN} actions per turn.")
-        plan["actions"] = [_action(action, size) for action in plan["actions"]]
+        plan["actions"] = [_action(action, size, element_ids or set()) for action in plan["actions"]]
         if not plan["expected_result"].strip() or plan["question"]:
             raise ValueError("The selected model returned an incomplete action plan.")
         if plan["requires_confirmation"]:
@@ -118,6 +123,8 @@ def parse_plan(reply: dict, size: tuple[int, int]) -> dict:
 
 def _action_label(action: dict) -> str:
     name = action["type"]
+    if name == "click_element":
+        return f"click element [{action['element_index']}]"
     if name in {"click", "double_click", "right_click", "scroll"}:
         if name == "scroll":
             return f"scroll {action['direction']} at ({action['x']}, {action['y']})"
@@ -131,6 +138,8 @@ def _action_label(action: dict) -> str:
 
 def _driver_action(action: dict) -> tuple[str, dict]:
     name = action["type"]
+    if name == "click_element":
+        return "click_element", {"element_index": action["element_index"]}
     if name in {"click", "double_click", "right_click", "scroll"}:
         driver_name = {
             "click": "click", "double_click": "left_double",
@@ -207,6 +216,7 @@ def run_computer(
     plan_recoveries = 0
     pending_approval: dict | None = None
     pending_approval_window = None
+    pending_approval_identity = None
     if trace:
         trace.write(
             "computer_task_start", task=task, dry_run=dry_run,
@@ -231,6 +241,7 @@ def run_computer(
             )
             pending_approval = None
             pending_approval_window = None
+            pending_approval_identity = None
             continue
         screenshot, size = driver.screenshot()
         if trace:
@@ -245,6 +256,7 @@ def run_computer(
             last_result = "The window changed or moved during screenshot capture. Take a fresh screenshot before planning."
             continue
         accessibility = ""
+        element_ids: set[int] = set()
         if accessibility_reader is not None:
             _check_cancel(cancel_event)
             try:
@@ -255,6 +267,10 @@ def run_computer(
                 labels = observation.get("labels")
                 if observation.get("status") == "available" and isinstance(labels, str):
                     accessibility = labels[:4000]
+                    if accessibility_reader == getattr(driver, "accessibility_observation", None):
+                        ids = observation.get("element_ids", [])
+                        if isinstance(ids, list):
+                            element_ids = {index for index in ids if type(index) is int}
                 if trace:
                     trace.write(
                         "accessibility_observation", turn=turn,
@@ -288,7 +304,7 @@ def run_computer(
             raise
         if invalid_plan is None:
             try:
-                plan = parse_plan(reply, size)
+                plan = parse_plan(reply, size, element_ids)
             except ValueError as exc:
                 invalid_plan = exc
         if invalid_plan is not None:
@@ -321,17 +337,26 @@ def run_computer(
 
         approved = pending_approval is not None
         if approved:
+            identity = None
+            if pending_approval["type"] == "click_element":
+                get_identity = getattr(driver, "element_identity", None)
+                if callable(get_identity):
+                    identity = get_identity(pending_approval["element_index"])
             if (plan["status"] != "actions" or not plan["requires_confirmation"]
-                    or plan["actions"] != [pending_approval]):
+                    or plan["actions"] != [pending_approval]
+                    or (pending_approval["type"] == "click_element"
+                        and (identity is None or identity != pending_approval_identity))):
                 if trace:
                     trace.write("computer_approval_expired", turn=turn, reason="plan_changed")
                 history.append(f"Turn {turn}: approved action no longer matched the fresh plan; no input was sent.")
                 last_result = "The fresh screen changed the approved action. Re-evaluate and request approval again if needed."
                 pending_approval = None
                 pending_approval_window = None
+                pending_approval_identity = None
                 continue
             pending_approval = None
             pending_approval_window = None
+            pending_approval_identity = None
 
         if plan["status"] == "done":
             actions = "\n\nActions:\n" + "\n".join(action_trace) if action_trace else ""
@@ -380,6 +405,9 @@ def run_computer(
             _check_time(started)
             pending_approval = plan["actions"][0]
             pending_approval_window = focused_stamp
+            if pending_approval["type"] == "click_element":
+                get_identity = getattr(driver, "element_identity", None)
+                pending_approval_identity = get_identity(pending_approval["element_index"]) if callable(get_identity) else None
             last_result = (
                 "The user approved this exact action, but no desktop input was sent yet. "
                 "Recheck the fresh screenshot. Return the same single action with confirmation "

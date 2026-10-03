@@ -35,6 +35,7 @@ class CuaDriver(HyprlandDriver):
         self._window = None
         self._rows = []
         self._tree = ""
+        self._elements = {}
         try:
             log = open(Path(self._temporary.name) / "server.log", "wb")
             try:
@@ -138,6 +139,7 @@ class CuaDriver(HyprlandDriver):
         self._window = None
         self._rows = []
         self._tree = ""
+        self._elements = {}
         try:
             window = self._active_cua_window()
             if window and type(window.get("window_id")) is int:
@@ -148,7 +150,7 @@ class CuaDriver(HyprlandDriver):
                 state = self._call("get_window_state", {
                     "pid": window["pid"], "window_id": window["window_id"],
                     "session": self.session, "include_screenshot": False,
-                    "max_elements": 80, "max_depth": 8, "timeout_ms": 1500,
+                    "max_elements": 600, "max_depth": 25, "timeout_ms": 3000,
                 }, timeout=5)
                 self._rows = state.get("elements", []) if isinstance(state.get("elements"), list) else []
                 self._tree = state.get("tree_markdown", "") if isinstance(state.get("tree_markdown"), str) else ""
@@ -180,35 +182,80 @@ class CuaDriver(HyprlandDriver):
         return int(x), int(y), int(w), int(h)
 
     def accessibility_observation(self, _window=None, _size=None) -> dict:
-        lines = []
-        coordinates = 0
+        self._elements = {}
+        candidates = []
+        web_content = False
+        actionable_roles = {
+            "button", "toggle button", "link", "entry", "combo box", "check box",
+            "radio button", "tab", "menu item", "list item", "slider", "spin button",
+        }
+        click_actions = {"press", "activate", "jump", "open", "click", "check", "uncheck", "doDefault"}
         for row in self._rows:
             if not isinstance(row, dict):
                 continue
+            if row.get("role") == "document web":
+                web_content = True
             label = row.get("label")
-            value = row.get("value")
-            if not isinstance(label, str) or not label.strip():
+            index = row.get("element_index")
+            token = row.get("element_token")
+            actions = row.get("actions")
+            if (row.get("role") not in actionable_roles or row.get("enabled") is False
+                    or not isinstance(label, str) or not label.replace("\ufffc", "").strip()
+                    or type(index) is not int or not isinstance(token, str) or not token
+                    or not isinstance(actions, list)
+                    or not any(isinstance(item, str) and item in click_actions for item in actions)):
                 continue
-            line = f"{row.get('role', 'element')}: {json.dumps(label[:120], ensure_ascii=False)}"
+            label = " ".join(label.replace("\ufffc", "").split())
+            if label.startswith("off-screen:"):
+                continue
             box = self._box(row)
+            if isinstance(row.get("frame"), dict) and box is None:
+                continue
+            line = f"[{index}] {row['role']}: {json.dumps(label[:100], ensure_ascii=False)}"
             if box:
                 line += f" [x={box[0]}, y={box[1]}, w={box[2]}, h={box[3]}]"
-                coordinates += 1
-            if isinstance(value, str) and value:
-                line += f" value={json.dumps(value[:120], ensure_ascii=False)}"
-            if len("\n".join(lines + [line])) > 1600:
+            candidates.append((web_content, index, row, line, bool(box)))
+        # Browser page controls follow a long toolbar and many noninteractive containers.
+        candidates.sort(key=lambda item: not item[0])
+        lines = []
+        coordinates = 0
+        chars = 0
+        for _, index, row, line, has_box in candidates:
+            if chars + len(line) > 3400 or len(lines) >= 60:
                 break
             lines.append(line)
-            if len(lines) >= 40:
-                break
-        labels = self._tree[:2300]
-        if lines:
-            labels += "\nMapped elements:\n" + "\n".join(lines)
-        return {"status": "available" if labels else "sparse", "labels": labels[:4000], "count": len(lines), "coordinates": coordinates}
+            chars += len(line) + 1
+            self._elements[index] = row
+            coordinates += has_box
+        labels = "Numbered controls for click_element (current snapshot only):\n" + "\n".join(lines) if lines else ""
+        if self._tree:
+            labels += "\nAccessibility context:\n" + self._tree[:400]
+        return {
+            "status": "available" if labels else "sparse", "labels": labels[:4000],
+            "count": len(lines), "coordinates": coordinates, "element_ids": list(self._elements),
+        }
+
+    def element_identity(self, index: int):
+        row = self._elements.get(index)
+        if row is None or self._window is None:
+            return None
+        return (
+            self._window["pid"], self._window["window_id"], row.get("role"),
+            row.get("label"), row.get("value"), self._box(row),
+        )
 
     def execute(self, name: str, args: dict) -> None:
         if self.active_window_stamp() != self._snapshot_stamp:
             raise RuntimeError("The active window changed since CUA captured the screen.")
+        if name == "click_element":
+            row = self._elements.get(args["element_index"])
+            if row is None or self._window is None or not self._window_geometry_matches():
+                raise RuntimeError("The numbered control is not available in the current CUA snapshot.")
+            self._call("click", {
+                "target": {"kind": "window", "pid": self._window["pid"], "window_id": self._window["window_id"]},
+                "element_token": row["element_token"], "session": self.session,
+            })
+            return
         if name in {"click", "left_double"}:
             x, y = args["point"]
             payload = {"scope": "desktop", "x": x, "y": y, "session": self.session, "delivery_mode": "foreground"}

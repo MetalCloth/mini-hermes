@@ -15,9 +15,10 @@ from src.tools.computer_driver import computer_driver_name
 _COMPUTER_SKILL_ROOT = Path(__file__).resolve().parents[2]
 
 
-_ACTION_FIELDS = {"type", "x", "y", "direction", "key", "text"}
+_ACTION_FIELDS = {"type", "element_index", "x", "y", "direction", "key", "text"}
 _ACTION_PARAMETERS = {
     "click": ("x", "y"),
+    "click_element": ("element_index",),
     "double_click": ("x", "y"),
     "right_click": ("x", "y"),
     "scroll": ("x", "y", "direction"),
@@ -46,6 +47,7 @@ COMPUTER_PLAN_TOOL = {
                     "type": "object",
                     "properties": {
                         "type": {"type": "string", "enum": list(_ACTION_PARAMETERS)},
+                        "element_index": {"type": ["integer", "null"], "description": "Numbered control from the current accessibility listing for click_element; otherwise null."},
                         "x": {"type": ["integer", "null"], "description": "Screenshot x coordinate for pointer actions; otherwise null."},
                         "y": {"type": ["integer", "null"], "description": "Screenshot y coordinate for pointer actions; otherwise null."},
                         "direction": {"type": ["string", "null"], "description": "Scroll direction for scroll; otherwise null."},
@@ -139,7 +141,10 @@ class ComputerPlanner:
             "`x:Super_L`, never bare `super`. In a browser, `ctrl+l` focuses the address bar from "
             "anywhere in that window; do not click the page first. Navigate directly, then reobserve.\n"
             "Coordinates must be inside the screenshot. Keep typed text exact and under 2000 characters. "
-            "Accessibility labels, when present, are incomplete read-only hints from the active window. "
+            "Accessibility labels, when present, may be incomplete. A numbered control [N] can be "
+            "activated with click_element(element_index=N) only when it appears in this turn's listing. "
+            "Prefer that action for a clearly matching control; use screenshot coordinates otherwise. "
+            "Never guess an element number or reuse one from an earlier turn. "
             "A bracketed x/y/w/h box is mapped into screenshot pixels only after geometry checks. "
             "Use a box as a click hint only when its element matches the screenshot; otherwise use "
             "the screenshot or ask the user. Labels without boxes give no target coordinates.\n"
