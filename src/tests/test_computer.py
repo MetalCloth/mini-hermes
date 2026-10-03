@@ -65,10 +65,12 @@ class FakeProvider:
     def __init__(self, *plans, on_call=None):
         self.plans = list(plans)
         self.calls = []
+        self.accessibility = []
         self.on_call = on_call
 
-    def next_plan(self, task, screenshot, size, history, last_result, cancel_event=None):
+    def next_plan(self, task, screenshot, size, history, last_result, cancel_event=None, *, accessibility=""):
         self.calls.append((task, screenshot, size, list(history), last_result))
+        self.accessibility.append(accessibility)
         if self.on_call:
             self.on_call()
         plan = self.plans.pop(0)
@@ -170,6 +172,10 @@ class ComputerTests(unittest.TestCase):
         with patch("src.tools.computer_driver.subprocess.run") as command:
             command.return_value = subprocess.CompletedProcess([], 0, stdout=b'{"address":"0xabc","monitor":2}')
             self.assertEqual(driver.active_window(), "0xabc")
+            command.return_value = subprocess.CompletedProcess(
+                [], 0, stdout=b'{"address":"0xabc","monitor":2,"at":[81,31],"size":[800,450]}'
+            )
+            self.assertEqual(driver.active_window_stamp(), ("0xabc", 2, (81, 31), (800, 450)))
             command.return_value = subprocess.CompletedProcess([], 0, stdout=b'{"address":"0xdef","monitor":3}')
             with self.assertRaisesRegex(RuntimeError, "selected monitor"):
                 driver.active_window()
@@ -379,6 +385,18 @@ class ComputerTests(unittest.TestCase):
         self.assertEqual(driver.captures, 2)
         self.assertIn("Discard that plan", provider.calls[1][4])
 
+    def test_window_move_while_model_plans_discards_pixel_plan(self):
+        driver = FakeDriver()
+        driver.position = (81, 31)
+        driver.active_window_stamp = lambda: (driver.active, driver.position)
+        provider = FakeProvider(
+            action_plan(), done_plan(), on_call=lambda: setattr(driver, "position", (200, 31)),
+        )
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            run_computer("Click the button", driver=driver, provider=provider)
+        self.assertEqual(driver.actions, [])
+        self.assertEqual(driver.captures, 2)
+
     def test_focus_change_during_screenshot_discards_that_capture(self):
         driver = FakeDriver()
         screenshot = driver.screenshot
@@ -395,6 +413,42 @@ class ComputerTests(unittest.TestCase):
         self.assertIn("complete", result)
         self.assertEqual(driver.captures, 2)
         self.assertEqual(len(provider.calls), 1)
+
+    def test_accessibility_hints_share_existing_model_turn_and_fall_back_to_pixels(self):
+        driver = FakeDriver()
+        provider = FakeProvider(action_plan(), done_plan())
+        observations = iter([
+            {"status": "available", "labels": 'link: "Search result"', "count": 1},
+            {"status": "sparse", "labels": "", "count": 0},
+        ])
+        with patch("src.computer.threading.Event.wait", return_value=False):
+            run_computer(
+                "Open the result", driver=driver, provider=provider,
+                accessibility_reader=lambda _window, _size: next(observations),
+            )
+        self.assertEqual(provider.accessibility, ['link: "Search result"', ""])
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(len(driver.actions), 1)
+
+    def test_focus_change_during_accessibility_discards_both_observations(self):
+        driver = FakeDriver()
+        provider = FakeProvider(done_plan())
+        calls = 0
+
+        def observe(_window, _size):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                driver.active = "other"
+                return {"status": "available", "labels": 'button: "Old window"'}
+            return {"status": "available", "labels": 'button: "New window"'}
+
+        run_computer("Check the screen", driver=driver, provider=provider, accessibility_reader=observe)
+        self.assertEqual(driver.captures, 2)
+        self.assertEqual(len(provider.calls), 1)
+        self.assertEqual(len(driver.actions), 0)
+        self.assertIn("New window", provider.accessibility[0])
+        self.assertNotIn("Old window", provider.accessibility[0])
 
     def test_focus_change_during_batch_discards_remaining_actions_and_replans(self):
         driver = FakeDriver(change_after_action=True)
@@ -475,7 +529,7 @@ class ComputerTests(unittest.TestCase):
         with patch.object(codex, "complete", return_value=ModelResponse(
             "", [ToolCall("call-1", "computer_plan", plan)],
         )) as complete:
-            result = ComputerPlanner(codex).next_plan(
+            result = ComputerPlanner(codex, driver_name="cua").next_plan(
                 "Finish task", screenshot.getvalue(), (1920, 1080), [], "", cancel,
             )
         self.assertEqual(result, expected)
@@ -486,8 +540,8 @@ class ComputerTests(unittest.TestCase):
         self.assertNotIn("raw JSON object", messages[0]["content"])
         self.assertIn("Never return four or more actions", messages[0]["content"])
         self.assertIn("do not click the page first", messages[0]["content"])
-        self.assertIn("Oryn dotool operating guide:", messages[0]["content"])
-        self.assertIn("Do not send an unprefixed XKB name like `Super_L`", messages[0]["content"])
+        self.assertIn("Oryn cua operating guide:", messages[0]["content"])
+        self.assertIn("Never use bare `super`", messages[0]["content"])
         self.assertIn("Caelestia Hyprland environment profile:", messages[0]["content"])
         self.assertIn("Tapping and releasing it by itself opens the Caelestia launcher.", messages[0]["content"])
         self.assertIn("`Super+W` opens Brave", messages[0]["content"])

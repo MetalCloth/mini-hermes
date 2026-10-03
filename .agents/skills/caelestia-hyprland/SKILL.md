@@ -130,4 +130,4 @@ Treat sleep, lock, and shell-session actions as intentional system operations: p
 
 ## Operating rule
 
-Use the shortcut map to plan one appropriate action at a time, then verify the result from a fresh screenshot. If a shortcut does not work, do not repeat it blindly or invent a replacement; inspect the screen and use a visible control or ask the user when the active binding is uncertain. For dotool key syntax, action limits, focus behavior, and execution boundaries, follow the `computer-dotool` skill.
+Use the shortcut map to plan one appropriate action at a time, then verify the result from a fresh screenshot. If a shortcut does not work, do not repeat it blindly or invent a replacement; inspect the screen and use a visible control or ask the user when the active binding is uncertain. For key syntax, action limits, focus behavior, and execution boundaries, follow the computer driver guide loaded with this profile.

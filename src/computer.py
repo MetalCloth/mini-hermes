@@ -1,5 +1,6 @@
 """Bounded screenshot/action loop for local computer use."""
 
+import os
 import re
 import threading
 from time import monotonic
@@ -7,7 +8,8 @@ from typing import Callable
 
 from src.computer_logging import ComputerTrace
 from src.providers.computer import ComputerPlanner, InvalidComputerPlan
-from src.tools.computer_driver import HyprlandDriver
+from src.tools.computer_accessibility import observe_active_window
+from src.tools.computer_driver import HyprlandDriver, computer_driver_name
 
 
 MAX_TURNS = 30
@@ -155,6 +157,11 @@ def _check_time(started: float) -> None:
         raise RuntimeError(f"Computer task stopped after {MAX_SECONDS} seconds; it may be incomplete.")
 
 
+def _window_stamp(driver: HyprlandDriver):
+    stamp = getattr(driver, "active_window_stamp", None)
+    return stamp() if callable(stamp) else driver.active_window()
+
+
 def run_computer(
     task: str, *, provider: ComputerPlanner, dry_run: bool = False,
     on_status: Callable[[str], None] | None = None,
@@ -163,12 +170,34 @@ def run_computer(
     confirm_action: Callable[[str], bool] | None = None,
     ask_user: Callable[[str], str | None] | None = None,
     trace: ComputerTrace | None = None,
+    accessibility_reader: Callable[[str | None, tuple[int, int]], dict] | None = None,
 ) -> str:
     if not task.strip():
         raise ValueError("Give /computer a task, for example /computer open Settings.")
-    driver = driver or HyprlandDriver(trace)
+    if driver is None:
+        if computer_driver_name() == "cua":
+            from src.tools.cua_driver import CuaDriver
+            owned_driver = CuaDriver(trace)
+        else:
+            owned_driver = HyprlandDriver(trace)
+        try:
+            return run_computer(
+                task, provider=provider, dry_run=dry_run, on_status=on_status,
+                cancel_event=cancel_event, driver=owned_driver,
+                confirm_action=confirm_action, ask_user=ask_user, trace=trace,
+                accessibility_reader=accessibility_reader,
+            )
+        finally:
+            close = getattr(owned_driver, "close", None)
+            if callable(close):
+                close()
     if trace and isinstance(driver, HyprlandDriver):
         driver.trace = trace
+    if accessibility_reader is None:
+        accessibility_reader = getattr(driver, "accessibility_observation", None)
+    if (accessibility_reader is None and isinstance(driver, HyprlandDriver)
+            and os.environ.get("ORYN_COMPUTER_ATSPI", "0").lower() in {"1", "true", "on"}):
+        accessibility_reader = observe_active_window
     cancel_event = cancel_event or threading.Event()
     started = monotonic()
     history: list[str] = []
@@ -177,10 +206,11 @@ def run_computer(
     recoveries = 0
     plan_recoveries = 0
     pending_approval: dict | None = None
-    pending_approval_window: str | None = None
+    pending_approval_window = None
     if trace:
         trace.write(
             "computer_task_start", task=task, dry_run=dry_run,
+            driver=type(driver).__name__,
             model=provider.provider.model,
             reasoning_effort=provider.provider.reasoning_effort,
             service_tier=provider.provider.service_tier,
@@ -189,11 +219,12 @@ def run_computer(
     for turn in range(1, MAX_TURNS + 1):
         _check_cancel(cancel_event)
         _check_time(started)
-        focused_window = driver.active_window()
-        if pending_approval is not None and focused_window != pending_approval_window:
+        focused_stamp = _window_stamp(driver)
+        focused_window = focused_stamp[0] if isinstance(focused_stamp, tuple) else focused_stamp
+        if pending_approval is not None and focused_stamp != pending_approval_window:
             if trace:
-                trace.write("computer_approval_expired", turn=turn, reason="active_window_changed")
-            history.append(f"Turn {turn}: approval expired because the active window changed; no action was sent.")
+                trace.write("computer_approval_expired", turn=turn, reason="window_or_geometry_changed")
+            history.append(f"Turn {turn}: approval expired because the window changed or moved; no action was sent.")
             last_result = (
                 "The approved action is no longer tied to the current window, so it was not sent. "
                 "Recheck the current screenshot and ask again if approval is still needed."
@@ -207,17 +238,46 @@ def run_computer(
                 "screenshot_captured", turn=turn, width=size[0], height=size[1],
                 size_bytes=len(screenshot),
             )
-        if driver.active_window() != focused_window:
+        if _window_stamp(driver) != focused_stamp:
             if trace:
                 trace.write("computer_plan_discarded", turn=turn, phase="screenshot")
-            history.append(f"Turn {turn}: screenshot discarded because the active window changed; no input was sent.")
-            last_result = "The active window changed during screenshot capture. Take a fresh screenshot before planning."
+            history.append(f"Turn {turn}: screenshot discarded because the window changed or moved; no input was sent.")
+            last_result = "The window changed or moved during screenshot capture. Take a fresh screenshot before planning."
             continue
+        accessibility = ""
+        if accessibility_reader is not None:
+            _check_cancel(cancel_event)
+            try:
+                observation = accessibility_reader(focused_window, size)
+            except Exception:
+                observation = {"status": "unavailable"}
+            if isinstance(observation, dict):
+                labels = observation.get("labels")
+                if observation.get("status") == "available" and isinstance(labels, str):
+                    accessibility = labels[:4000]
+                if trace:
+                    trace.write(
+                        "accessibility_observation", turn=turn,
+                        status=observation.get("status", "unavailable"),
+                        count=observation.get("count", 0),
+                        coordinates=observation.get("coordinates", 0),
+                        elapsed_ms=observation.get("elapsed_ms"),
+                        characters=len(accessibility),
+                    )
+            if _window_stamp(driver) != focused_stamp:
+                if trace:
+                    trace.write("computer_plan_discarded", turn=turn, phase="accessibility")
+                history.append(f"Turn {turn}: observation discarded because the window changed or moved; no input was sent.")
+                last_result = "The window changed or moved during observation. Take a fresh screenshot before planning."
+                continue
         if on_status:
             on_status(f"Computer model is reviewing the screen · turn {turn}/{MAX_TURNS}")
         invalid_plan: ValueError | None = None
         try:
-            reply = provider.next_plan(task, screenshot, size, history, last_result, cancel_event)
+            reply = provider.next_plan(
+                task, screenshot, size, history, last_result, cancel_event,
+                accessibility=accessibility,
+            )
         except InterruptedError as exc:
             raise ComputerCancelled("Stopped by you.") from exc
         except InvalidComputerPlan as exc:
@@ -252,11 +312,11 @@ def run_computer(
             trace.write("validated_plan", turn=turn, plan=plan)
         _check_cancel(cancel_event)
         _check_time(started)
-        if driver.active_window() != focused_window:
+        if _window_stamp(driver) != focused_stamp:
             if trace:
                 trace.write("computer_plan_discarded", turn=turn, phase="model_planning")
-            history.append(f"Turn {turn}: plan discarded because the active window changed; no input was sent.")
-            last_result = "The active window changed while planning. Discard that plan, inspect the current screen, and replan."
+            history.append(f"Turn {turn}: plan discarded because the window changed or moved; no input was sent.")
+            last_result = "The window changed or moved while planning. Discard that plan, inspect the current screen, and replan."
             continue
 
         approved = pending_approval is not None
@@ -319,7 +379,7 @@ def run_computer(
             _check_cancel(cancel_event)
             _check_time(started)
             pending_approval = plan["actions"][0]
-            pending_approval_window = focused_window
+            pending_approval_window = focused_stamp
             last_result = (
                 "The user approved this exact action, but no desktop input was sent yet. "
                 "Recheck the fresh screenshot. Return the same single action with confirmation "
@@ -332,13 +392,13 @@ def run_computer(
             continue
 
         completed: list[str] = []
-        focus_changed = False
+        target_changed = False
         try:
             for action in plan["actions"]:
                 _check_cancel(cancel_event)
                 _check_time(started)
-                if driver.active_window() != focused_window:
-                    focus_changed = True
+                if _window_stamp(driver) != focused_stamp:
+                    target_changed = True
                     if trace:
                         trace.write("computer_plan_discarded", turn=turn, phase="before_action")
                     break
@@ -373,11 +433,11 @@ def run_computer(
             history.append(f"Turn {turn} failed after: {', '.join(completed) or '(no action completed)'}")
             continue
 
-        if focus_changed:
+        if target_changed:
             action_trace.extend(f"Turn {turn} (partial): {label}" for label in completed)
-            history.append(f"Turn {turn}: active window changed; discarded the remaining planned actions.")
+            history.append(f"Turn {turn}: window changed or moved; discarded the remaining planned actions.")
             last_result = (
-                "The active window changed before the action batch finished. Preserve completed actions, "
+                "The window changed or moved before the action batch finished. Preserve completed actions, "
                 "inspect the current screenshot, and replan the remaining work."
             )
             continue

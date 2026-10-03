@@ -6,6 +6,28 @@ from scripts.computer_log_view import format_record
 
 
 class ComputerLogViewTests(unittest.TestCase):
+    def test_cua_dispatch_is_visible_without_dumping_payload(self):
+        start = format_record({"event": "computer_task_start", "model": "gpt-6-luna", "driver": "CuaDriver", "task": "Open Settings"})
+        self.assertIn("TASK STARTED · gpt-6-luna · CuaDriver", start)
+        line = format_record({
+            "time_utc": "2026-10-02T10:18:43.797+00:00",
+            "event": "cua_call_result", "tool": "click", "success": True,
+            "route": "global_input", "effect": "unverifiable", "elapsed_ms": 120,
+        })
+        self.assertIn("CUA OK · click · global_input · unverifiable · 120ms", line)
+        fallback = format_record({"event": "cua_dotool_fallback", "action": "hotkey"})
+        self.assertIn("CUA FALLBACK · dotool hotkey", fallback)
+
+    def test_accessibility_event_shows_coverage_without_labels(self):
+        line = format_record({
+            "time_utc": "2026-10-02T10:18:43.797+00:00",
+            "event": "accessibility_observation", "turn": 2,
+            "status": "available", "count": 24, "coordinates": 19, "elapsed_ms": 231.2,
+            "characters": 1000,
+        })
+        self.assertIn("ACCESSIBILITY · turn 2 · available · 24 labels · 19 boxes · 231ms", line)
+        self.assertNotIn("1000", line)
+
     def test_formats_structured_computer_plan_function_call(self):
         response = format_record({
             "time_utc": "2026-10-02T10:18:43.797+00:00",

@@ -18,6 +18,8 @@ This guide describes the current Oryn driver. It exposes a small GUI action set,
 
 ## Current Oryn path
 
+When CUA is the selected desktop driver, CUA provides screenshots, accessibility hints, and left clicks; all keyboard shortcuts and text entry still go through dotool. The CUA accessibility tree does not select a separate text-injection path.
+
 Oryn captures the focused monitor with `grim` at its native resolution and gives that screenshot to the selected model. Coordinates start at the top-left, x increases right, and y increases down. Oryn rejects points outside the screenshot.
 
 For each action, the driver starts `dotool` and sends its action stream through stdin. Dotool uses Linux `uinput`; it needs write permission to `/dev/uinput`. Mouse screenshot coordinates are converted to normalized positions in the Hyprland desktop layout because dotool's `mouseto X Y` accepts percentages from 0.0 to 1.0. The model cannot request arbitrary dotool commands.

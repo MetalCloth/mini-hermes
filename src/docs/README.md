@@ -30,6 +30,9 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [16. Native tool schema reference](15-native-tool-reference.md) | The precise arguments advertised to the model by the 22 built-in tools |
 | [Core upgrade plan and progress](16-core-upgrade-plan.md) | Six selected improvements, their implementation, acceptance checks, and remaining limits |
 | [17. Shared turn gateway and local API](17-shared-turn-gateway-and-api.md) | Common turn entry point, dashboard HTTP/NDJSON contract, persistence semantics, and future background lifecycle |
+| [`/computer` perception reform](18-computer-perception-plan.md) | Measured baseline, opt-in AT-SPI observer, live test results, and staged browser design |
+| [CUA Driver research notes](19-cua-driver-research.md) | Open Interpreter's CUA driver lineage, observation/action loop, AT-SPI and pixels, permissions, browser routing, and Linux/Hyprland limits |
+| [CUA Hyprland trial](20-cua-driver-hyprland-experiment.md) | Isolated A/B result, integration decision, and remaining platform limits |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

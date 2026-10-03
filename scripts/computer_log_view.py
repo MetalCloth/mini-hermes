@@ -53,12 +53,21 @@ def format_record(record: dict) -> str:
     event = record.get("event", "unknown")
 
     if event == "computer_task_start":
-        return f"{stamp}  TASK STARTED · {record.get('model', 'unknown model')}\n  Task: {_short(record.get('task', ''))}"
+        driver = f" · {record['driver']}" if record.get("driver") else ""
+        return f"{stamp}  TASK STARTED · {record.get('model', 'unknown model')}{driver}\n  Task: {_short(record.get('task', ''))}"
     if event == "screenshot_captured":
         return (
             f"{stamp}  SCREENSHOT · turn {record.get('turn', '?')} · "
             f"{record.get('width', '?')}×{record.get('height', '?')} · "
             f"{record.get('size_bytes', 0) // 1024} KiB"
+        )
+    if event == "accessibility_observation":
+        duration = record.get("elapsed_ms")
+        timing = f" · {duration:.0f}ms" if isinstance(duration, (int, float)) else ""
+        return (
+            f"{stamp}  ACCESSIBILITY · turn {record.get('turn', '?')} · "
+            f"{record.get('status', 'unavailable')} · {record.get('count', 0)} labels · "
+            f"{record.get('coordinates', 0)} boxes{timing}"
         )
     if event == "model_request":
         image = record.get("screenshot", {})
@@ -114,6 +123,19 @@ def format_record(record: dict) -> str:
     if event in {"action_start", "action_complete"}:
         label = "ACTION" if event == "action_start" else "ACTION DONE"
         return f"{stamp}  {label} · turn {record.get('turn', '?')} · {_short(record.get('label', ''))}"
+    if event == "cua_call_start":
+        return f"{stamp}  CUA · {record.get('tool', '?')}"
+    if event == "cua_call_result":
+        label = "CUA OK" if record.get("success") else "CUA FAILED"
+        route = f" · {record['route']}" if record.get("route") else ""
+        effect = f" · {record['effect']}" if record.get("effect") else ""
+        duration = f" · {record['elapsed_ms']}ms" if record.get("elapsed_ms") is not None else ""
+        error = f"\n  {_short(record['error'], 500)}" if record.get("error") else ""
+        return f"{stamp}  {label} · {record.get('tool', '?')}{route}{effect}{duration}{error}"
+    if event == "cua_dotool_fallback":
+        return f"{stamp}  CUA FALLBACK · dotool {record.get('action', '?')}"
+    if event == "cua_accessibility_unavailable":
+        return f"{stamp}  CUA ACCESSIBILITY · {_short(record.get('error', ''), 300)}"
     if event == "dotool_start":
         argv = list(record.get("argv", []))
         if argv:

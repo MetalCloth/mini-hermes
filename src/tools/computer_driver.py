@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +10,13 @@ from pathlib import Path
 from PIL import Image
 
 from src.computer_logging import ComputerTrace
+
+
+def computer_driver_name() -> str:
+    name = os.environ.get("ORYN_COMPUTER_DRIVER", "cua").strip().lower()
+    if name not in {"cua", "dotool"}:
+        raise ValueError("ORYN_COMPUTER_DRIVER must be 'cua' or 'dotool'.")
+    return name
 
 
 class HyprlandDriver:
@@ -58,8 +66,8 @@ class HyprlandDriver:
         except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError("Could not read the focused Hyprland monitor layout.") from exc
 
-    def active_window(self) -> str | None:
-        """Identify the window receiving input on the selected monitor."""
+    def _active_window_data(self) -> dict:
+        """Read the window receiving input on the selected monitor."""
         try:
             result = subprocess.run(
                 ["hyprctl", "activewindow", "-j"], capture_output=True, check=True, timeout=5,
@@ -71,7 +79,7 @@ class HyprlandDriver:
             if address and address != "0x0":
                 if not isinstance(address, str) or window.get("monitor") != self.monitor_id:
                     raise ValueError("active window is on another monitor")
-                return address
+                return window
             result = subprocess.run(
                 ["hyprctl", "monitors", "-j"], capture_output=True, check=True, timeout=5,
             )
@@ -79,9 +87,26 @@ class HyprlandDriver:
             focused = next(item for item in monitors if item.get("focused") and not item.get("disabled"))
             if focused.get("id") != self.monitor_id:
                 raise ValueError("selected monitor is no longer focused")
-            return None
+            return {"address": None, "monitor": self.monitor_id}
         except (subprocess.SubprocessError, ValueError, TypeError, AttributeError, StopIteration) as exc:
             raise RuntimeError("Could not verify the active window on the selected monitor.") from exc
+
+    def active_window(self) -> str | None:
+        return self._active_window_data()["address"]
+
+    def active_window_stamp(self) -> tuple:
+        """Bind a screenshot or plan to both window identity and geometry."""
+        window = self._active_window_data()
+        address = window["address"]
+        if address is None:
+            return None, self.monitor_id, None, None
+        at, size = window.get("at"), window.get("size")
+        if not (isinstance(at, list) and isinstance(size, list)
+                and len(at) == len(size) == 2
+                and all(type(value) is int for value in at + size)
+                and all(value > 0 for value in size)):
+            raise RuntimeError("Could not verify the active window geometry.")
+        return address, self.monitor_id, tuple(at), tuple(size)
 
     def screenshot(self) -> tuple[bytes, tuple[int, int]]:
         try:
