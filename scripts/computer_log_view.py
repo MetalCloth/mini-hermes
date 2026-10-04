@@ -52,9 +52,39 @@ def format_record(record: dict) -> str:
     stamp = _time(record)
     event = record.get("event", "unknown")
 
-    if event == "computer_task_start":
+    if event in {"computer_task_start", "computer_task_started"}:
         driver = f" · {record['driver']}" if record.get("driver") else ""
         return f"{stamp}  TASK STARTED · {record.get('model', 'unknown model')}{driver}\n  Task: {_short(record.get('task', ''))}"
+    if event == "computer_tool":
+        phase = record.get("phase", "?")
+        name = record.get("name", "?")
+        detail = record.get("arguments") if phase == "start" else record.get("result")
+        return f"{stamp}  TOOL {str(phase).upper()} · {name} · {_short(detail, 180)}"
+    if event == "computer_diagnostic":
+        kind = record.get("diagnostic_type", "?")
+        if kind == "model_request":
+            return (f"{stamp}  MODEL REQUEST · round {record.get('round', '?')} · "
+                    f"~{record.get('estimated_tokens', '?')} tokens · {record.get('tool_count', '?')} tools")
+        if kind in {"tool_start", "tool_end"}:
+            return f"{stamp}  {kind.replace('_', ' ').upper()} · {record.get('tool_name', '?')}"
+        return f"{stamp}  {str(kind).replace('_', ' ').upper()} · {_short(record.get('error_class', ''), 180)}"
+    if event == "computer_observation":
+        scope = record.get("scope", "?")
+        image_scope = record.get("image_scope")
+        image_label = f" · image {image_scope}" if image_scope else ""
+        elements = f" · {record['element_count']} controls" if "element_count" in record else ""
+        return (f"{stamp}  OBSERVE · {scope}{image_label} · "
+                f"{record.get('width', '?')}×{record.get('height', '?')}{elements}")
+    if event == "computer_action_start":
+        return f"{stamp}  ACTION · {_action(record.get('action', {}))}"
+    if event == "computer_action_result":
+        outcome = record.get("outcome", {})
+        route = f" · {outcome['route']}" if isinstance(outcome, dict) and outcome.get("route") else ""
+        effect = outcome.get("effect", "?") if isinstance(outcome, dict) else "?"
+        return f"{stamp}  ACTION RESULT · {effect}{route}"
+    if event == "computer_verify":
+        result = record.get("result", {})
+        return f"{stamp}  VERIFY · {_short(result, 180)}"
     if event == "screenshot_captured":
         return (
             f"{stamp}  SCREENSHOT · turn {record.get('turn', '?')} · "

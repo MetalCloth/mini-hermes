@@ -195,7 +195,9 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Provide its full http:// or https:// URL. Returns the source URL, "
                 "title, and up to 12,000 characters of page text. Uses Firecrawl "
                 "when configured, otherwise reads HTML directly. If the page cannot "
-                "be read, try another result. Use browser_open for pages needing clicks or forms."
+                "be read, try another result. Use browser_open for pages needing clicks or forms. "
+                "The browser tools use a remote Firecrawl session, not local Brave or the user's desktop. "
+                "For local GUI interaction, use /computer tools when available."
             ),
             "parameters": {
                 "type": "object", "properties": {
@@ -209,6 +211,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Open a public web page in a short-lived Firecrawl cloud browser when you need "
                 "to click, fill a field, or inspect changing page content. Returns the current "
                 "URL and an accessibility snapshot with element refs such as '@e2'. "
+                "This is a remote browser, not local Brave or the user's desktop; it cannot verify local GUI state. "
                 "The browser stays open for this agent turn only and closes after the final answer. "
                 "Browser sessions use Firecrawl credits, so use web_extract for a simple one-page read. "
                 "Requires FIRECRAWL_API_KEY."
@@ -224,7 +227,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "description": (
                 "Refresh the current Firecrawl browser page's URL and accessibility snapshot. "
                 "Use after browser_open if the page changes without a click or needs another look. "
-                "Returns page text and current element refs."
+                "Returns page text and current element refs. This is a remote page snapshot, not local desktop evidence."
             ),
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },
@@ -233,6 +236,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "description": (
                 "Click an element in the current Firecrawl browser using a ref from the latest "
                 "snapshot, such as '@e2'. Returns the updated URL and page snapshot. "
+                "It clicks only in the remote Firecrawl session, not local Brave or the user's desktop. "
                 "Open a page first; only click controls needed for the user's request."
             ),
             "parameters": {
@@ -247,7 +251,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "Clear and type text into an input in the current Firecrawl browser using a "
                 "ref from the latest snapshot. Returns the updated page snapshot. "
                 "This does not submit the form; use browser_click on its submit control if needed. "
-                "The page runs in Firecrawl's cloud browser; do not enter passwords or secrets."
+                "The page runs in Firecrawl's cloud browser, not local Brave; do not enter passwords or secrets."
             ),
             "parameters": {
                 "type": "object", "properties": {
@@ -261,7 +265,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "description": (
                 "Press a key on the current Firecrawl page after browser_open. Use Enter to submit "
                 "a filled form, or Tab/Escape/arrow keys to operate a control. This can trigger "
-                "page actions. Returns the updated URL and text snapshot."
+                "page actions. Returns the updated URL and text snapshot. Keys affect only the remote session."
             ),
             "parameters": {
                 "type": "object", "properties": {
@@ -273,7 +277,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "name": "browser_scroll",
             "description": (
                 "Scroll the current Firecrawl page after browser_open to reveal content below, "
-                "above, or to a side. Returns the updated URL and text snapshot."
+                "above, or to a side. Returns the updated URL and text snapshot. This does not scroll local Brave."
             ),
             "parameters": {
                 "type": "object", "properties": {
@@ -287,7 +291,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "description": (
                 "Wait up to 10 seconds for the current Firecrawl page to show a known element, "
                 "text, URL pattern, or load state after an action. Returns the updated URL and "
-                "text snapshot. Prefer text or a known element over networkidle on busy pages."
+                "text snapshot. This checks only the remote browser session. Prefer text or a known element over networkidle on busy pages."
             ),
             "parameters": {
                 "type": "object", "properties": {
@@ -303,7 +307,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
             "name": "browser_back",
             "description": (
                 "Go back one page in the current Firecrawl browser history after browser_open. "
-                "Returns the previous URL and text snapshot."
+                "Returns the previous URL and text snapshot. This changes only the remote session, not local browser history."
             ),
             "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         },

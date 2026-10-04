@@ -1,4 +1,4 @@
-"""Screenshot-to-action planning through Oryn's selected model provider."""
+"""Legacy forced screenshot planner; TUI /computer uses the main turn loop."""
 
 import threading
 from pathlib import Path

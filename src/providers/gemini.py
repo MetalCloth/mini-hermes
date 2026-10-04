@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from typing import Any, Callable, Iterable
 
+from src.images import provider_image_parts
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall, retry_after_seconds
 from src.security.secrets import local_secret
 
@@ -109,6 +110,16 @@ def _content_history(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                     "name": message.get("name") or "unknown_tool",
                     "response": {"result": message.get("content", "")},
                 }
+                images = message.get("images", [])
+                if images:
+                    provider_image_parts(images)
+                    function_response["parts"] = [
+                        {"inlineData": {
+                            "mimeType": image["mime_type"],
+                            "data": image["base64_data"],
+                            "displayName": image["name"],
+                        }} for image in images
+                    ]
                 response_id = response_ids.get(call_id, call_id)
                 if isinstance(response_id, str) and response_id:
                     function_response["id"] = response_id
@@ -320,7 +331,7 @@ class GeminiProvider:
         api_key = _api_key()
         if not api_key:
             raise RuntimeError("Gemini API key is missing. Add GEMINI_API_KEY to ~/.mini-hermes/gemini.env.")
-        if any(message.get("images") for message in messages if message.get("role") == "user"):
+        if any(message.get("images") for message in messages):
             if self.supports_image_input() is not True:
                 raise ValueError(f"Gemini image input is not confirmed for {self.model}.")
         instructions, contents = _content_history(messages)

@@ -1,4 +1,4 @@
-"""Bounded screenshot/action loop for local computer use."""
+"""Legacy bounded screenshot/action loop; TUI /computer uses ComputerSession."""
 
 import os
 import re

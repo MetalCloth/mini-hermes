@@ -12,9 +12,11 @@ from threading import Event, Timer
 from typing import Any
 
 from src.agent.compression import compact_for_request
+from src.agent.context import estimate_context_tokens
 from src.mcp.adapter import mcp_loader_tool
 from src.providers.types import ModelResponse, ProviderRequestError, ToolCall
 from src.tools.browser_tools import BrowserSession, FirecrawlHTTPError
+from src.tools.computer_session import COMPUTER_INSTRUCTIONS, ComputerResult, ComputerSession, computer_tool_schemas
 from src.tools.file_tools import FileChange
 from src.tools.registry import execute_tool, tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
@@ -82,6 +84,7 @@ def run_turn(
     terminal_jobs: TerminalJobManager | None = None,
     on_diagnostic: Callable[[str, dict[str, Any]], None] | None = None,
     tool_allowlist: set[str] | None = None,
+    computer_session: ComputerSession | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -89,7 +92,11 @@ def run_turn(
         tool for tool in tools
         if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
     ]
+    if computer_session is not None:
+        native_tools.extend(computer_tool_schemas())
     local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
+    if computer_session is not None:
+        local_tool_names.update(tool["name"] for tool in computer_tool_schemas())
     from src.agent.skills import discover_skills, skill_loader_tool
     if tool_allowlist is None or "load_skill" in tool_allowlist:
         available_skills, skill_problems = discover_skills(project_root)
@@ -104,6 +111,7 @@ def run_turn(
     timer.daemon = True
     timer.start()
     tool_count = 0
+    computer_history: dict[str, str] = {}
     model_requests = 0
     turn_id = uuid.uuid4().hex
     turn_started = time.monotonic()
@@ -225,6 +233,16 @@ def run_turn(
                         save_summary=save_context_summary,
                         model=getattr(getattr(complete, "__self__", None), "model", None),
                     )
+                    if computer_session is not None:
+                        position = 0
+                        while (position < len(request_messages)
+                               and request_messages[position].get("role") in {"system", "developer"}):
+                            position += 1
+                        computer_instruction = COMPUTER_INSTRUCTIONS
+                        if computer_session.dry_run:
+                            computer_instruction += "\nThis is a dry run. Call computer_act for the first proposed input; the harness will preview it without sending input, then summarize the preview."
+                        request_messages.insert(position, {"role": "developer", "content": computer_instruction})
+                        request_tokens = estimate_context_tokens(request_messages, tools, model_name)
                     model_requests += 1
                     diagnostic(
                         "model_request", round=round_number,
@@ -253,6 +271,14 @@ def run_turn(
                     on_text_delta(response.text)
                 break
             check_cancelled()
+            if computer_session is not None:
+                # Screens are for one model step only; text outcomes remain in session history.
+                for message in messages:
+                    if message.get("role") == "tool" and message.get("name", "").startswith("computer_"):
+                        message.pop("images", None)
+                        summary_text = computer_history.pop(message.get("tool_call_id"), None)
+                        if summary_text is not None:
+                            message["content"] = summary_text
             if not response.tool_calls:
                 diagnostic(
                     "turn_end", elapsed_ms=round((time.monotonic() - turn_started) * 1000),
@@ -291,7 +317,9 @@ def run_turn(
                 try:
                     if tool_allowlist is not None and call.name not in tool_allowlist:
                         raise ValueError("This tool is outside the allowed set for this turn and was not run.")
-                    if call.name == "load_skill":
+                    if call.name.startswith("computer_") and computer_session is not None:
+                        result = computer_session.execute(call.name, call.arguments)
+                    elif call.name == "load_skill":
                         from src.agent.skills import load_skill
 
                         if not isinstance(call.arguments, dict) or set(call.arguments) != {"name"}:
@@ -400,6 +428,9 @@ def run_turn(
                             **({"upstream_detail": exc.detail} if exc.detail else {}),
                         }
                     result = f"Tool error: {exc}. Correct the arguments or try another approach."
+                result_images = result.images if isinstance(result, ComputerResult) else []
+                history_text = result.history_text if isinstance(result, ComputerResult) else None
+                result = result.text if isinstance(result, ComputerResult) else result
                 result_lower = result.casefold()
                 tool_succeeded = (
                     tool_error_class is None
@@ -417,10 +448,19 @@ def run_turn(
                 call_message["tool_calls"].append({
                     "id": call.id, "name": call.name, "arguments": call.arguments,
                 })
-                messages.append({
+                if result_images:
+                    for previous in messages:
+                        if previous.get("role") == "tool" and previous.get("name", "").startswith("computer_"):
+                            previous.pop("images", None)
+                tool_message = {
                     "role": "tool", "tool_call_id": call.id,
                     "name": call.name, "content": result,
-                })
+                }
+                if result_images:
+                    tool_message["images"] = result_images
+                messages.append(tool_message)
+                if history_text is not None:
+                    computer_history[call.id] = history_text[:MAX_TOOL_RESULT_CHARS]
                 diagnostic(
                     "tool_end", tool_name=diagnostic_tool_name, success=tool_succeeded,
                     elapsed_ms=round((time.monotonic() - tool_started) * 1000),
@@ -447,6 +487,13 @@ def run_turn(
         )
         raise
     finally:
+        if computer_session is not None:
+            for message in messages:
+                if message.get("role") == "tool" and message.get("name", "").startswith("computer_"):
+                    message.pop("images", None)
+                    summary_text = computer_history.pop(message.get("tool_call_id"), None)
+                    if summary_text is not None:
+                        message["content"] = summary_text
         timer.cancel()
         try:
             browser.close()

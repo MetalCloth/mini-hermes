@@ -3,7 +3,7 @@
 **Run date:** 3 October 2026
 
 **CUA Driver:** `cua-driver-rs` 0.32.0
-**Scope:** Compare CUA with Oryn's current screenshot + optional AT-SPI + dotool path, without changing Oryn's production code or defaults.
+**Scope at the time:** Compare CUA with Oryn's then-current screenshot + optional AT-SPI + dotool path, without changing production code or defaults during the isolated experiment. Subsequent integration and the current TUI architecture are recorded below and in the [main-loop decision record](21-cua-main-loop.md).
 
 ## Setup
 
@@ -47,7 +47,7 @@ An earlier exploratory interaction pair also completed on both paths with four m
 
 ## What worked and what did not
 
-- CUA's native Wayland mode found the isolated GTK window and returned its accessibility elements together with a window screenshot. Oryn's current path also supplied a screenshot and two AT-SPI labels for this fixture.
+- CUA's native Wayland mode found the isolated GTK window and returned its accessibility elements together with a window screenshot. Oryn's then-current dotool path also supplied a screenshot and two AT-SPI labels for this fixture.
 - CUA could target the entry semantically by element token. A separate direct diagnostic reported text entry as `confirmed`; its click result was `unverifiable` until a fresh state read proved the displayed result. A successful dispatch alone is not proof that an action worked.
 - The CUA screenshot was smaller than the window's native geometry. Its state included `frame_scale` (observed as about `0.79`); element frames had to be scaled before matching them to screenshot pixels. The first temporary adapter omitted this conversion and missed the button. That was an experiment-adapter bug, not a CUA driver failure. With the mapping corrected, semantic targeting worked.
 - CUA's Wayland path required an explicit environment flag. This test does not show that the default configuration works, that every compositor route is supported, or that arbitrary background input is available. See the [Linux driver guide](https://github.com/trycua/cua/blob/main/libs/cua-driver/rust/Skills/cua-driver/LINUX.md) and [action support ledger](https://github.com/trycua/cua/blob/main/libs/cua-driver/docs/action-support.md) for the project's stated platform boundaries.
@@ -67,7 +67,7 @@ A disposable Brave app window exposed a CUA accessibility tree, but its first-ru
 
 ## 4 October: numbered controls in Oryn
 
-Oryn now retains actionable CUA `element_index`/`element_token` pairs from each active-window snapshot. The model sees compact `[N] role: label` entries and may return `click_element` for a number in the **current** observation. Oryn validates that number before input, then sends the matching token scoped to the captured window through CUA. A new screenshot discards the old mapping. Coordinate clicks remain available when the tree is sparse. Typing and hotkeys still use dotool.
+At this stage of the earlier planner integration, Oryn retained actionable CUA `element_index`/`element_token` pairs from each active-window snapshot. The model saw compact `[N] role: label` entries and could return `click_element` for a number in the **current** observation. Oryn validated that number before input, then sent the matching token scoped to the captured window through CUA. A new screenshot discarded the old mapping. Coordinate clicks remained available when the tree was sparse. Typing and hotkeys still used dotool. The [current main-loop tools](21-cua-main-loop.md) also bind numbered controls to a fresh observation, but present them through a different tool result.
 
 Live local checks on the 1920×1080 Hyprland desktop:
 
@@ -80,4 +80,4 @@ One Brave snapshot immediately after a focus switch omitted the address bar; the
 
 ## Artifacts and scope
 
-The temporary binary, harnesses, and retained JSONL traces are in `/tmp/cua-driver-experiment-v0.32.0`. No Oryn production code, configuration defaults, or provider loop were changed. Pre-existing workspace edits were left untouched. No commit or push was made.
+The temporary binary, harnesses, and retained JSONL traces are in `/tmp/cua-driver-experiment-v0.32.0`. During this isolated experiment, no Oryn production code, configuration defaults, or provider loop were changed. Pre-existing workspace edits were left untouched. No commit or push was made. Those scope statements describe the experiment, not the later CUA integration or the [current TUI `/computer` flow](21-cua-main-loop.md).

@@ -151,7 +151,7 @@ sequenceDiagram
     B->>F: Delete interaction session
 ```
 
-This browser runs through Firecrawl's service. It is different from the local Playwright MCP browser subprocess. Disabling Playwright does not disable native Firecrawl browser tools.
+This browser runs through Firecrawl's service. It is different from the local Playwright MCP browser subprocess. Disabling Playwright does not disable native Firecrawl browser tools. The Firecrawl session is remote: it is not attached to local Brave or the user's desktop, and its snapshots/actions cannot verify what is open or playing locally. For a `/computer` task on the desktop, use `computer_*` for local actions and local screenshot evidence; browser results may help with public page research but are not an execution fallback.
 
 ## 8. Browser operations and validation
 

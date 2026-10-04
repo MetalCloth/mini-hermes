@@ -10,6 +10,8 @@ A session is a saved conversation with an identifier and metadata. Its messages 
 
 A session is not a live model process. The model is called afresh with selected context for each request. Loading a session reconstructs the history that Oryn will use in future requests.
 
+For a TUI `/computer` turn, the live screenshot is sent to the model for its next decision, then removed before the turn's messages are stored. The saved tool result keeps a compact text outcome and its call ID. Reloading the chat therefore restores the action history, but cannot reopen the earlier screen image. See the [computer decision record](21-cua-main-loop.md).
+
 ## 2. Why SQLite
 
 Python includes SQLite support. The application can open a local file, create tables, append messages transactionally, and query history without running another service. This fits the project's local educational scope.

@@ -114,6 +114,8 @@ The provider collects system/developer content into `instructions`. It converts 
 
 Notice that the function arguments are serialized JSON text in the outbound item, while the local `ToolCall.arguments` is a Python dictionary. The call ID is the join key connecting the request and its result.
 
+For a `/computer` result with a screenshot, the Codex provider sends that output as an array with an `input_text` part and an `input_image` part, still under the matching `function_call_output` ID. This lets the model inspect the fresh screen as the result of the observation or action that produced it. The [main-loop computer chapter](21-cua-main-loop.md) explains why the image is removed from later history.
+
 ### The missing tool output bug
 
 The reported endpoint error was essentially:
@@ -275,9 +277,9 @@ HTTP errors include the status and a bounded, control-cleaned body excerpt with 
 
 The model picker includes Gemini 3 text models. `gemini-3.8-flash` is the current default suggestion in the picker; `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-3.1-pro-preview`, and `gemini-3-flash-preview` are also listed. Additional `gemini-*` IDs can be typed as custom model IDs, subject to Google account/model availability. Picker models expose low, medium, and high thinking levels. Custom IDs keep Google's default because Oryn has no capability metadata for arbitrary models. Gemini has no Codex priority service tier.
 
-The adapter converts Oryn's instructions to `systemInstruction`, messages to Gemini `contents`, images to `inlineData`, and local tools to `functionDeclarations` using their JSON Schemas. Function responses are sent back with the matching function-call ID. Gemini 3 requires the returned `thoughtSignature` to accompany a tool call on the next request, so the provider stores the original Gemini response parts in the assistant's saved history and replays them unchanged. The local loop still decides which tool to run and retains all existing approval and validation boundaries.
+The adapter converts Oryn's instructions to `systemInstruction`, messages to Gemini `contents`, images to `inlineData`, and local tools to `functionDeclarations` using their JSON Schemas. Function responses are sent back with the matching function-call ID. A `/computer` screenshot is placed in `functionResponse.parts` as `inlineData`, attached to that tool result. Gemini 3 requires the returned `thoughtSignature` to accompany a tool call on the next request, so the provider stores the original Gemini response parts in the assistant's saved history and replays them unchanged. The local loop still decides which tool to run and retains all existing approval and validation boundaries.
 
-Gemini's stream parser emits visible text as it arrives, collects complete function calls, rejects incomplete streams, surfaces blocked prompts, and classifies retryable HTTP/network failures for the shared retry logic. User PNG/JPEG attachments and `/computer` screenshots use the same image path. The Gemini provider does not use Codex login, Codex speed settings, or the OpenRouter key.
+Gemini's stream parser emits visible text as it arrives, collects complete function calls, rejects incomplete streams, surfaces blocked prompts, and classifies retryable HTTP/network failures for the shared retry logic. User PNG/JPEG attachments are top-level user content; `/computer` screenshots are parts of a matching function response. The Gemini provider does not use Codex login, Codex speed settings, or the OpenRouter key.
 
 Protocol references: Google's [model catalog](https://ai.google.dev/gemini-api/docs/models), [GenerateContent API](https://ai.google.dev/api/generate-content), and [Gemini 3 thought-signature guide](https://ai.google.dev/gemini-api/docs/generate-content/gemini-3).
 

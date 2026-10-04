@@ -401,10 +401,19 @@ class CodexProvider:
             if role == "tool":
                 if message["tool_call_id"] not in sent_calls:
                     continue
+                images = message.get("images", [])
+                if images and self.supports_image_input() is not True:
+                    raise ValueError(
+                        f"The model catalog does not confirm image input for {self.model}. "
+                        "Refresh the model catalog or select a model that supports images."
+                    )
+                output = message["content"]
+                if images:
+                    output = [{"type": "input_text", "text": output}, *provider_image_parts(images)]
                 input_messages.append({
                     "type": "function_call_output",
                     "call_id": message["tool_call_id"],
-                    "output": message["content"],
+                    "output": output,
                 })
                 continue
             if role not in {"user", "assistant"}:

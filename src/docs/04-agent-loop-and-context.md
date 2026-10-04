@@ -47,10 +47,10 @@ flowchart TD
     LOAD -->|"No"| I{"MCP-prefixed name?"}
     I -->|"Yes"| J["Require advertised definition, check approval, call server"]
     I -->|"No"| K["Dispatch native tool and its approval callback"]
-    J --> L["Convert result or caught tool error to text"]
+    J --> L["Record result or caught tool error"]
     K --> L
     DEF --> L
-    L --> M["Cap result, record completed pair, then emit result event"]
+    L --> M["Cap result text, record completed pair, then emit result event"]
     M --> N{"More calls in this response?"}
     N -->|"Yes"| G
     N -->|"No"| P{"Round, tool, and time budgets available?"}
@@ -64,6 +64,8 @@ flowchart TD
 Exceptions and cancellation also pass through browser cleanup. A cleanup error produces a warning; it does not fabricate a successful browser close.
 
 The loop filters full MCP schemas out of the initial model catalog, even when a caller supplies them for its UI inventory. It advertises `load_mcp_tools` with short server descriptions, connection states, and tool counts. A successful load makes that server's definitions available starting with the next model request. Definitions remain available within the user turn; a new `run_turn` starts with no loaded servers. Each request refreshes loaded definitions from the MCP client, removing a server that is no longer connected. Repeated loads do not duplicate schemas. An MCP call must have been advertised in the request that produced it, so a load and a previously unavailable tool call in the same response cannot skip discovery.
+
+On a TUI `/computer` turn, `run_turn` also advertises the scoped computer tools. Their results can carry one screenshot alongside text. After the next model response, the loop removes the image bytes and replaces the old control listing with a short text outcome; call and result IDs remain paired. This keeps the same turn and context machinery while limiting repeated image payloads. The [computer decision record](21-cua-main-loop.md) explains the choice and its limits.
 
 ## 3. Sequential execution and why call IDs matter
 

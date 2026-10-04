@@ -30,18 +30,17 @@ from src.agent.conversation_loop import (
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
-from src.computer import ComputerCancelled, START_DELAY, run_computer
 from src.computer_logging import ComputerTrace
 from src.images import MAX_IMAGES, prepare_image, read_clipboard_image
 from src.mcp.client import MCPClient
 from src.mcp.discovery import save_enabled_servers
 from src.mcp.oauth import login_notion
 from src.providers.codex import AUTH_FILE
-from src.providers.computer import ComputerPlanner
 from src.providers.router import available_models, provider_for_model, provider_setup_warning
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
+from src.tools.computer_session import ComputerSession
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
 
@@ -1151,6 +1150,14 @@ class OrynTUI(App[None]):
         elif self._computer_armed:
             computer_task = prompt
 
+        if computer_task and (
+            computer_task == "--dry-run"
+            or (computer_task.startswith("--dry-run ")
+                and not computer_task.removeprefix("--dry-run ").strip())
+        ):
+            self._set_activity("Add a computer task after --dry-run.", working=False, error=True)
+            return
+
         if (computer_task or self._computer_armed) and self.pending_images:
             self._set_activity("/computer captures the desktop itself. Remove attached images first.", working=False, error=True)
             return
@@ -1196,7 +1203,6 @@ class OrynTUI(App[None]):
         composer.clear()
         if computer_task:
             self._set_computer_armed(False)
-        conversation_history = list(self.history)
         self.history.append(user_message)
         self.pending_images.clear()
         self._refresh_attachments()
@@ -1206,21 +1212,14 @@ class OrynTUI(App[None]):
         self.turn_active = True
         self._reply_text = ""
         self._partial_reply_text = ""
-        self._set_activity(f"{self.model} is reviewing the screen" if computer_task else "Oryn is thinking", working=True)
+        self._set_activity(f"{self.model} is preparing computer tools" if computer_task else "Oryn is thinking", working=True)
         self._cancel_event = threading.Event()
         # Provider and tool calls block, but must not hold the TUI open at shutdown.
-        if computer_task:
-            self._turn_thread = threading.Thread(
-                target=self._run_computer_task,
-                args=(computer_task, conversation_history, self.session_id, self._cancel_event, self.provider),
-                name="oryn-computer-turn", daemon=True,
-            )
-        else:
-            self._turn_thread = threading.Thread(
-                target=self._run_turn,
-                args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event),
-                name="oryn-agent-turn", daemon=True,
-            )
+        self._turn_thread = threading.Thread(
+            target=self._run_turn,
+            args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event, computer_task),
+            name="oryn-computer-turn" if computer_task else "oryn-agent-turn", daemon=True,
+        )
         self._turn_thread.start()
 
     def action_open_palette(self) -> None:
@@ -1776,6 +1775,7 @@ class OrynTUI(App[None]):
         tools: list[dict[str, Any]],
         project_root: Path,
         cancel_event: threading.Event,
+        computer_task: str | None = None,
     ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         session_id = self.session_id
@@ -1797,7 +1797,38 @@ class OrynTUI(App[None]):
             f"Undo change to {path}", diff,
         )
         confirm_mcp = lambda name, preview: self._request_approval(f"Call MCP tool {name}", preview)
+        trace = None
+        computer_session = None
+        finished = None
+        def tool_event(phase: str, call: ToolCall, result: str | None) -> None:
+            self.post_message(ToolActivity(phase, call, result))
+            if trace and call.name.startswith("computer_"):
+                trace.write("computer_tool", phase=phase, name=call.name,
+                            arguments=call.arguments if phase == "start" else None,
+                            result=result[:1000] if isinstance(result, str) else None)
+        def diagnostic(turn_id: str, event: dict[str, Any]) -> None:
+            self.store.append_diagnostic(session_id, turn_id, event)
+            if trace and event.get("type") in {
+                "model_request", "tool_start", "tool_end", "retry", "turn_error", "turn_end",
+            }:
+                trace.write("computer_diagnostic", turn_id=turn_id,
+                            diagnostic_type=event["type"],
+                            **{key: value for key, value in event.items() if key != "type"})
         try:
+            if computer_task:
+                if provider.supports_image_input() is not True:
+                    raise ValueError(f"{self.model} does not have confirmed image input. Choose a model with image support.")
+                trace = ComputerTrace.from_environment()
+                dry_run = computer_task.startswith("--dry-run ")
+                computer_session = ComputerSession(
+                    cancel_event,
+                    confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
+                    ask_user=lambda question: self._ask_computer_question(question, cancel_event),
+                    dry_run=dry_run, trace=trace,
+                )
+                if trace:
+                    trace.write("computer_task_started", task=computer_task, dry_run=dry_run,
+                                model=self.model, driver="cua" if computer_session.cua else "dotool")
             answer = run_turn(
                 history,
                 provider.complete,
@@ -1806,9 +1837,7 @@ class OrynTUI(App[None]):
                 confirm_terminal,
                 confirm_write,
                 on_text_delta=lambda delta: self.post_message(StreamChunk(delta)),
-                on_tool_event=lambda phase, call, result: self.post_message(
-                    ToolActivity(phase, call, result)
-                ),
+                on_tool_event=tool_event,
                 cancel_event=cancel_event,
                 confirm_edit=confirm_edit,
                 confirm_undo=confirm_undo,
@@ -1823,7 +1852,8 @@ class OrynTUI(App[None]):
                 ),
                 file_change_journal=file_change_journal,
                 terminal_jobs=terminal_jobs,
-                on_diagnostic=lambda turn_id, event: self.store.append_diagnostic(session_id, turn_id, event),
+                on_diagnostic=diagnostic,
+                computer_session=computer_session,
             )
         except TurnLimitReached as exc:
             finished = TurnFinished(None, str(exc), paused=True)
@@ -1833,54 +1863,20 @@ class OrynTUI(App[None]):
             finished = TurnFinished(None, str(exc))
         else:
             finished = TurnFinished(answer, None)
-        finished.elapsed_seconds = max(0.0, monotonic() - started_at)
-        self.post_message(finished)
-
-    def _run_computer_task(
-        self, task: str, conversation_history: list[dict[str, Any]], session_id: str,
-        cancel_event: threading.Event, provider: Any,
-    ) -> None:
-        started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
-        dry_run = task.startswith("--dry-run ")
-        if dry_run:
-            task = task.removeprefix("--dry-run ").strip()
-        trace = None
-        try:
-            trace = ComputerTrace.from_environment()
-            context_summary = self.store.load_context_summary(session_id) if session_id else None
-            save_context_summary = (
-                lambda summary, count, digest: self.store.save_context_summary(
-                    session_id, summary, count, digest,
-                )
-            ) if session_id else None
-            planner = ComputerPlanner(
-                provider, trace, conversation_history=conversation_history,
-                context_summary=context_summary, save_context_summary=save_context_summary,
-            )
-            self.post_message(TurnProgress(f"Switch to the target app now · starting in {START_DELAY} second"))
-            if cancel_event.wait(START_DELAY):
-                raise ComputerCancelled("Stopped by you.")
-            answer = run_computer(
-                task, dry_run=dry_run, cancel_event=cancel_event, provider=planner,
-                on_status=lambda status: self.post_message(TurnProgress(status)),
-                confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
-                ask_user=lambda question: self._ask_computer_question(question, cancel_event),
-                trace=trace,
-            )
-        except ComputerCancelled as exc:
-            if trace:
-                trace.write("computer_task_cancelled", error=str(exc))
-            finished = TurnFinished(None, str(exc), cancelled=True)
-        except Exception as exc:
-            if trace:
-                trace.write("computer_task_failed", error_type=type(exc).__name__, error=str(exc))
-            finished = TurnFinished(None, str(exc))
-        else:
-            if trace:
-                trace.write("computer_task_finished", answer=answer)
-            finished = TurnFinished(answer, None)
         finally:
-            if trace:
+            if trace is not None and finished is not None:
+                trace.write(
+                    "computer_task_cancelled" if finished.cancelled else
+                    "computer_task_failed" if finished.error else "computer_task_finished",
+                    error=finished.error, answer=finished.answer[:1000] if finished.answer else None,
+                )
+            if computer_session is not None:
+                try:
+                    computer_session.close()
+                except Exception as exc:
+                    if trace is not None:
+                        trace.write("computer_cleanup_error", error=str(exc)[:500])
+            if trace is not None:
                 trace.close()
         finished.elapsed_seconds = max(0.0, monotonic() - started_at)
         self.post_message(finished)

@@ -2,7 +2,7 @@
 
 **Status: Phase 1 implemented as an opt-in experiment, with checked screenshot-pixel boxes.** Prepared and tested 2 October 2026. Browser attachment and semantic actions remain separate design stages.
 
-This chapter records the pre-CUA dotool baseline. Since 3 October, CUA is the default `/computer` driver; see the [integration result](20-cua-driver-hyprland-experiment.md) and [current usage](../../README.md#computer-mode-selected-model). Set `ORYN_COMPUTER_DRIVER=dotool` to reproduce the path measured below.
+This chapter records the pre-CUA dotool baseline and its historical planner path. Since 3 October, CUA is the default `/computer` driver; the TUI now uses the [main-loop flow and decision record](21-cua-main-loop.md). See the [integration result](20-cua-driver-hyprland-experiment.md) and [current usage](../../README.md#computer-mode-selected-model). The old measurements do not describe the current TUI path. The “Proposed shape” and later stages below are the plan as it stood at the time; they are not the current architecture or a list of features now enabled.
 
 ## Goal
 

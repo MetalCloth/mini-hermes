@@ -2,7 +2,7 @@
 
 **A detailed explanation of what we built, how it works, why it changed, and what remains unfinished.**
 
-Documentation snapshot: **28 September 2026**. This handbook was written after inspecting the implementation, its tests, and the repository issue list. Later changes can make individual details stale; each chapter links to the code responsible for its behavior.
+Core documentation snapshot: **28 September 2026**. The `/computer` main-loop chapter was added on **4 October 2026**. Earlier chapters can describe historical behavior; each chapter links to the code responsible for its behavior.
 
 Follow-up chapters now include on-demand MCP schemas, explicit MCP opt-in, durable per-chat undo, scoped skills, one bounded read-only subagent, Git awareness, safe upstream traces, offline failure/context evaluations, a local first-release boundary, and a documented shared turn/API contract. The [core upgrade plan](16-core-upgrade-plan.md) records the earlier reliability milestone and its remaining limits.
 
@@ -33,6 +33,7 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [`/computer` perception reform](18-computer-perception-plan.md) | Measured baseline, opt-in AT-SPI observer, live test results, and staged browser design |
 | [CUA Driver research notes](19-cua-driver-research.md) | Open Interpreter's CUA driver lineage, observation/action loop, AT-SPI and pixels, permissions, browser routing, and Linux/Hyprland limits |
 | [CUA Hyprland trial](20-cua-driver-hyprland-experiment.md) | Isolated A/B result, integration decision, and remaining platform limits |
+| [`/computer` main-loop reform](21-cua-main-loop.md) | Current flow, decision reasons and tradeoffs, scoped CUA tools, image results, exact targets, and conditional waiting |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

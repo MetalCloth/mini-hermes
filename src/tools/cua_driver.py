@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from threading import Event
 
 from src.tools.computer_driver import HyprlandDriver
 
@@ -76,34 +77,62 @@ class CuaDriver(HyprlandDriver):
             self._server = None
         self._temporary.cleanup()
 
-    def _call(self, name: str, args: dict, *, timeout: int = 12) -> dict:
+    def _call(
+        self, name: str, args: dict, *, timeout: int = 12,
+        cancel_event: Event | None = None, allow_refusal: bool = False,
+    ) -> dict:
         started = time.monotonic()
         if self.trace:
             self.trace.write("cua_call_start", tool=name)
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 [self.binary, "call", name, json.dumps(args), "--socket", str(self.socket)],
-                capture_output=True, text=True, timeout=timeout, env=self.env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            try:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise InterruptedError(f"CUA {name} was cancelled; its effect is uncertain.")
+                    remaining = timeout - (time.monotonic() - started)
+                    if remaining <= 0:
+                        raise TimeoutError(f"CUA {name} timed out; its effect is uncertain.")
+                    try:
+                        stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except BaseException:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+        except (OSError, TimeoutError, InterruptedError) as exc:
             if self.trace:
                 self.trace.write("cua_call_result", tool=name, success=False, error=str(exc), elapsed_ms=round((time.monotonic() - started) * 1000))
+            if isinstance(exc, InterruptedError):
+                raise
             raise RuntimeError(f"CUA {name} failed: {exc}") from exc
         try:
-            response = json.loads(result.stdout) if result.returncode == 0 else None
+            response = json.loads(stdout)
         except json.JSONDecodeError:
             response = None
-        success = result.returncode == 0 and isinstance(response, dict) and response.get("effect") != "refused"
+        refused = isinstance(response, dict) and response.get("effect") == "refused"
+        accepted = (isinstance(response, dict) and (
+            (process.returncode == 0 and (allow_refusal or not refused))
+            or (allow_refusal and refused)
+        ))
         if self.trace:
             self.trace.write(
-                "cua_call_result", tool=name, success=success, returncode=result.returncode,
+                "cua_call_result", tool=name, success=accepted and not refused, returncode=process.returncode,
                 effect=response.get("effect") if isinstance(response, dict) else None,
                 route=response.get("route") if isinstance(response, dict) else None,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
-                error=(result.stderr or result.stdout)[:500] if not success else "",
+                error=(stderr or stdout)[:500] if not accepted else "",
             )
-        if not success:
-            detail = (result.stderr or result.stdout).strip()[:500]
+        if not accepted:
+            detail = (stderr or stdout).strip()[:500]
             raise RuntimeError(f"CUA {name} failed: {detail or 'invalid response'}")
         return response
 
