@@ -27,6 +27,7 @@ class ComputerLoggingTests(unittest.TestCase):
             Image.new("RGB", (800, 450), "black").save(image, format="JPEG")
             plan = {
                 "status": "actions", "summary": "Open the launcher", "question": "",
+                "observe_delay_seconds": 0,
                 "actions": [{"type": "key", "key": "super"}],
                 "expected_result": "The launcher opens", "requires_confirmation": False,
                 "confirmation_reason": "",
@@ -34,7 +35,7 @@ class ComputerLoggingTests(unittest.TestCase):
             tool_arguments = {
                 **plan,
                 "actions": [{
-                    "type": "key", "x": None, "y": None,
+                    "type": "key", "element_index": None, "x": None, "y": None,
                     "direction": None, "key": "super", "text": None,
                 }],
             }

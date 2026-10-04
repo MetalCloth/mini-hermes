@@ -13,4 +13,6 @@ For `key`, use dotool key names: `ctrl+l` focuses a browser address bar, `super+
 
 Batch only actions justified by the current screenshot. After navigation, a dialog, or any uncertain input, reobserve. A CUA click may report that delivery was attempted without proving the UI changed; verify the next screenshot before repeating it. Do not repeat uncertain typing or sending. Oryn keeps the active-window checks and the approval flow for external changes.
 
+If the screenshot shows loading or a transition, or the last action has a plausible pending effect, return `status: "observe_again"` with no actions. Set `observe_delay_seconds` to 0 for a fresh look now, or up to 10 for a minimum age of the current screenshot. Oryn counts model thinking time toward that age. A completed input call does not prove its visible effect; inspect fresh state and retry only with a concrete reason to think the effect did not occur. Avoid repeated observation when nothing suggests a change. Do not repeat input merely to wait, because it may restart or duplicate work.
+
 Use the companion `caelestia-hyprland` profile for this laptop's shortcuts; current screenshots and later user corrections take precedence.

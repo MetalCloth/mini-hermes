@@ -30,16 +30,24 @@ COMPUTER_PLAN_TOOL = {
     "type": "function",
     "name": "computer_plan",
     "description": (
-        "Return one proposed desktop plan for the current screenshot. This function only describes "
-        "actions; Oryn validates the plan and a separate local driver performs approved actions."
+        "Return one proposed desktop plan for the current screenshot. Oryn validates the plan, "
+        "and a separate local driver performs approved actions. observe_again sends no desktop input."
     ),
     "strict": True,
     "parameters": {
         "type": "object",
         "properties": {
-            "status": {"type": "string", "enum": ["actions", "ask_user", "done"]},
+            "status": {"type": "string", "enum": ["actions", "observe_again", "ask_user", "done"]},
             "summary": {"type": "string", "description": "Short description of this plan or result."},
             "question": {"type": "string", "description": "One short question only when status is ask_user; otherwise empty."},
+            "observe_delay_seconds": {
+                "type": "integer",
+                "description": (
+                    "For observe_again only: minimum age of the current screenshot before Oryn "
+                    "captures a new one. Model thinking time counts toward this delay; 0 means "
+                    "observe immediately. Set 0 for other statuses."
+                ),
+            },
             "actions": {
                 "type": "array",
                 "description": "One to three actions for status actions; otherwise an empty array.",
@@ -63,7 +71,7 @@ COMPUTER_PLAN_TOOL = {
             "confirmation_reason": {"type": "string", "description": "Why approval is needed; otherwise empty."},
         },
         "required": [
-            "status", "summary", "question", "actions", "expected_result",
+            "status", "summary", "question", "observe_delay_seconds", "actions", "expected_result",
             "requires_confirmation", "confirmation_reason",
         ],
         "additionalProperties": False,
@@ -130,9 +138,20 @@ class ComputerPlanner:
             f"The screenshot is {width}x{height}; coordinates start at the top-left.\n"
             "Call computer_plan exactly once with the complete plan. Do not answer in ordinary text. "
             "For each action, provide every parameter field and set unused parameters to null.\n"
-            "status must be actions, ask_user, or done. Use done only when the screenshot verifies "
-            "the task is complete. If you are uncertain or need information, use ask_user and ask "
-            "one short question instead of guessing.\n"
+            "status must be actions, observe_again, ask_user, or done. Use done only when the "
+            "screenshot verifies the task is complete. Use observe_again only when the screenshot "
+            "shows loading or a transition, or the last action has a plausible pending effect. "
+            "It sends no desktop input and gets a fresh screenshot. "
+            "Set observe_delay_seconds to 0 for an immediate fresh "
+            "look or 1–10 for a minimum time since the current screenshot; time spent planning "
+            "counts toward that time. Set it to 0 for all other statuses. Do not request another "
+            "observation merely because time passed. A completed input call does not prove its "
+            "visible effect. Check fresh state before retrying the same input; retry only with "
+            "a concrete reason to think its effect did not occur. If it may still be pending, "
+            "observe again. Do not repeat input merely to wait: it may restart "
+            "or duplicate work. After repeated observations with no "
+            "progress, change approach or ask the user. If you need information the screenshot "
+            "cannot provide, use ask_user and ask one short question.\n"
             "For actions, return 1 to 3 actions that can be performed on the current visible screen "
             "without needing a new screenshot between them. Never return four or more actions; remove "
             "unnecessary steps or stop after three and reobserve next turn. End the batch after navigation, "
@@ -149,7 +168,8 @@ class ComputerPlanner:
             "Use a box as a click hint only when its element matches the screenshot; otherwise use "
             "the screenshot or ask the user. Labels without boxes give no target coordinates.\n"
             "Set question to an empty string unless status is ask_user; set actions to an empty list "
-            "unless status is actions. Keep expected_result empty except for action plans.\n"
+            "unless status is actions. Keep expected_result empty except for action plans. "
+            "observe_again must have no actions or confirmation.\n"
             "If an action will send, delete, buy, publish, submit, or otherwise commit an external "
             "change, set requires_confirmation=true, explain why in confirmation_reason, and return "
             "only that single action. After approval, Oryn may send another screenshot before it acts; "

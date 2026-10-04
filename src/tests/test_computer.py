@@ -37,6 +37,14 @@ def done_plan(summary="The task is complete"):
     }
 
 
+def observe_plan(delay=0):
+    return {
+        "status": "observe_again", "summary": "Look at the page again", "question": "",
+        "observe_delay_seconds": delay, "actions": [], "expected_result": "",
+        "requires_confirmation": False, "confirmation_reason": "",
+    }
+
+
 class FakeDriver:
     def __init__(self, failures=0, change_after_action=False):
         self.captures = 0
@@ -227,6 +235,16 @@ class ComputerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "confirmation reason"):
             parse_plan(plan, (800, 450))
 
+    def test_observe_plan_sends_no_actions_and_bounds_delay(self):
+        self.assertEqual(parse_plan(observe_plan(2), (800, 450))["observe_delay_seconds"], 2)
+        for delay in (-1, 11, True, 1.5):
+            with self.subTest(delay=delay), self.assertRaisesRegex(ValueError, "observe_delay_seconds"):
+                parse_plan(observe_plan(delay), (800, 450))
+        plan = observe_plan()
+        plan["actions"] = [{"type": "key", "key": "ctrl+r"}]
+        with self.assertRaisesRegex(ValueError, "sends no desktop input"):
+            parse_plan(plan, (800, 450))
+
     def test_dry_run_previews_batch_without_desktop_input(self):
         driver = FakeDriver()
         provider = FakeProvider(action_plan([
@@ -254,8 +272,30 @@ class ComputerTests(unittest.TestCase):
         self.assertIn("The browser shows example.com", result)
         self.assertEqual(driver.captures, 2)
         self.assertEqual([item[0] for item in driver.actions], ["hotkey", "type"])
-        self.assertIn("Expected visible result", provider.calls[1][4])
-        self.assertIn("executed press ctrl+l, type 'example.com'", provider.calls[1][3][0])
+        self.assertIn("This does not prove the intended UI change occurred", provider.calls[1][4])
+        self.assertIn("driver completed input calls press ctrl+l, type 'example.com'", provider.calls[1][3][0])
+
+    def test_observe_again_rechecks_screen_without_input_or_extra_sleep_after_model_time(self):
+        driver = FakeDriver()
+        clock = [0]
+        provider = FakeProvider(observe_plan(2), done_plan(), on_call=lambda: clock.__setitem__(0, clock[0] + 8))
+        with patch("src.computer.monotonic", side_effect=lambda: clock[0]), \
+             patch("src.computer.threading.Event.wait") as wait:
+            run_computer("Find the video", driver=driver, provider=provider)
+        self.assertEqual(driver.captures, 2)
+        self.assertEqual(driver.actions, [])
+        wait.assert_not_called()
+        self.assertIn("No desktop input was sent", provider.calls[1][4])
+
+    def test_observe_again_wait_can_be_cancelled_before_another_capture(self):
+        driver = FakeDriver()
+        provider = FakeProvider(observe_plan(2))
+        with patch("src.computer.threading.Event.wait", return_value=True) as wait:
+            with self.assertRaises(ComputerCancelled):
+                run_computer("Find the video", driver=driver, provider=provider)
+        wait.assert_called_once()
+        self.assertEqual(driver.captures, 1)
+        self.assertEqual(driver.actions, [])
 
     def test_invalid_plan_gets_one_fresh_screenshot_retry_without_partial_input(self):
         driver = FakeDriver()

@@ -18,10 +18,11 @@ MAX_SECONDS = 300
 START_DELAY = 1
 MAX_RECOVERIES = 5
 MAX_PLAN_RECOVERIES = 1
+MAX_OBSERVE_DELAY_SECONDS = 10
 KEY = re.compile(r"[a-zA-Z0-9_:+ -]{1,60}\Z")
 PLAN_FIELDS = {
     "status", "summary", "question", "actions", "expected_result",
-    "requires_confirmation", "confirmation_reason",
+    "requires_confirmation", "confirmation_reason", "observe_delay_seconds",
 }
 
 
@@ -81,16 +82,20 @@ def _action(action: object, size: tuple[int, int], element_ids: set[int]) -> dic
 
 def parse_plan(reply: dict, size: tuple[int, int], element_ids: set[int] | None = None) -> dict:
     """Validate structured function arguments before they can reach the local driver."""
-    if not isinstance(reply, dict) or set(reply) != PLAN_FIELDS:
+    if not isinstance(reply, dict) or set(reply) not in (PLAN_FIELDS, PLAN_FIELDS - {"observe_delay_seconds"}):
         raise ValueError("The selected model returned an invalid plan format.")
 
     status = reply["status"]
-    if not isinstance(status, str) or status not in {"actions", "ask_user", "done"}:
+    if not isinstance(status, str) or status not in {"actions", "observe_again", "ask_user", "done"}:
         raise ValueError("The selected model returned an unsupported plan status.")
+    observe_delay = reply.get("observe_delay_seconds", 0)
+    if type(observe_delay) is not int or not 0 <= observe_delay <= MAX_OBSERVE_DELAY_SECONDS:
+        raise ValueError(f"observe_delay_seconds must be an integer from 0 to {MAX_OBSERVE_DELAY_SECONDS}.")
     plan = {
         "status": status,
         "summary": _text(reply["summary"], "summary", required=True),
         "question": _text(reply["question"], "question", required=False),
+        "observe_delay_seconds": observe_delay,
         "expected_result": _text(reply["expected_result"], "expected result", required=False),
         "requires_confirmation": reply["requires_confirmation"],
         "confirmation_reason": _text(reply["confirmation_reason"], "confirmation reason", required=False),
@@ -99,6 +104,8 @@ def parse_plan(reply: dict, size: tuple[int, int], element_ids: set[int] | None 
     if type(plan["requires_confirmation"]) is not bool or not isinstance(plan["actions"], list):
         raise ValueError("The selected model returned invalid confirmation or action data.")
     if status == "actions":
+        if observe_delay:
+            raise ValueError("Action plans cannot request an observation delay.")
         if not 1 <= len(plan["actions"]) <= MAX_ACTIONS_PER_TURN:
             raise ValueError(f"The selected model must return 1–{MAX_ACTIONS_PER_TURN} actions per turn.")
         plan["actions"] = [_action(action, size, element_ids or set()) for action in plan["actions"]]
@@ -111,11 +118,15 @@ def parse_plan(reply: dict, size: tuple[int, int], element_ids: set[int] | None 
                 raise ValueError("A confirmed action needs a confirmation reason.")
         elif plan["confirmation_reason"]:
             raise ValueError("The selected model supplied a confirmation reason without requiring approval.")
+    elif status == "observe_again":
+        if (plan["actions"] or plan["question"] or plan["requires_confirmation"]
+                or plan["expected_result"] or plan["confirmation_reason"]):
+            raise ValueError("observe_again sends no desktop input and cannot request confirmation.")
     elif status == "ask_user":
-        if (plan["actions"] or plan["requires_confirmation"] or not plan["question"].strip()
+        if (observe_delay or plan["actions"] or plan["requires_confirmation"] or not plan["question"].strip()
                 or plan["expected_result"] or plan["confirmation_reason"]):
             raise ValueError("The selected model returned an incomplete clarification request.")
-    elif (plan["actions"] or plan["question"] or plan["requires_confirmation"]
+    elif (observe_delay or plan["actions"] or plan["question"] or plan["requires_confirmation"]
           or plan["expected_result"] or plan["confirmation_reason"]):
         raise ValueError("The selected model returned an invalid completion plan.")
     return plan
@@ -244,6 +255,7 @@ def run_computer(
             pending_approval_identity = None
             continue
         screenshot, size = driver.screenshot()
+        observed_at = monotonic()
         if trace:
             trace.write(
                 "screenshot_captured", turn=turn, width=size[0], height=size[1],
@@ -321,7 +333,7 @@ def run_computer(
             last_result = (
                 f"Oryn rejected your previous computer_plan call: {exc} No desktop input was sent. "
                 "Recheck the fresh screenshot and call computer_plan exactly once with the full "
-                "plan. Use 1–3 allowed actions, or ask_user/done with an empty actions list."
+                "plan. Use 1–3 allowed actions, observe_again, or ask_user/done with an empty actions list."
             )
             continue
         if trace:
@@ -378,6 +390,32 @@ def run_computer(
                 on_status(f"Switch back to the target app now · continuing in {START_DELAY} second")
             if cancel_event.wait(START_DELAY):
                 raise ComputerCancelled("Stopped by you.")
+            continue
+
+        if plan["status"] == "observe_again":
+            if dry_run:
+                if trace:
+                    trace.write("dry_run_complete", turn=turn, observe_delay_seconds=plan["observe_delay_seconds"])
+                return (
+                    "Dry run: the selected model requested a fresh screenshot "
+                    f"after at least {plan['observe_delay_seconds']} second(s) from this capture. "
+                    "No desktop input was sent."
+                )
+            remaining = max(0.0, plan["observe_delay_seconds"] - (monotonic() - observed_at))
+            if on_status:
+                on_status("Computer model requested a fresh look at the desktop")
+            if remaining and cancel_event.wait(remaining):
+                raise ComputerCancelled("Stopped by you.")
+            _check_cancel(cancel_event)
+            _check_time(started)
+            if trace:
+                trace.write(
+                    "computer_observe_again", turn=turn,
+                    requested_delay_seconds=plan["observe_delay_seconds"],
+                    waited_seconds=round(remaining, 3),
+                )
+            history.append(f"Turn {turn}: requested a fresh screenshot; no desktop input was sent.")
+            last_result = "No desktop input was sent. Inspect this fresh screenshot before choosing another step."
             continue
 
         if dry_run:
@@ -472,9 +510,14 @@ def run_computer(
 
         action_trace.extend(f"Turn {turn}: {label}" for label in completed)
         history.append(
-            f"Turn {turn}: {plan['summary']}; executed {', '.join(completed)}; "
-            f"expected {plan['expected_result']}."
+            f"Turn {turn}: {plan['summary']}; driver completed input calls "
+            f"{', '.join(completed)}; expected {plan['expected_result']}; "
+            "visible effect not yet verified."
         )
-        last_result = f"Executed {', '.join(completed)}. Expected visible result: {plan['expected_result']}"
+        last_result = (
+            f"The driver completed input calls for {', '.join(completed)}. "
+            "This does not prove the intended UI change occurred. "
+            f"Check the current screenshot for: {plan['expected_result']}"
+        )
 
     raise RuntimeError(f"Computer task stopped after {MAX_TURNS} model calls; it may be incomplete.")

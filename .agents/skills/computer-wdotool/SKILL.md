@@ -52,6 +52,7 @@ Do not guess key aliases after an error. Use a name verified by dotool's key lis
 - Input goes to the window focused when dotool runs. The driver does not attach input to an app window or launch apps.
 - Oryn checks active-window identity around screenshots, planning, and actions. A changed window can discard a screenshot or plan; never assume input reached the intended app without checking the next screenshot.
 - Batch only actions that can be chosen from the current screenshot. Reobserve after navigation, dialogs, or another visual state change.
+- If the screenshot shows loading or a transition, or the last action has a plausible pending effect, use `status: "observe_again"` with no actions. Set `observe_delay_seconds` to 0 for a fresh look now, or up to 10 for a minimum age of the current screenshot. Model thinking time counts toward that age. A completed input call does not prove its visible effect; inspect fresh state and retry only with a concrete reason to think the effect did not occur. Avoid repeated observation when nothing suggests a change. Do not repeat input merely to wait, because it may restart or duplicate work.
 - A dotool exit code of zero alone does not prove input succeeded: dotool can report rejected key names as stderr warnings. Oryn treats stderr as a driver failure, then recovers from a fresh screenshot.
 - Do not repeat uncertain typing or sending. Inspect the screenshot first to avoid duplicates.
 
