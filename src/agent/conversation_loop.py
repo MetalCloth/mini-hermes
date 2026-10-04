@@ -183,7 +183,14 @@ def run_turn(
             if remaining_skills and (tool_allowlist is None or "load_skill" in tool_allowlist):
                 tools.append(skill_loader_tool(remaining_skills))
             if mcp_client is not None:
+                mcp_directory_started = time.monotonic()
                 directory = mcp_client.tool_directory()
+                mcp_snapshot = mcp_client.diagnostic_snapshot()
+                diagnostic(
+                    "mcp_directory",
+                    directory_elapsed_ms=max(0, round((time.monotonic() - mcp_directory_started) * 1000)),
+                    **mcp_snapshot,
+                )
                 if directory:
                     tools.append(mcp_loader_tool(directory))
                 for server in sorted(loaded_servers):

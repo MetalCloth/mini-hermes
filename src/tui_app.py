@@ -1809,7 +1809,7 @@ class OrynTUI(App[None]):
         def diagnostic(turn_id: str, event: dict[str, Any]) -> None:
             self.store.append_diagnostic(session_id, turn_id, event)
             if trace and event.get("type") in {
-                "model_request", "tool_start", "tool_end", "retry", "turn_error", "turn_end",
+                "model_request", "mcp_directory", "tool_start", "tool_end", "retry", "turn_error", "turn_end",
             }:
                 trace.write("computer_diagnostic", turn_id=turn_id,
                             diagnostic_type=event["type"],
@@ -1829,6 +1829,8 @@ class OrynTUI(App[None]):
                 if trace:
                     trace.write("computer_task_started", task=computer_task, dry_run=dry_run,
                                 model=self.model, driver="cua" if computer_session.cua else "dotool")
+                    if self.mcp_client is not None:
+                        trace.write("mcp_status", phase="task_start", **self.mcp_client.diagnostic_snapshot())
             answer = run_turn(
                 history,
                 provider.complete,

@@ -58,6 +58,9 @@ class MCPClient:
         self._thread: threading.Thread | None = None
         self._started = False
         self._closed = False
+        self._startup_started_at: float | None = None
+        self._startup_finished_at: float | None = None
+        self._server_start_elapsed_ms: dict[str, int] = {}
         self._stacks: dict[str, AsyncExitStack] = {}
         self._server_tasks: dict[str, asyncio.Task[None]] = {}
         self._server_stops: dict[str, asyncio.Event] = {}
@@ -75,7 +78,9 @@ class MCPClient:
             if self._started:
                 return list(self._statuses)
             self._started = True
+            self._startup_started_at = time.monotonic()
             if not self.configs:
+                self._startup_finished_at = time.monotonic()
                 return []
             self._loop = asyncio.new_event_loop()
             self._thread = threading.Thread(target=self._run_loop, name="oryn-mcp", daemon=True)
@@ -94,7 +99,52 @@ class MCPClient:
             message = f"MCP startup failed ({type(exc).__name__}); Oryn will continue without MCP tools."
             self._statuses = [message]
             self._status_by_name.update({config.name: ("unavailable", message) for config in self.configs})
+        finally:
+            self._startup_finished_at = time.monotonic()
         return list(self._statuses)
+
+    def diagnostic_snapshot(self) -> dict[str, Any]:
+        """Return bounded MCP lifecycle metadata without starting or waiting for servers."""
+        started_at = self._startup_started_at
+        finished_at = self._startup_finished_at
+        if not self._started:
+            startup_state = "not_started"
+        elif self._closed:
+            startup_state = "closed"
+        elif finished_at is None:
+            startup_state = "starting"
+        else:
+            startup_state = "complete"
+
+        now = time.monotonic()
+        startup_elapsed_ms = (
+            max(0, round(((finished_at if finished_at is not None else now) - started_at) * 1000))
+            if started_at is not None else 0
+        )
+        servers = []
+        counts = {"enabled": 0, "connected": 0, "starting": 0, "unavailable": 0, "disabled": 0}
+        for config in self.configs:
+            state = "disabled" if not config.enabled else self._status_by_name.get(
+                config.name, ("starting", ""),
+            )[0]
+            if state not in counts:
+                state = "unavailable"
+            if config.enabled:
+                counts["enabled"] += 1
+            counts[state] += 1
+            elapsed_ms = self._server_start_elapsed_ms.get(config.name)
+            elapsed_suffix = f"/{elapsed_ms}ms" if elapsed_ms is not None else ""
+            servers.append(f"{config.name}={state}{elapsed_suffix}")
+        return {
+            "startup_state": startup_state,
+            "startup_elapsed_ms": startup_elapsed_ms,
+            "enabled_count": counts["enabled"],
+            "connected_count": counts["connected"],
+            "starting_count": counts["starting"],
+            "unavailable_count": counts["unavailable"],
+            "disabled_count": counts["disabled"],
+            "server_states": ";".join(servers),
+        }
 
     def tool_schemas(self, server: str | None = None) -> list[dict[str, Any]]:
         self.start()
@@ -318,6 +368,18 @@ class MCPClient:
         )))
 
     async def _start_config(self, config: MCPServerConfig, client_type: Any, parameters_type: Any) -> str:
+        started_at = time.monotonic()
+        self._server_start_elapsed_ms.pop(config.name, None)
+        try:
+            return await self._start_config_inner(config, client_type, parameters_type)
+        finally:
+            self._server_start_elapsed_ms[config.name] = max(
+                0, round((time.monotonic() - started_at) * 1000),
+            )
+
+    async def _start_config_inner(
+        self, config: MCPServerConfig, client_type: Any, parameters_type: Any,
+    ) -> str:
         if not config.enabled:
             self._status_by_name[config.name] = ("disabled", "Disabled in Oryn settings.")
             return f"{config.name}: Disabled in Oryn settings."

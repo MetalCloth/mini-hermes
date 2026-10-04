@@ -60,11 +60,29 @@ def format_record(record: dict) -> str:
         name = record.get("name", "?")
         detail = record.get("arguments") if phase == "start" else record.get("result")
         return f"{stamp}  TOOL {str(phase).upper()} · {name} · {_short(detail, 180)}"
+    if event == "mcp_status":
+        servers = _short(record.get("server_states", ""), 500)
+        return (
+            f"{stamp}  MCP STATUS · {record.get('phase', '?')} · {record.get('startup_state', '?')} · "
+            f"startup {record.get('startup_elapsed_ms', '?')}ms · "
+            f"{record.get('connected_count', 0)}/{record.get('enabled_count', 0)} connected · "
+            f"{record.get('starting_count', 0)} starting · {record.get('unavailable_count', 0)} unavailable"
+            + (f"\n  {servers}" if servers else "")
+        )
     if event == "computer_diagnostic":
         kind = record.get("diagnostic_type", "?")
         if kind == "model_request":
             return (f"{stamp}  MODEL REQUEST · round {record.get('round', '?')} · "
                     f"~{record.get('estimated_tokens', '?')} tokens · {record.get('tool_count', '?')} tools")
+        if kind == "mcp_directory":
+            servers = _short(record.get("server_states", ""), 500)
+            return (
+                f"{stamp}  MCP DIRECTORY · {record.get('directory_elapsed_ms', '?')}ms · "
+                f"startup {record.get('startup_state', '?')} ({record.get('startup_elapsed_ms', '?')}ms) · "
+                f"{record.get('connected_count', 0)}/{record.get('enabled_count', 0)} connected · "
+                f"{record.get('starting_count', 0)} starting · {record.get('unavailable_count', 0)} unavailable"
+                + (f"\n  {servers}" if servers else "")
+            )
         if kind in {"tool_start", "tool_end"}:
             return f"{stamp}  {kind.replace('_', ' ').upper()} · {record.get('tool_name', '?')}"
         return f"{stamp}  {str(kind).replace('_', ' ').upper()} · {_short(record.get('error_class', ''), 180)}"

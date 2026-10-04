@@ -452,6 +452,10 @@ class SQLiteSessionStore:
         fields = {
             "turn_start": {"model"},
             "model_request": {"round", "estimated_tokens", "tool_count", "loaded_tool_count"},
+            "mcp_directory": {
+                "directory_elapsed_ms", "startup_state", "startup_elapsed_ms", "enabled_count",
+                "connected_count", "starting_count", "unavailable_count", "disabled_count", "server_states",
+            },
             "retry": {"retry_attempt", "delay_ms"},
             "tool_start": {"tool_name"},
             "tool_end": {
@@ -501,6 +505,17 @@ class SQLiteSessionStore:
                     raise ValueError("Diagnostic event contains invalid metadata.")
             elif key == "status":
                 if value not in {"completed", "limit_reached", "cancelled", "timed_out", "failed"}:
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "startup_state":
+                if value not in {"not_started", "starting", "complete", "closed"}:
+                    raise ValueError("Diagnostic event contains invalid metadata.")
+            elif key == "server_states":
+                if (not isinstance(value, str) or len(value) > 700
+                        or (value and not re.fullmatch(
+                            r"[a-z][a-z0-9_]*=(?:disabled|starting|connected|unavailable)(?:/[0-9]{1,9}ms)?"
+                            r"(?:;[a-z][a-z0-9_]*=(?:disabled|starting|connected|unavailable)(?:/[0-9]{1,9}ms)?)*",
+                            value,
+                        ))):
                     raise ValueError("Diagnostic event contains invalid metadata.")
             elif key == "success":
                 if type(value) is not bool:
