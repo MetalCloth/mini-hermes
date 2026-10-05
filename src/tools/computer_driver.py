@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+import time
 
 from PIL import Image
 
@@ -124,14 +125,15 @@ class HyprlandDriver:
         except (subprocess.SubprocessError, OSError, ValueError) as exc:
             raise RuntimeError("Could not capture the selected monitor.") from exc
 
-    def _input(self, actions: list[str]) -> None:
+    def _input(self, actions: list[str], *, trace_context: dict | None = None) -> None:
         """Send dotool's stdin action stream in one process."""
+        started = time.monotonic()
         command = [self.dotool]
         stdin = "\n".join(actions) + "\n"
         input_data = stdin.encode("utf-8")
         action = actions[0].split(maxsplit=1)[0]
         if self.trace:
-            self.trace.write("dotool_start", argv=command, stdin=stdin)
+            self.trace.write("dotool_start", **(trace_context or {}), argv=command, stdin=stdin)
         try:
             result = subprocess.run(
                 command, input=input_data, capture_output=True, timeout=10,
@@ -141,18 +143,25 @@ class HyprlandDriver:
             if self.trace:
                 self.trace.write(
                     "dotool_result", returncode=None, success=False, timed_out=True,
+                    **(trace_context or {}), elapsed_ms=round((time.monotonic() - started) * 1000),
                     stdout=_output_text(exc.stdout)[:4000], stderr=stderr[:4000],
                 )
             raise RuntimeError(f"Desktop input timed out during {action}.") from exc
         except OSError as exc:
             if self.trace:
-                self.trace.write("dotool_result", returncode=None, success=False, error=str(exc))
+                self.trace.write(
+                    "dotool_result", **(trace_context or {}), returncode=None,
+                    success=False, elapsed_ms=round((time.monotonic() - started) * 1000),
+                    error=str(exc),
+                )
             raise RuntimeError(f"Desktop input failed during {action}: {exc}") from exc
         stdout, stderr = _output_text(result.stdout), _output_text(result.stderr)
         success = result.returncode == 0 and not stderr
         if self.trace:
             self.trace.write(
-                "dotool_result", returncode=result.returncode, success=success,
+                "dotool_result", **(trace_context or {}),
+                returncode=result.returncode, success=success,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
                 stdout=stdout[:4000], stderr=stderr[:4000],
             )
         # dotool reports some rejected keys as stderr warnings with exit code 0.
@@ -174,7 +183,7 @@ class HyprlandDriver:
         screen_y = (global_y - desktop_top) / (desktop_bottom - desktop_top)
         return f"mouseto {screen_x:.6f} {screen_y:.6f}"
 
-    def execute(self, name: str, args: dict) -> None:
+    def execute(self, name: str, args: dict, *, trace_context: dict | None = None) -> None:
         actions = []
         if name in {"click", "left_double", "right_single", "scroll"}:
             actions.append(self._move(args["point"]))
@@ -197,7 +206,10 @@ class HyprlandDriver:
                     actions.append("key enter")
         else:
             raise ValueError(f"Unsupported desktop action: {name}")
-        self._input(actions)
+        if trace_context is None:
+            self._input(actions)
+        else:
+            self._input(actions, trace_context=trace_context)
 
 
 def _output_text(value: bytes | str | None) -> str:

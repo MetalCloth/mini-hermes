@@ -204,6 +204,8 @@ def run_turn(
             check_cancelled()
             for attempt in range(3):
                 saw_delta = False
+                request_prepare_started = time.monotonic()
+                provider_call_started: float | None = None
 
                 def emit(delta: str) -> None:
                     nonlocal saw_delta
@@ -255,9 +257,27 @@ def run_turn(
                         "model_request", round=round_number,
                         estimated_tokens=request_tokens, tool_count=len(tools),
                         loaded_tool_count=sum(name.startswith("mcp__") for name in advertised_names),
+                        preparation_elapsed_ms=round((time.monotonic() - request_prepare_started) * 1000),
                     )
+                    model_started = provider_call_started = time.monotonic()
                     response = complete(request_messages, tools, **kwargs)
+                    if computer_session is not None:
+                        diagnostic(
+                            "model_response", round=round_number,
+                            elapsed_ms=round((time.monotonic() - model_started) * 1000),
+                            response_chars=len(response.text or ""),
+                            tool_call_count=len(response.tool_calls),
+                        )
                 except ProviderRequestError as exc:
+                    diagnostic(
+                        "model_attempt_error", round=round_number, attempt=attempt + 1,
+                        elapsed_ms=round((time.monotonic() - (
+                            provider_call_started if provider_call_started is not None
+                            else request_prepare_started
+                        )) * 1000),
+                        error_class=type(exc).__name__, provider_call_entered=provider_call_started is not None,
+                        retryable=exc.retryable,
+                    )
                     check_cancelled()
                     if not exc.retryable or saw_delta or attempt == 2:
                         raise

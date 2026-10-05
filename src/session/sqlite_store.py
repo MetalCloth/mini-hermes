@@ -451,7 +451,13 @@ class SQLiteSessionStore:
         """Append allowlisted metadata only; prompts, tool arguments, and outputs are rejected."""
         fields = {
             "turn_start": {"model"},
-            "model_request": {"round", "estimated_tokens", "tool_count", "loaded_tool_count"},
+            "model_request": {
+                "round", "estimated_tokens", "tool_count", "loaded_tool_count", "preparation_elapsed_ms",
+            },
+            "model_response": {"round", "elapsed_ms", "response_chars", "tool_call_count"},
+            "model_attempt_error": {
+                "round", "attempt", "elapsed_ms", "error_class", "provider_call_entered", "retryable",
+            },
             "mcp_directory": {
                 "directory_elapsed_ms", "startup_state", "startup_elapsed_ms", "enabled_count",
                 "connected_count", "starting_count", "unavailable_count", "disabled_count", "server_states",
@@ -482,6 +488,8 @@ class SQLiteSessionStore:
             {"error_class", "upstream_status", "upstream_request_id", "upstream_detail"}
             if event_type == "tool_end" else set()
         )
+        if event_type == "model_request":
+            optional_fields = {"preparation_elapsed_ms"}
         if event_type == "turn_start":
             optional_fields = {"model"}
         required_fields = expected_fields - optional_fields
@@ -517,7 +525,7 @@ class SQLiteSessionStore:
                             value,
                         ))):
                     raise ValueError("Diagnostic event contains invalid metadata.")
-            elif key == "success":
+            elif key in {"success", "provider_call_entered", "retryable"}:
                 if type(value) is not bool:
                     raise ValueError("Diagnostic event contains invalid metadata.")
             elif key == "upstream_status":

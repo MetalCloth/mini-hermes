@@ -75,15 +75,26 @@ Select `/computer` from the command list, or type `/computer` and press Enter. T
 
 The scoped `computer_observe` tool lists visible CUA windows, observes an exact `pid` and `window_id`, or captures the desktop. A window observation includes a bounded accessibility tree and screenshot where CUA can prove the window image. On Wayland, CUA may return the tree with `surface_identity_unproven`; Oryn then focuses the exact window, refreshes its tree, and captures a desktop image. The model can request tree only for a cheaper later observation. Screenshots go to the selected model as image-bearing tool results for its next decision; saved history retains compact text outcomes, not those screenshots or old control lists.
 
-`computer_act` accepts one action from the latest observation ID, then returns its CUA effect, route, escalation, and a fresh observation. Old IDs and missing numbered controls are rejected. CUA handles accessibility and left coordinate clicks; dotool handles keys, typing, right clicks, and scrolling because CUA's required Hyprland input route was refused in the local trial. Dotool input to a chosen window first checks an exact Hyprland match and focuses it when needed. Desktop input is rejected if the active window changed since its screenshot. A refused or uncertain action is never replayed automatically. The model is instructed to mark sending, deleting, buying, publishing, and submitting for approval; after approval Oryn reobserves, and the model must reissue the same action from the new observation before input. `computer_ask_user` keeps a clarification in the same turn.
+`computer_act` accepts one action from the latest observation ID, then returns its action outcome and a fresh observation. Old IDs and missing numbered controls are rejected. CUA supplies window lists, accessibility data, screenshots, and native checks; dotool sends all clicks, keys, typing, right clicks, and scrolling. A numbered control click maps its current CUA frame to a dotool coordinate and is refused if that mapping is unsafe. Dotool input to a chosen window first checks an exact Hyprland match and focuses it when needed. Desktop input is rejected if the active window changed since its screenshot. A refused or uncertain action is never replayed automatically. The model is instructed to mark sending, deleting, buying, publishing, and submitting for approval; after approval Oryn reobserves, and the model must reissue the same action from the new observation before input. `computer_ask_user` keeps a clarification in the same turn.
 
 For exact native window or accessibility conditions, `computer_wait` and `computer_act.wait_for` call CUA `verify_state` with a maximum ten-second wait. `unknown` is not success. For visual loading or unsupported conditions, `computer_observe.min_age_ms` waits only until the previous observation is old enough, counting model thinking time, then takes one fresh look. There is no site-specific poller. `/computer --dry-run open Settings` previews the first proposed input without sending it. With `ORYN_COMPUTER_DRIVER=dotool`, observation and input use desktop screenshots and dotool only; exact-window and native verify tools are unavailable. The [measurement plan](src/docs/18-computer-perception-plan.md) and [CUA trial](src/docs/20-cua-driver-hyprland-experiment.md) remain historical records.
 
 For a live computer-mode trace, start Oryn with `./scripts/computer-log.sh run` and run
-`./scripts/computer-log.sh follow` in another terminal. Traces are saved under `logs/` as
-private JSONL files; they include computer tool arguments, short text result previews, and text sent to desktop input, but not screenshots.
-The live view shows CUA calls, observation sizes, action outcomes, and driver errors; use
-`./scripts/computer-log.sh follow --raw` to display the raw JSONL records.
+`./scripts/computer-log.sh follow` in another terminal. The readable view shows model timing,
+every tool call used during the task, visible windows and controls, target-to-coordinate mapping,
+desktop input results, waits, and the observation returned after each action. IDs link each tool
+call, observation, action, and resulting state. Use `./scripts/computer-log.sh follow --raw` for
+the underlying JSONL records. Local traces are private files under `logs/`; they can include
+typed text and visible UI/accessibility text, but do not save screenshot pixels.
+
+LangSmith export is optional and off by default. Install the project dependencies, then set
+`ORYN_LANGSMITH_TRACING=1`, `LANGSMITH_API_KEY`, and optionally `LANGSMITH_PROJECT` before
+starting `./scripts/computer-log.sh run`. It sends scrubbed event metadata asynchronously;
+screenshots, task/prompt text, final answer text, typed text, full tool results, and full
+accessibility-tree excerpts are excluded. UI labels, control frames, and some selection values
+remain visible in the remote trace, so enable it only when that screen content is okay to send.
+The local JSONL trace remains the detailed source. See [computer trace logging](src/docs/22-computer-tracing.md)
+for the event links, privacy boundaries, and limitations.
 The old `computer_benchmark.py` applies to historical planner traces, not the current main-loop path.
 The [current `/computer` decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
 

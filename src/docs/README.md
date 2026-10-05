@@ -34,6 +34,7 @@ Oryn is an educational local coding assistant. Its model runs remotely, while it
 | [CUA Driver research notes](19-cua-driver-research.md) | Open Interpreter's CUA driver lineage, observation/action loop, AT-SPI and pixels, permissions, browser routing, and Linux/Hyprland limits |
 | [CUA Hyprland trial](20-cua-driver-hyprland-experiment.md) | Isolated A/B result, integration decision, and remaining platform limits |
 | [`/computer` main-loop reform](21-cua-main-loop.md) | Current flow, decision reasons and tradeoffs, scoped CUA tools, image results, exact targets, and conditional waiting |
+| [Computer trace logging](22-computer-tracing.md) | Local event detail, readable live output, IDs that connect observations to actions, optional LangSmith export, and privacy limits |
 | [Manual smoke checklist](smoke-checklist.md) | A practical end-to-end checklist for the terminal and dashboard |
 
 ## Choose a reading path

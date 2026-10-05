@@ -1778,6 +1778,7 @@ class OrynTUI(App[None]):
         computer_task: str | None = None,
     ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
+        worker_started_at = monotonic()
         session_id = self.session_id
         undo_history = self.undo_history
         terminal_jobs = self.terminal_jobs.get(session_id)
@@ -1802,24 +1803,53 @@ class OrynTUI(App[None]):
         finished = None
         def tool_event(phase: str, call: ToolCall, result: str | None) -> None:
             self.post_message(ToolActivity(phase, call, result))
-            if trace and call.name.startswith("computer_"):
-                trace.write("computer_tool", phase=phase, name=call.name,
-                            arguments=call.arguments if phase == "start" else None,
-                            result=result[:1000] if isinstance(result, str) else None)
+            if trace:
+                encoded_arguments = (
+                    json.dumps(call.arguments, ensure_ascii=False, separators=(",", ":"))
+                    if phase == "start" else None
+                )
+                arguments_truncated = bool(encoded_arguments and len(encoded_arguments) > 4000)
+                arguments = call.arguments if encoded_arguments and not arguments_truncated else None
+                if arguments_truncated:
+                    arguments = {"_json_preview": encoded_arguments[:4000]}
+                trace.write("tool_call", phase=phase, name=call.name,
+                            call_id=call.id,
+                            arguments=arguments,
+                            arguments_chars=len(encoded_arguments) if encoded_arguments is not None else None,
+                            arguments_truncated=arguments_truncated,
+                            result=result[:4000] if isinstance(result, str) else None,
+                            result_chars=len(result) if isinstance(result, str) else None,
+                            result_truncated=isinstance(result, str) and len(result) > 4000)
         def diagnostic(turn_id: str, event: dict[str, Any]) -> None:
             self.store.append_diagnostic(session_id, turn_id, event)
             if trace and event.get("type") in {
-                "model_request", "mcp_directory", "tool_start", "tool_end", "retry", "turn_error", "turn_end",
+                "turn_start", "model_request", "model_response", "model_attempt_error",
+                "mcp_directory", "tool_start", "tool_end",
+                "retry", "turn_error", "turn_end",
             }:
                 trace.write("computer_diagnostic", turn_id=turn_id,
                             diagnostic_type=event["type"],
                             **{key: value for key, value in event.items() if key != "type"})
         try:
             if computer_task:
-                if provider.supports_image_input() is not True:
-                    raise ValueError(f"{self.model} does not have confirmed image input. Choose a model with image support.")
                 trace = ComputerTrace.from_environment()
                 dry_run = computer_task.startswith("--dry-run ")
+                if trace:
+                    trace.write(
+                        "computer_task_started", task=computer_task, dry_run=dry_run,
+                        model=self.model,
+                        worker_queue_delay_ms=round((worker_started_at - started_at) * 1000),
+                        elapsed_since_turn_start_ms=round((monotonic() - started_at) * 1000),
+                    )
+                image_check_started = monotonic()
+                if provider.supports_image_input() is not True:
+                    raise ValueError(f"{self.model} does not have confirmed image input. Choose a model with image support.")
+                if trace:
+                    trace.write(
+                        "computer_preflight", stage="image_support", success=True,
+                        elapsed_ms=round((monotonic() - image_check_started) * 1000),
+                    )
+                driver_started = monotonic()
                 computer_session = ComputerSession(
                     cancel_event,
                     confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
@@ -1827,8 +1857,10 @@ class OrynTUI(App[None]):
                     dry_run=dry_run, trace=trace,
                 )
                 if trace:
-                    trace.write("computer_task_started", task=computer_task, dry_run=dry_run,
-                                model=self.model, driver="cua" if computer_session.cua else "dotool")
+                    trace.write(
+                        "computer_driver_started", driver="cua" if computer_session.cua else "dotool",
+                        elapsed_ms=round((monotonic() - driver_started) * 1000),
+                    )
                     if self.mcp_client is not None:
                         trace.write("mcp_status", phase="task_start", **self.mcp_client.diagnostic_snapshot())
             answer = run_turn(

@@ -2,3 +2,4 @@ mcp>=2,<3
 textual>=8,<9
 Pillow>=12,<13
 tiktoken>=0.9,<1
+langsmith>=0.3,<1
