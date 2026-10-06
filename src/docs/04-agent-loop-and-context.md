@@ -223,7 +223,7 @@ lowercase letters, numbers, and hyphens; descriptions are limited to 300 charact
 skills are considered first. Duplicate names, symlinks, malformed metadata, missing files, and
 oversized instructions are skipped and reported through status/diagnostics.
 
-The model gets a compact name/description catalog and can call `load_skill` for one exact name.
+The model gets a compact name/description catalog and can call `load_skill` for an exact name. If more than one relevant skill is needed, it can request each in the same response to avoid a separate model round per skill.
 Only that file body is added to the current turn. It cannot register tools or execute code, and
 loaded names are saved in local diagnostics. A skill is user-provided guidance, not a security
 boundary; it cannot authorize actions or replace system/developer/user instructions. Oryn does

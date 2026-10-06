@@ -120,9 +120,12 @@ def load_skill(
 def skill_loader_tool(skills: dict[str, Skill]) -> dict[str, Any]:
     directory = [{"name": skill.name, "description": skill.description} for skill in skills.values()]
     description = (
-        "Load one relevant local SKILL.md as task instructions. Choose by exact name only when "
-        "its description matches the user's request. Loading returns the instruction text; it "
-        "does not execute code or register tools. Apply only for this user turn. Catalog: "
+        "Load a relevant local SKILL.md as task instructions. Choose by exact name only when "
+        "its description matches the user's request. If several skills are genuinely needed, "
+        "request them as multiple load_skill calls in the same response instead of spending "
+        "one model round per skill. Do not load guidance already fully covered by active task "
+        "instructions. Loading returns text; it does not execute code or register tools. "
+        "Apply only for this user turn. Catalog: "
         + json.dumps(directory, ensure_ascii=False, separators=(",", ":"))
     )
     return {

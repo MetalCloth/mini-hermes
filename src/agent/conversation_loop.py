@@ -25,6 +25,13 @@ from src.tools.terminal_tool import TerminalJobManager
 Message = dict[str, Any]
 MAX_TOOL_RESULT_CHARS = 20_000
 
+# /computer controls the local desktop. Keep its catalog small and safe while
+# retaining read-only context lookup that can help identify what to do there.
+COMPUTER_SUPPORT_TOOL_NAMES = frozenset({
+    "read_file", "search_files", "web_search", "web_extract",
+})
+COMPUTER_INLINE_SKILL_NAMES = frozenset({"computer-cua", "computer-dotool"})
+
 
 class TurnCancelled(Exception):
     """The user stopped the active agent turn."""
@@ -92,16 +99,36 @@ def run_turn(
         tool for tool in tools
         if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
     ]
+    effective_tool_allowlist = tool_allowlist
     if computer_session is not None:
-        native_tools.extend(computer_tool_schemas())
+        computer_schemas = computer_tool_schemas()
+        computer_names = {tool["name"] for tool in computer_schemas}
+        computer_allowlist = COMPUTER_SUPPORT_TOOL_NAMES | computer_names | {"load_skill"}
+        effective_tool_allowlist = (
+            computer_allowlist if tool_allowlist is None
+            else computer_allowlist & tool_allowlist
+        )
+        native_tools = [tool for tool in native_tools if tool["name"] in effective_tool_allowlist]
+        native_tools.extend(
+            tool for tool in computer_schemas if tool["name"] in effective_tool_allowlist
+        )
     local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
     if computer_session is not None:
         local_tool_names.update(tool["name"] for tool in computer_tool_schemas())
     from src.agent.skills import discover_skills, skill_loader_tool
-    if tool_allowlist is None or "load_skill" in tool_allowlist:
+    if effective_tool_allowlist is None or "load_skill" in effective_tool_allowlist:
         available_skills, skill_problems = discover_skills(project_root)
     else:
         available_skills, skill_problems = {}, []
+    if computer_session is not None:
+        # The core CUA and Dotool guidance is already present in the compact
+        # computer prompt and tool contracts. Offer only additional computer
+        # environment guides, not unrelated skills from the full catalog.
+        available_skills = {
+            name: skill for name, skill in available_skills.items()
+            if name not in COMPUTER_INLINE_SKILL_NAMES
+            and ("computer" in name.casefold() or "/computer" in skill.description.casefold())
+        }
     loaded_skills: set[str] = set()
     loaded_servers: set[str] = set()
     limits = limits or TurnLimits()
@@ -180,9 +207,9 @@ def run_turn(
             remaining_skills = {
                 name: skill for name, skill in available_skills.items() if name not in loaded_skills
             }
-            if remaining_skills and (tool_allowlist is None or "load_skill" in tool_allowlist):
+            if remaining_skills and (effective_tool_allowlist is None or "load_skill" in effective_tool_allowlist):
                 tools.append(skill_loader_tool(remaining_skills))
-            if mcp_client is not None:
+            if mcp_client is not None and computer_session is None:
                 mcp_directory_started = time.monotonic()
                 directory = mcp_client.tool_directory()
                 mcp_snapshot = mcp_client.diagnostic_snapshot()
@@ -342,7 +369,7 @@ def run_turn(
                 tool_error_class = None
                 upstream_metadata: dict[str, Any] = {}
                 try:
-                    if tool_allowlist is not None and call.name not in tool_allowlist:
+                    if effective_tool_allowlist is not None and call.name not in effective_tool_allowlist:
                         raise ValueError("This tool is outside the allowed set for this turn and was not run.")
                     if call.name.startswith("computer_") and computer_session is not None:
                         result = computer_session.execute(call.name, call.arguments)
