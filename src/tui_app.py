@@ -43,6 +43,7 @@ from src.tools.file_tools import FileChange
 from src.tools.computer_session import ComputerSession
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
+from src.voice_input import VoiceInputError, VoiceRecorder, elevenlabs_api_key, transcribe_wav
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -96,6 +97,13 @@ class TurnProgress(Message):
     def __init__(self, text: str) -> None:
         super().__init__()
         self.text = text
+
+
+class VoiceTranscriptionFinished(Message):
+    def __init__(self, transcript: str | None, error: str | None) -> None:
+        super().__init__()
+        self.transcript = transcript
+        self.error = error
 
 
 class MCPReady(Message):
@@ -785,6 +793,7 @@ class OrynTUI(App[None]):
         Binding("f2", "choose_model", "Model"),
         Binding("f3", "choose_effort", "Effort"),
         Binding("f4", "choose_speed", "Speed"),
+        Binding("f8", "toggle_voice_recording", "Voice", show=False, priority=True),
         Binding("escape", "dismiss_palette", "Close", show=False),
         Binding("ctrl+c", "stop_or_quit", "Stop/Quit", priority=True),
     ]
@@ -850,6 +859,8 @@ class OrynTUI(App[None]):
         self._computer_armed = False
         self._palette_draft: str | None = None
         self.pending_images: list[dict[str, Any]] = []
+        self._voice_recorder: VoiceRecorder | None = None
+        self._voice_transcribing = False
 
     @property
     def undo_history(self) -> list[FileChange]:
@@ -899,6 +910,7 @@ class OrynTUI(App[None]):
                     with Horizontal(id="composer-footer"):
                         yield Static("enter send   shift+enter new line", id="send-hint")
                         yield Static("/ commands", id="composer-commands")
+                        yield Button("Mic · F8", id="voice-button")
             yield Static(id="home-spacer")
             with Horizontal(id="app-footer"):
                 yield Static(self._project_label(), id="workspace-path")
@@ -933,6 +945,12 @@ class OrynTUI(App[None]):
 
     def on_unmount(self) -> None:
         self._cancel_active_turn()
+        if self._voice_recorder is not None:
+            try:
+                self._voice_recorder.discard()
+            except Exception:
+                pass
+            self._voice_recorder = None
         if self._pending_approval:
             self._pending_approval.resolve(False)
             self._pending_approval = None
@@ -1034,6 +1052,24 @@ class OrynTUI(App[None]):
         if self.turn_active:
             self._set_activity(event.text, working=True)
 
+    def on_voice_transcription_finished(self, event: VoiceTranscriptionFinished) -> None:
+        self._voice_transcribing = False
+        if event.error:
+            self._set_activity(event.error, working=False, error=True)
+            return
+        if not event.transcript:
+            self._set_activity("No speech was recognized.", working=False, error=True)
+            return
+        composer = self.query_one("#composer", TextArea)
+        if composer.text:
+            lines = composer.text.split("\n")
+            composer.move_cursor((len(lines) - 1, len(lines[-1])))
+        if composer.text and not composer.text.endswith((" ", "\n")):
+            composer.insert("\n")
+        composer.insert(event.transcript)
+        composer.focus()
+        self._set_activity("Transcript ready · review it, then press Enter", working=False)
+
     @on(MCPReady)
     def on_mcp_ready(self, event: MCPReady) -> None:
         self.mcp_ready = True
@@ -1129,6 +1165,12 @@ class OrynTUI(App[None]):
     async def action_send_prompt(self) -> None:
         composer = self.query_one("#composer", TextArea)
         prompt = composer.text.strip()
+        if self._voice_recorder is not None:
+            self._set_activity("Stop the microphone recording before sending.", working=False, error=True)
+            return
+        if self._voice_transcribing:
+            self._set_activity("Wait for the voice transcript before sending.", working=True)
+            return
         if not prompt and not self.pending_images:
             return
         computer_task = None
@@ -1223,6 +1265,9 @@ class OrynTUI(App[None]):
         self._turn_thread.start()
 
     def action_open_palette(self) -> None:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before opening commands.", working=False, error=True)
+            return
         if len(self.screen_stack) != 1:
             return
         composer = self.query_one("#composer", TextArea)
@@ -1255,20 +1300,35 @@ class OrynTUI(App[None]):
         self._cancel_computer_question()
 
     def action_open_sessions(self) -> None:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before switching chats.", working=False, error=True)
+            return
         if len(self.screen_stack) == 1:
             self.run_worker(self._show_sessions(), group="commands", exclusive=True)
 
     def action_choose_model(self) -> None:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before changing models.", working=False, error=True)
+            return
         if len(self.screen_stack) == 1:
             self.run_worker(self._change_model(), group="commands", exclusive=True)
 
     def action_choose_effort(self) -> None:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before changing settings.", working=False, error=True)
+            return
         if len(self.screen_stack) == 1:
             self.run_worker(self._change_setting("reasoning_effort"), group="commands", exclusive=True)
 
     def action_choose_speed(self) -> None:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before changing settings.", working=False, error=True)
+            return
         if len(self.screen_stack) == 1:
             self.run_worker(self._change_setting("service_tier"), group="commands", exclusive=True)
+
+    def _voice_input_active(self) -> bool:
+        return self._voice_recorder is not None or self._voice_transcribing
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "model-chip":
@@ -1277,6 +1337,68 @@ class OrynTUI(App[None]):
             self.action_choose_effort()
         elif event.button.id == "speed-chip":
             self.action_choose_speed()
+        elif event.button.id == "voice-button":
+            self.action_toggle_voice_recording()
+
+    def action_toggle_voice_recording(self) -> None:
+        if len(self.screen_stack) > 1:
+            return
+        if self._voice_transcribing:
+            self._set_activity("Waiting for the voice transcript…", working=True)
+            return
+        if self.turn_active or self.mcp_busy:
+            self._set_activity("Wait for Oryn to finish before recording voice.", working=False, error=True)
+            return
+        if self._voice_recorder is not None:
+            self._finish_voice_recording()
+            return
+        if not elevenlabs_api_key():
+            self._set_activity(
+                "Add ELEVENLABS_API_KEY to ~/.mini-hermes/elevenlabs.env to enable voice input.",
+                working=False, error=True,
+            )
+            return
+        try:
+            self._voice_recorder = VoiceRecorder()
+        except VoiceInputError as exc:
+            self._set_activity(str(exc), working=False, error=True)
+            return
+        self.query_one("#voice-button", Button).label = "Stop · F8"
+        self.query_one("#composer", TextArea).focus()
+        self._set_activity("Recording · press Stop or F8 when you’re done", working=True)
+
+    def _finish_voice_recording(self) -> None:
+        recorder, self._voice_recorder = self._voice_recorder, None
+        if recorder is None:
+            return
+        self.query_one("#voice-button", Button).label = "Mic · F8"
+        try:
+            audio = recorder.stop()
+        except Exception:
+            self._set_activity("Could not finish reading the microphone recording.", working=False, error=True)
+            return
+        if not audio:
+            self._set_activity("No audio was captured. Check the microphone and try again.", working=False, error=True)
+            return
+        self._voice_transcribing = True
+        self._set_activity(
+            "Recording limit reached · transcribing" if recorder.limit_reached
+            else "Transcribing with ElevenLabs…",
+            working=True,
+        )
+        threading.Thread(
+            target=self._transcribe_voice, args=(audio,), name="oryn-voice-transcription", daemon=True,
+        ).start()
+
+    def _transcribe_voice(self, audio: bytes) -> None:
+        try:
+            self.post_message(VoiceTranscriptionFinished(transcribe_wav(audio), None))
+        except VoiceInputError as exc:
+            self.post_message(VoiceTranscriptionFinished(None, str(exc)))
+        except Exception:
+            self.post_message(VoiceTranscriptionFinished(
+                None, "Voice transcription failed unexpectedly. Try recording again.",
+            ))
 
     def _show_palette(self, query: str = "") -> None:
         palette = self.query_one("#palette-overlay", PalettePanel)
@@ -1318,6 +1440,9 @@ class OrynTUI(App[None]):
 
     async def _execute_command(self, name: str, argument: str | None = None) -> None:
         name = COMMAND_ALIASES.get(name, name)
+        if self._voice_input_active() and name not in {"exit", "quit", "q"}:
+            self._set_activity("Finish voice recording and transcription before switching chat settings.", working=False, error=True)
+            return
         if self.turn_active and name not in COMMANDS_DURING_TURN:
             self._set_activity("Finish the current turn before using this command.", working=True)
             return
@@ -1371,6 +1496,7 @@ class OrynTUI(App[None]):
                 "Ctrl+P    Open command palette\n"
                 "Ctrl+N    New session\n"
                 "Ctrl+O    Session picker\n"
+                "F8        Start/stop voice recording\n"
                 "F2        Change model\n"
                 "F3        Change reasoning effort\n"
                 "F4        Change model speed\n"
@@ -1754,6 +1880,9 @@ class OrynTUI(App[None]):
             self._cancel_event.set()
 
     def _queue_navigation(self, target: str) -> bool:
+        if self._voice_input_active():
+            self._set_activity("Finish voice input before switching chats.", working=False, error=True)
+            return True
         if not self.turn_active:
             return False
         self._pending_navigation = target

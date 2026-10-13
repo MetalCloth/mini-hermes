@@ -13,13 +13,15 @@ The documented development environment uses Linux and Python 3.14. Dependency me
 | Python 3.11+ | All interfaces and the harness | Tested local environment: 3.14 |
 | `mcp>=2,<3` | MCP integration | Installed SDK version during documentation: 2.2.0 |
 | `textual>=8,<9` | Full-screen terminal UI | Rich supplies terminal Markdown rendering |
+| `sounddevice>=0.5,<0.6` | TUI microphone capture | Linux may also need the system PortAudio library |
 | Codex CLI with a valid local login | Model authentication and catalog | Oryn reuses CLI credentials |
 | Node.js/npm | Dashboard build and local Playwright MCP | Locked Vite requires Node `^20.19.0` or `>=22.12.0`; Playwright setup expects Node.js 20+ |
 | `rg` / ripgrep | `search_files` | Searches are delegated to ripgrep |
 | `bwrap` / Bubblewrap | Native terminal tool | Linux command isolation; terminal execution refuses to proceed without it |
 | Network access | Model, hosted MCPs, Tavily, Firecrawl | Local UI does not imply offline operation |
+| ElevenLabs API key | TUI voice transcription | Speech audio is sent to ElevenLabs Scribe |
 
-Dashboard package versions and build commands live in [package.json](../../web/package.json). The Python dependency bounds live in [requirements.txt](../../requirements.txt). No new dependency was introduced to write this handbook.
+Dashboard package versions and build commands live in [package.json](../../web/package.json). The Python dependency bounds live in [requirements.txt](../../requirements.txt), including `sounddevice` for TUI microphone capture.
 
 ## 2. First setup
 
@@ -145,6 +147,7 @@ Vite proxies `/api` to the local backend on port 9119. Its configuration adjusts
 | `~/.mini-hermes/tavily.env` | Native Tavily search key | Native web tool configuration |
 | `~/.mini-hermes/firecrawl.env` | Native Firecrawl extraction/browser key | Native web tool configuration |
 | `~/.mini-hermes/gemini.env` | Gemini API key as `GEMINI_API_KEY=...` | Gemini GenerateContent provider |
+| `~/.mini-hermes/elevenlabs.env` | ElevenLabs API key as `ELEVENLABS_API_KEY=...` | TUI voice transcription through Scribe v2 |
 | `~/.mini-hermes/mcp.env` | Keys for MCP presets | MCP configuration |
 | `~/.mini-hermes/mcp-settings.json` | Enabled switches and known-server migration information | MCP preferences |
 | `~/.mini-hermes/mcp-notion-auth.json` | Notion OAuth client/token data and metadata | OAuth token storage |
@@ -254,6 +257,30 @@ chmod 600 ~/.mini-hermes/gemini.env
 ```
 
 The provider reads the key from `~/.mini-hermes/gemini.env` or the `GEMINI_API_KEY` process environment variable. It does not read a project-local `.env` file. Select a Gemini model with `/models`, `./oryn --model gemini-3.8-flash`, `./oryn repl --model gemini-3.8-flash`, or `./oryn dashboard --model gemini-3.8-flash`.
+
+### Push-to-talk voice input
+
+The TUI's `Mic · F8` control records while active. Click it or press F8 again to stop. Oryn
+sends the recording to ElevenLabs Scribe v2, inserts the returned transcript into the composer,
+and waits for you to review and press Enter. It does not send the transcript automatically.
+The temporary WAV stays in memory; microphone audio is uploaded to ElevenLabs and is not saved
+in the chat database or Oryn's local trace. Oryn does not control ElevenLabs' handling or
+retention of audio after upload.
+
+Copy the `ELEVENLABS_API_KEY` placeholder from [.env.example](../../.env.example) into a
+user-only config file:
+
+```bash
+mkdir -p ~/.mini-hermes
+chmod 700 ~/.mini-hermes
+nano ~/.mini-hermes/elevenlabs.env
+chmod 600 ~/.mini-hermes/elevenlabs.env
+```
+
+Keep the line as `ELEVENLABS_API_KEY=` until you add your key. Oryn reads the key from that
+file or the `ELEVENLABS_API_KEY` process environment variable. Microphone capture uses
+`sounddevice`; on Linux, install the PortAudio runtime from your distribution if the mic reports
+that PortAudio is unavailable. ElevenLabs bills speech-to-text by submitted audio duration.
 
 ## 9. MCP configuration
 

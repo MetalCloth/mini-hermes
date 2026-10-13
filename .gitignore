@@ -1,5 +1,6 @@
 .venv/
 .env
+elevenlabs.env
 mcp.env
 gemini.env
 logs/
