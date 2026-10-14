@@ -7,9 +7,10 @@ any web, browser, project, terminal, or MCP tools called before the first deskto
 trace is generic: it records event types and IDs, not rules for a particular website or app.
 
 When voice input is used under `computer-log.sh run`, the same JSONL file records recording
-start/stop, sample rate, audio byte count and duration, peak/RMS signal levels, transcription
-time, transcript length, and a safe error code on failure. It never records the audio,
-transcript text, or API key.
+start/stop, sample rate, selected input and host API names, audio byte count and duration,
+peak/RMS signal levels, capture-overflow status, transcription time, transcript length, and a
+safe error code on failure. It never records the audio, transcript text, or API key. Completely
+silent recordings are detected locally and are not sent to ElevenLabs.
 
 ## What a trace connects
 
@@ -58,7 +59,8 @@ needed.
 The launcher creates each JSONL file with mode `0600`. It stores no screenshot pixels.
 However, local records can contain task text, tool arguments/results, typed text, window
 titles, accessibility labels and values, and a short accessibility-tree excerpt. Treat the
-file as private; remove it when it is no longer useful.
+file as private; remove it when it is no longer useful. Voice traces also contain microphone
+device and host API names, which may identify hardware attached to the local machine.
 
 The logging captures what Oryn can serialize about an observation. It does not preserve the
 actual screenshot image, so it cannot later reproduce exactly what the vision model saw.

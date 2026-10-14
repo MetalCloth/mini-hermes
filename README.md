@@ -52,7 +52,7 @@ Click the effort or speed below the prompt, or use `/effort` (`F3`) and `/speed`
 
 Paste a PNG or JPEG into the composer with Ctrl+V. The draft shows a pasted-image item with its dimensions; Backspace on an empty draft removes the last one. Up to four images (5 MiB each) are accepted per message. Oryn checks dimensions, removes embedded metadata, and requires the local model catalog to confirm image input. Images remain in that chat's local SQLite history and are included with the next message. Linux image paste reads the desktop clipboard through `wl-paste` on Wayland or `xclip` on X11. Image input uses model capacity and may affect usage.
 
-For push-to-talk, click **Mic · F8** or press F8 to start recording, then click **Stop · F8** or press F8 again. Oryn transcribes the recording with ElevenLabs Scribe v2 and puts the text in the composer for review; Enter sends it as an ordinary message. Configure `ELEVENLABS_API_KEY` in `~/.mini-hermes/elevenlabs.env` as described in the [setup guide](src/docs/02-installation-and-configuration.md). Audio is uploaded to ElevenLabs for transcription and is not saved in chat history.
+For push-to-talk, click **Mic · F8** or press F8 to start recording, then click **Stop · F8** or press F8 again. Use `/mic` to choose an input device or return to the operating system's default. Oryn checks for an empty signal before sending audio to ElevenLabs Scribe v2, then puts a transcript in the composer for review; Enter sends it as an ordinary message. Configure `ELEVENLABS_API_KEY` in `~/.mini-hermes/elevenlabs.env` as described in the [setup guide](src/docs/02-installation-and-configuration.md). Audio is uploaded to ElevenLabs for transcription and is not saved in chat history.
 
 ```bash
 ./oryn

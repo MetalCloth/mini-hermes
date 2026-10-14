@@ -263,9 +263,17 @@ The provider reads the key from `~/.mini-hermes/gemini.env` or the `GEMINI_API_K
 The TUI's `Mic · F8` control records while active. Click it or press F8 again to stop. Oryn
 sends the recording to ElevenLabs Scribe v2, inserts the returned transcript into the composer,
 and waits for you to review and press Enter. It does not send the transcript automatically.
-The temporary WAV stays in memory; microphone audio is uploaded to ElevenLabs and is not saved
-in the chat database or Oryn's local trace. Oryn does not control ElevenLabs' handling or
-retention of audio after upload.
+Use `/mic` to choose a microphone or return to **System default**. Oryn uses the system default
+until you choose a device. A chosen device is remembered in
+`~/.mini-hermes/voice-settings.json`; it does not change the operating system's default. If the
+saved device is disconnected, Oryn asks you to reconnect it or choose another input. Oryn checks
+the captured signal before transcription and skips the ElevenLabs request when the recording is
+silent. The temporary WAV stays in memory; audio and transcript text are not saved in the chat
+database or local trace. Oryn does not control ElevenLabs' handling or retention after upload.
+
+The local voice trace may include the selected input's device and host API names, recording
+duration, byte count, signal levels, and capture-overflow flag. It never stores audio, transcript
+text, or the API key. Treat device names in the trace as local machine information.
 
 Copy the `ELEVENLABS_API_KEY` placeholder from [.env.example](../../.env.example) into a
 user-only config file:

@@ -89,6 +89,7 @@ Launch with `--max-rounds`, `--max-tool-calls`, or `--max-turn-seconds` to overr
 | --- | --- | --- |
 | `/new` | Start a new session | Ctrl+N |
 | `/help` | Open the quick guide | Through palette |
+| `/mic` | Choose voice input or return to system default | Through palette |
 | `/mcps` | Manage known MCP connections | Through palette |
 | `/models` | Choose model | F2 |
 | `/effort` | Choose reasoning effort | F3 |
@@ -98,7 +99,7 @@ Launch with `--max-rounds`, `--max-tool-calls`, or `--max-turn-seconds` to overr
 | `/tools` | Browse currently available tools | Through palette |
 | `/exit` | Exit application | Ctrl+C while idle |
 
-Aliases: `/model` → `/models`, `/mcp` → `/mcps`, `/quit` and `/q` → `/exit`.
+Aliases: `/model` → `/models`, `/microphone` → `/mic`, `/mcp` → `/mcps`, `/quit` and `/q` → `/exit`.
 
 Press Ctrl+V in the composer to paste a PNG or JPEG from the desktop clipboard. Oryn shows a pasted-image item with its dimensions before you send; Backspace on an empty draft removes the last one. Up to four images (5 MiB each) are allowed per message, with limits of 8,192 pixels per edge and 16 megapixels. Oryn normalizes image orientation and removes embedded metadata. A user message may contain only an image. The local model catalog must explicitly advertise image input; missing or unsupported capability is reported before sending. Image bytes are saved with the chat in the local SQLite store so they remain available after reopening, then sent as Responses API `input_image` data with the user message. On Linux, image paste uses `wl-paste` on Wayland or `xclip` on X11. Image inputs use model context and may affect usage.
 
@@ -138,7 +139,7 @@ Ctrl+P can temporarily insert/open slash command selection while remembering a p
 
 The composer is not disabled simply because a turn is active. You can draft the next message while the current answer streams. A second turn in the same active TUI conversation is blocked until the current one ends.
 
-Typing `/` or pressing Ctrl+P still opens the attached command menu during a tool operation. Filtering and arrow-key navigation remain available. `/help`, `/tools`, and `/mcps` can open their views; MCP connection changes remain disabled until the turn ends. Selecting a session, project, model, or setting command during the turn keeps the typed command and reports that it must wait. Esc restores a draft opened through Ctrl+P. If the turn finishes while a dialog is open, that dialog retains keyboard focus.
+Typing `/` or pressing Ctrl+P still opens the attached command menu during a tool operation. Filtering and arrow-key navigation remain available. `/help`, `/tools`, and `/mcps` can open their views; MCP connection changes remain disabled until the turn ends. Selecting a session, project, model, microphone, or setting command during the turn keeps the typed command and reports that it must wait. Esc restores a draft opened through Ctrl+P. If the turn finishes while a dialog is open, that dialog retains keyboard focus.
 
 The active-turn behavior is:
 

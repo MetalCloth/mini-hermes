@@ -10,6 +10,8 @@ import urllib.error
 import urllib.request
 import uuid
 import wave
+from dataclasses import dataclass
+from pathlib import Path
 
 from src.security.secrets import local_secret
 
@@ -17,6 +19,8 @@ from src.security.secrets import local_secret
 API_KEY_FILE = "elevenlabs.env"
 TRANSCRIPTION_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 MAX_RECORDING_SECONDS = 90
+VOICE_SETTINGS_PATH = Path.home() / ".mini-hermes" / "voice-settings.json"
+SYSTEM_DEFAULT_INPUT = "system-default"
 
 
 class VoiceInputError(RuntimeError):
@@ -29,6 +33,104 @@ class VoiceInputError(RuntimeError):
 
 def elevenlabs_api_key() -> str:
     return local_secret("ELEVENLABS_API_KEY", API_KEY_FILE)
+
+
+@dataclass(frozen=True)
+class VoiceInputDevice:
+    index: int
+    name: str
+    host_api: str
+    occurrence: int
+
+    @property
+    def identity(self) -> tuple[str, str, int]:
+        return self.name.casefold(), self.host_api.casefold(), self.occurrence
+
+    @property
+    def choice_id(self) -> str:
+        return "device:" + json.dumps(self.identity, separators=(",", ":"))
+
+    @property
+    def label(self) -> str:
+        suffix = f" #{self.occurrence + 1}" if self.occurrence else ""
+        return f"{self.name}{suffix}"
+
+
+def voice_input_devices() -> list[VoiceInputDevice]:
+    """List current recording devices with identities stable across device-index changes."""
+    try:
+        import sounddevice
+    except (ImportError, OSError) as exc:
+        raise VoiceInputError(
+            "Microphone input needs sounddevice and the system PortAudio library.",
+            code="missing_audio_dependency",
+        ) from exc
+
+    try:
+        host_apis = sounddevice.query_hostapis()
+        devices = sounddevice.query_devices()
+    except Exception as exc:
+        raise VoiceInputError(
+            "Could not list microphone inputs. Check that the system audio service is running.",
+            code="device_list_failed",
+        ) from exc
+
+    occurrences: dict[tuple[str, str], int] = {}
+    result = []
+    for device in devices:
+        if device.get("max_input_channels", 0) < 1:
+            continue
+        name = str(device.get("name", "")).strip()
+        host_index = device.get("hostapi")
+        if not name or not isinstance(host_index, int) or not 0 <= host_index < len(host_apis):
+            continue
+        host_api = str(host_apis[host_index].get("name", "")).strip()
+        if not host_api:
+            continue
+        key = (name.casefold(), host_api.casefold())
+        occurrence = occurrences.get(key, 0)
+        occurrences[key] = occurrence + 1
+        result.append(VoiceInputDevice(
+            index=int(device["index"]), name=name, host_api=host_api, occurrence=occurrence,
+        ))
+    result.sort(key=lambda item: (item.host_api.casefold(), item.name.casefold(), item.occurrence))
+    return result
+
+
+def load_voice_input_preference() -> tuple[str, str, int] | None:
+    try:
+        data = json.loads(VOICE_SETTINGS_PATH.read_text(encoding="utf-8"))
+        value = data.get("input_device")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if value is None:
+        return None
+    if (not isinstance(value, list) or len(value) != 3
+            or not isinstance(value[0], str) or not value[0]
+            or not isinstance(value[1], str) or not value[1]
+            or not isinstance(value[2], int) or isinstance(value[2], bool) or value[2] < 0):
+        return None
+    return value[0].casefold(), value[1].casefold(), value[2]
+
+
+def save_voice_input_preference(identity: tuple[str, str, int] | None) -> None:
+    if identity is not None and (
+        len(identity) != 3 or not isinstance(identity[0], str) or not identity[0]
+        or not isinstance(identity[1], str) or not identity[1]
+        or not isinstance(identity[2], int) or isinstance(identity[2], bool) or identity[2] < 0
+    ):
+        raise ValueError("Invalid microphone selection.")
+    target = VOICE_SETTINGS_PATH
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as settings:
+            settings.write(json.dumps({"input_device": list(identity) if identity else None}) + "\n")
+            settings.flush()
+        temporary.chmod(0o600)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def wav_signal_levels(audio: bytes) -> tuple[bool, float | None, float | None]:
@@ -54,7 +156,7 @@ def wav_signal_levels(audio: bytes) -> tuple[bool, float | None, float | None]:
 
 
 class VoiceRecorder:
-    def __init__(self) -> None:
+    def __init__(self, input_device: tuple[str, str, int] | None = None) -> None:
         try:
             import sounddevice
         except (ImportError, OSError) as exc:
@@ -68,15 +170,41 @@ class VoiceRecorder:
         self._lock = threading.Lock()
         self._frames = 0
         self._limit_frames = 0
+        self.input_overflow = False
         self.limit_reached = False
         self._closed = False
+
         try:
-            device = sounddevice.query_devices(kind="input")
+            if input_device is None:
+                device = sounddevice.query_devices(kind="input")
+            else:
+                selected = next((
+                    item for item in voice_input_devices() if item.identity == input_device
+                ), None)
+                if selected is None:
+                    raise VoiceInputError(
+                        "Your selected microphone is unavailable. Reconnect it or choose another with /mic.",
+                        code="device_unavailable",
+                    )
+                device = sounddevice.query_devices(selected.index, kind="input")
+        except VoiceInputError:
+            raise
+        except Exception as exc:
+            raise VoiceInputError(
+                "Could not find an available microphone. Check the input device and its permissions.",
+                code="microphone_unavailable",
+            ) from exc
+
+        try:
             self.sample_rate = int(round(device["default_samplerate"]))
             if self.sample_rate <= 0 or device.get("max_input_channels", 0) < 1:
                 raise ValueError("No usable input device")
+            self.input_device_name = str(device["name"])
+            self.input_host_api = sounddevice.query_hostapis(int(device["hostapi"]))["name"]
+            self.device_index = int(device["index"])
             self._limit_frames = self.sample_rate * MAX_RECORDING_SECONDS
             self._stream = sounddevice.RawInputStream(
+                device=self.device_index,
                 samplerate=self.sample_rate, channels=1, dtype="int16",
                 blocksize=0, callback=self._capture,
             )
@@ -93,8 +221,10 @@ class VoiceRecorder:
                 code="microphone_unavailable",
             ) from exc
 
-    def _capture(self, data, frames, _time_info, _status) -> None:
+    def _capture(self, data, frames, _time_info, status) -> None:
         with self._lock:
+            if getattr(status, "input_overflow", False):
+                self.input_overflow = True
             remaining = self._limit_frames - self._frames
             kept_frames = min(frames, max(0, remaining))
             if kept_frames:

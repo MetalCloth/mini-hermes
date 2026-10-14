@@ -380,17 +380,23 @@ def format_record(record: dict) -> str:
         detail = record.get("reason") or record.get("error_class") or record.get("project") or ""
         return f"{stamp}  LANGSMITH · {record.get('status', '?')} · {_short(detail, 160)}"
     if event == "voice_recording_started":
+        input_name = record.get("input_device")
+        host_api = record.get("input_host_api")
+        input_detail = f" · input {_short(input_name)}" if input_name else ""
+        if host_api:
+            input_detail += f" ({_short(host_api, 60)})"
         return (
             f"{stamp}  VOICE RECORDING STARTED · {record.get('sample_rate', '?')} Hz · "
-            f"cap {record.get('max_duration_seconds', '?')}s"
+            f"cap {record.get('max_duration_seconds', '?')}s{input_detail}"
         )
     if event == "voice_recording_stopped":
         duration = record.get("recording_ms")
         duration_text = f"{duration / 1000:.2f}s" if isinstance(duration, int) else "?s"
         limit = " · limit reached" if record.get("limit_reached") else ""
+        overflow = " · input overflow" if record.get("input_overflow") else ""
         return (
             f"{stamp}  VOICE RECORDING STOPPED · {duration_text} · "
-            f"{record.get('audio_bytes', '?')} WAV bytes{limit}"
+            f"{record.get('audio_bytes', '?')} WAV bytes{limit}{overflow}"
         )
     if event == "voice_audio_levels":
         if not record.get("available"):
@@ -419,6 +425,10 @@ def format_record(record: dict) -> str:
         error_code = record.get("error_code", "unknown")
         if error_code == "no_speech":
             error_code = "ElevenLabs returned no recognized speech"
+        elif error_code == "silent_input":
+            error_code = "No microphone signal · upload skipped"
+        elif error_code == "device_unavailable":
+            error_code = "Selected microphone unavailable"
         return (
             f"{stamp}  VOICE FAILED · {phase}{error_code}"
             f"{elapsed}{error_class}"

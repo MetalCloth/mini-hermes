@@ -44,8 +44,9 @@ from src.tools.computer_session import ComputerSession, computer_tool_schemas
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
 from src.voice_input import (
-    MAX_RECORDING_SECONDS, VoiceInputError, VoiceRecorder, elevenlabs_api_key, transcribe_wav,
-    wav_signal_levels,
+    MAX_RECORDING_SECONDS, SYSTEM_DEFAULT_INPUT, VoiceInputError, VoiceRecorder,
+    elevenlabs_api_key, load_voice_input_preference, save_voice_input_preference,
+    transcribe_wav, voice_input_devices, wav_signal_levels,
 )
 
 
@@ -54,6 +55,7 @@ COMMANDS = (
     ("new", "New session"),
     ("delete", "Delete this session and return home"),
     ("help", "Show help"),
+    ("mic", "Choose microphone input"),
     ("mcps", "Manage MCP connections"),
     ("models", "Switch model"),
     ("effort", "Configure reasoning effort"),
@@ -63,7 +65,9 @@ COMMANDS = (
     ("tools", "Show available tools"),
     ("exit", "Exit the app"),
 )
-COMMAND_ALIASES = {"model": "models", "mcp": "mcps", "quit": "exit", "q": "exit"}
+COMMAND_ALIASES = {
+    "model": "models", "mcp": "mcps", "microphone": "mic", "quit": "exit", "q": "exit",
+}
 COMMANDS_DURING_TURN = {"help", "tools", "mcps", "models", "effort", "speed", "sessions", "new"}
 
 
@@ -1372,7 +1376,7 @@ class OrynTUI(App[None]):
             )
             return
         try:
-            self._voice_recorder = VoiceRecorder()
+            self._voice_recorder = VoiceRecorder(load_voice_input_preference())
         except VoiceInputError as exc:
             trace = self._voice_trace
             self._write_voice_trace(
@@ -1385,6 +1389,8 @@ class OrynTUI(App[None]):
         self._write_voice_trace(
             self._voice_trace, "voice_recording_started", sample_rate=self._voice_recorder.sample_rate,
             max_duration_seconds=MAX_RECORDING_SECONDS,
+            input_device=self._voice_recorder.input_device_name,
+            input_host_api=self._voice_recorder.input_host_api,
         )
         self.query_one("#voice-button", Button).label = "Stop · F8"
         self.query_one("#composer", TextArea).focus()
@@ -1411,7 +1417,7 @@ class OrynTUI(App[None]):
         self._write_voice_trace(
             trace, "voice_recording_stopped", recording_ms=duration_ms,
             audio_bytes=len(audio), sample_rate=recorder.sample_rate,
-            limit_reached=recorder.limit_reached,
+            limit_reached=recorder.limit_reached, input_overflow=recorder.input_overflow,
         )
         if not audio:
             self._write_voice_trace(
@@ -1421,38 +1427,49 @@ class OrynTUI(App[None]):
             self._set_activity("No audio was captured. Check the microphone and try again.", working=False, error=True)
             return
         self._voice_transcribing = True
-        self._write_voice_trace(
-            trace, "voice_transcription_started", model="scribe_v2",
-            recording_ms=duration_ms, audio_bytes=len(audio),
-        )
         self._set_activity(
-            "Recording limit reached · transcribing" if recorder.limit_reached
-            else "Transcribing with ElevenLabs…",
+            "Recording limit reached · checking audio" if recorder.limit_reached
+            else "Checking audio · then transcribing if sound is present…",
             working=True,
         )
         threading.Thread(
-            target=self._transcribe_voice, args=(audio, trace), name="oryn-voice-transcription", daemon=True,
+            target=self._transcribe_voice, args=(audio, trace, duration_ms),
+            name="oryn-voice-transcription", daemon=True,
         ).start()
 
-    def _transcribe_voice(self, audio: bytes, trace: ComputerTrace | None) -> None:
+    def _transcribe_voice(
+        self, audio: bytes, trace: ComputerTrace | None, recording_ms: int,
+    ) -> None:
         levels_available, peak_dbfs, rms_dbfs = wav_signal_levels(audio)
         self._write_voice_trace(
             trace, "voice_audio_levels", available=levels_available,
             peak_dbfs=peak_dbfs, rms_dbfs=rms_dbfs,
         )
-        started = monotonic()
+        started: float | None = None
         try:
+            if levels_available and peak_dbfs is None:
+                raise VoiceInputError(
+                    "No microphone signal was captured. Check the input, mute and privacy settings, "
+                    "or choose another device with /mic.",
+                    code="silent_input",
+                )
+            self._write_voice_trace(
+                trace, "voice_transcription_started", model="scribe_v2",
+                recording_ms=recording_ms, audio_bytes=len(audio),
+            )
+            started = monotonic()
             transcript = transcribe_wav(audio)
         except VoiceInputError as exc:
             self._write_voice_trace(
-                trace, "voice_transcription_failed", elapsed_ms=round((monotonic() - started) * 1000),
-                error_code=exc.code,
+                trace, "voice_transcription_failed", error_code=exc.code,
+                **({"elapsed_ms": round((monotonic() - started) * 1000)} if started is not None else {}),
             )
             event = VoiceTranscriptionFinished(None, str(exc))
         except Exception as exc:
             self._write_voice_trace(
-                trace, "voice_transcription_failed", elapsed_ms=round((monotonic() - started) * 1000),
-                error_code="unexpected_error", error_class=type(exc).__name__,
+                trace, "voice_transcription_failed", error_code="unexpected_error",
+                error_class=type(exc).__name__,
+                **({"elapsed_ms": round((monotonic() - started) * 1000)} if started is not None else {}),
             )
             event = VoiceTranscriptionFinished(
                 None, "Voice transcription failed unexpectedly. Try recording again.",
@@ -1466,6 +1483,57 @@ class OrynTUI(App[None]):
         finally:
             self._close_voice_trace(trace)
         self.post_message(event)
+
+    async def _choose_voice_input(self) -> None:
+        self._hide_palette()
+        try:
+            devices = voice_input_devices()
+        except VoiceInputError as exc:
+            self._set_activity(str(exc), working=False, error=True)
+            self.query_one("#composer", TextArea).focus()
+            return
+
+        preference = load_voice_input_preference()
+        choices = [(SYSTEM_DEFAULT_INPUT, "System default · follows OS", "System")]
+        descriptions = {
+            SYSTEM_DEFAULT_INPUT: (
+                "Follow your operating system's current input. This can change when a headset or USB mic connects."
+            ),
+        }
+        for device in devices:
+            choices.append((device.choice_id, device.label, device.host_api))
+            descriptions[device.choice_id] = (
+                "Use this microphone for Oryn voice input. This choice is saved for your user account."
+            )
+
+        current = SYSTEM_DEFAULT_INPUT
+        disabled_choices: set[str] = set()
+        if preference is not None:
+            selected = next((device for device in devices if device.identity == preference), None)
+            if selected is not None:
+                current = selected.choice_id
+            else:
+                current = "device:" + json.dumps(preference, separators=(",", ":"))
+                choices.append((current, f"Unavailable · {preference[0]}", "Not connected"))
+                descriptions[current] = "Reconnect this microphone or choose another input before recording."
+                disabled_choices.add(current)
+
+        result = await self.push_screen_wait(ChoiceScreen(
+            "Select microphone", choices, current, descriptions=descriptions,
+            disabled_choices=disabled_choices,
+        ))
+        if result:
+            device = next((item for item in devices if item.choice_id == result), None)
+            if result == SYSTEM_DEFAULT_INPUT or device is not None:
+                identity = None if device is None else device.identity
+                try:
+                    save_voice_input_preference(identity)
+                except (OSError, ValueError) as exc:
+                    self._set_activity(f"Could not save microphone setting: {exc}", working=False, error=True)
+                else:
+                    label = "System default" if device is None else device.label
+                    self._set_activity(f"Microphone set to {label}", working=False)
+        self.query_one("#composer", TextArea).focus()
 
     @staticmethod
     def _write_voice_trace(trace: ComputerTrace | None, event: str, **fields: Any) -> None:
@@ -1539,6 +1607,8 @@ class OrynTUI(App[None]):
                 await self._change_model()
         elif name in {"effort", "speed"}:
             await self._change_setting("reasoning_effort" if name == "effort" else "service_tier", argument)
+        elif name == "mic":
+            await self._choose_voice_input()
         elif name == "project":
             if argument:
                 await self._switch_project(argument)
@@ -1553,6 +1623,7 @@ class OrynTUI(App[None]):
                 "COMMANDS\n"
                 "/new       Start a new session\n"
                 "/delete    Delete this session and return home\n"
+                "/mic       Choose the microphone used for voice input\n"
                 "/sessions  Resume a saved session\n"
                 "/models    Change this session's model\n"
                 "/effort    Set reasoning effort for the selected model\n"
