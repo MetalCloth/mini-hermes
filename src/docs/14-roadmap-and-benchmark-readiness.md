@@ -43,16 +43,16 @@ This chapter distinguishes running code, partial support, and proposals. It reco
 
 | Issue | Intended work | Current relationship to implementation |
 | --- | --- | --- |
-| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/mini-hermes/issues/1) | Local diagnostic record for each turn and useful redacted failures | Implemented: SQLite traces retain allowlisted turn/tool events and sanitized Firecrawl status, request ID, and detail |
-| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/mini-hermes/issues/2) | Fixed tasks and measurable regression results | Implemented: six deterministic offline scenarios report expected/observed outputs; broad benchmark scoring remains separate |
-| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/mini-hermes/issues/3) | Safe recovery from budget/large-output conditions | Partial: estimated-token compaction, complete-turn selection, visible truncation, and clear current-turn refusal exist; an explicit response-token reserve remains |
-| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/mini-hermes/issues/4) | Undo surviving restart | Implemented: up to 20 applied changes per chat, 1 MB prior-file cap, 30-day retention, fingerprint checks, crash reconciliation, and delete cleanup |
-| [#5: First supported local release](https://github.com/MetalCloth/mini-hermes/issues/5) | Define/harden/install the release boundary | Implemented for a single-user Linux source checkout: clean install steps, loopback-only dashboard, startup login warning, redacted diagnostics, and threat boundary; global packaging stays out of scope |
-| [#6: Policy-controlled MCP client](https://github.com/MetalCloth/mini-hermes/issues/6) | Connect external tools with discovery and controls | Implemented: local stdio and hosted connections, validation, limits, approval policy, and explicit opt-in defaults; local stdio tool use runs through the agent loop |
-| [#7: Supervised read-only subagent](https://github.com/MetalCloth/mini-hermes/issues/7) | Bounded context-isolated delegated research | Implemented with limits: one serialized child per parent turn, isolated task/context, read-only allowlist, bounded execution, structured evidence, cancellation, and failure recovery |
-| [#8: Scoped skills and trusted plugins](https://github.com/MetalCloth/mini-hermes/issues/8) | Instructions and extension boundary | Skills implemented: validated local metadata, selective loading, size caps, audit event; they cannot register tools or execute code. Executable plugins remain deferred as scoped |
-| [#9: Read-only Git status/diff tools](https://github.com/MetalCloth/mini-hermes/issues/9) | Inspect staged, unstaged, untracked work explicitly | Implemented: bounded project-scoped status and staged/unstaged previews; untracked paths are identified separately and no index/worktree mutation occurs |
-| [#10: Shared gateway](https://github.com/MetalCloth/mini-hermes/issues/10) | Route interfaces/future scheduled work through a common entrypoint | Implemented for current local interfaces: shared `run_turn` and SQLite semantics, dashboard API/event contract, and documented future queue lifecycle; no scheduler or remote API |
+| [#1: Per-turn traces and safe upstream errors](https://github.com/MetalCloth/orynx/issues/1) | Local diagnostic record for each turn and useful redacted failures | Implemented: SQLite traces retain allowlisted turn/tool events and sanitized Firecrawl status, request ID, and detail |
+| [#2: Repeatable harness evaluation set](https://github.com/MetalCloth/orynx/issues/2) | Fixed tasks and measurable regression results | Implemented: six deterministic offline scenarios report expected/observed outputs; broad benchmark scoring remains separate |
+| [#3: Context budgeting and oversized results](https://github.com/MetalCloth/orynx/issues/3) | Safe recovery from budget/large-output conditions | Partial: estimated-token compaction, complete-turn selection, visible truncation, and clear current-turn refusal exist; an explicit response-token reserve remains |
+| [#4: Persistent file-change snapshots](https://github.com/MetalCloth/orynx/issues/4) | Undo surviving restart | Implemented: up to 20 applied changes per chat, 1 MB prior-file cap, 30-day retention, fingerprint checks, crash reconciliation, and delete cleanup |
+| [#5: First supported local release](https://github.com/MetalCloth/orynx/issues/5) | Define/harden/install the release boundary | Implemented for a single-user Linux source checkout: clean install steps, loopback-only dashboard, startup login warning, redacted diagnostics, and threat boundary; global packaging stays out of scope |
+| [#6: Policy-controlled MCP client](https://github.com/MetalCloth/orynx/issues/6) | Connect external tools with discovery and controls | Implemented: local stdio and hosted connections, validation, limits, approval policy, and explicit opt-in defaults; local stdio tool use runs through the agent loop |
+| [#7: Supervised read-only subagent](https://github.com/MetalCloth/orynx/issues/7) | Bounded context-isolated delegated research | Implemented with limits: one serialized child per parent turn, isolated task/context, read-only allowlist, bounded execution, structured evidence, cancellation, and failure recovery |
+| [#8: Scoped skills and trusted plugins](https://github.com/MetalCloth/orynx/issues/8) | Instructions and extension boundary | Skills implemented: validated local metadata, selective loading, size caps, audit event; they cannot register tools or execute code. Executable plugins remain deferred as scoped |
+| [#9: Read-only Git status/diff tools](https://github.com/MetalCloth/orynx/issues/9) | Inspect staged, unstaged, untracked work explicitly | Implemented: bounded project-scoped status and staged/unstaged previews; untracked paths are identified separately and no index/worktree mutation occurs |
+| [#10: Shared gateway](https://github.com/MetalCloth/orynx/issues/10) | Route interfaces/future scheduled work through a common entrypoint | Implemented for current local interfaces: shared `run_turn` and SQLite semantics, dashboard API/event contract, and documented future queue lifecycle; no scheduler or remote API |
 
 Issue #3 remains open because the current request estimator does not reserve an explicit allowance for the generated response. The other issue scopes above are implemented and verified in this snapshot; close state is tracked in GitHub after the final suite passes.
 
@@ -64,7 +64,7 @@ The latest discussion emphasized consolidating the core before adding uncontroll
 2. **Recover from eligible transient failures — implemented with limits.** Three attempts before model output or for known read-only MCP operations; uncertain side effects are not replayed.
 3. **Package an installable `oryn` command.** Remove dependence on a specific repository `.venv` launcher.
 4. **Add first-run configuration.** Guide a new user through model login, project selection, and optional connections.
-5. **Add the first read-only research subagent.** Keep its task, context, tools, and result explicit and bounded.
+5. **Evaluate whether to expand delegation.** The current worker is one bounded, read-only project researcher; parallel workers and delegated desktop control are not implemented.
 
 Persistent undo, clear traces, and context limits remain important alongside this list. Priority should follow observed failures and the user's chosen milestone rather than a fixed feature checklist.
 
@@ -145,28 +145,20 @@ A first version should expose existing configuration behavior rather than invent
 
 Success means a new user can launch the application from an unrelated project without source edits, understand unavailable optional connections, and retain their preferences.
 
-## 8. Proposal: first subagent
+## 8. Implemented: one bounded read-only subagent
 
-**Proposed, not implemented.**
+`delegate_read_only` runs one context-isolated worker for an independent project-inspection task. It receives the task and the active project's root `AGENTS.md`; it does not inherit the parent conversation or loaded MCP tools. Its allowlist is `read_file`, `search_files`, `git_status`, and `git_diff`.
 
 ```mermaid
 flowchart TD
-    U["User task"] --> P["Main agent supervisor"]
-    P --> T["Explicit research task and bounded input context"]
-    T --> A["One read-only subagent"]
-    A --> R["Restricted file/search/documentation tools"]
-    R --> A
-    A --> O["Structured findings, evidence, uncertainty, status"]
-    O --> P
-    P --> V["Main agent evaluates findings and chooses next work"]
-    V --> U
+    P["Parent turn"] -->|"task, max 2,000 characters"| W["Isolated worker"]
+    W --> T["read_file · search_files · git_status · git_diff"]
+    T --> W
+    W -->|"findings, evidence, status"| P
+    P --> U["Parent evaluates findings and answers"]
 ```
 
-The first delegated worker should be read-only. It should receive a concrete question, relevant files/sources, allowed tools, a time/round budget, and a result format. The main agent remains responsible for checking findings and for any approved mutation.
-
-Required mechanics include independent context, task status, cancellation, cleanup, and result delivery. A second model call with a role prompt is insufficient to claim a robust subagent system.
-
-Do not copy the main transcript wholesale into every worker. Context isolation matters both for cost and for keeping unrelated instructions/evidence from leaking between tasks.
+The worker is limited to 4 model rounds, 8 tool calls, 90 seconds, and an 8,000-character result. It cannot write files, run terminal commands, browse, use MCP, or delegate recursively. Parent cancellation is relayed, and the parent remains responsible for evaluating the findings. This is bounded delegated research, not a parallel agent team or a computer-use actor. See [the agent-loop chapter](04-agent-loop-and-context.md#12-one-bounded-read-only-subagent) and [the native tool reference](15-native-tool-reference.md#delegate-read-only) for the full contract.
 
 ## 9. Implemented: persistent undo and diagnostics
 

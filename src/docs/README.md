@@ -2,7 +2,7 @@
 
 **A detailed explanation of what we built, how it works, why it changed, and what remains unfinished.**
 
-Core documentation snapshot: **28 September 2026**. The computer main-loop chapter was added on **4 October 2026** and now documents desktop tools in ordinary TUI chat. Earlier chapters can describe historical behavior; each chapter links to the code responsible for its behavior.
+Core documentation snapshot: **14 October 2026**. The computer-use chapters describe the current scoped `/computer` flow, and the setup, TUI, and tracing chapters cover push-to-talk voice input and microphone feedback. Earlier chapters can describe historical behavior; each chapter links to the code responsible for its behavior.
 
 Follow-up chapters now include on-demand MCP schemas, explicit MCP opt-in, durable per-chat undo, scoped skills, one bounded read-only subagent, Git awareness, safe upstream traces, offline failure/context evaluations, a local first-release boundary, and a documented shared turn/API contract. The [core upgrade plan](16-core-upgrade-plan.md) records the earlier reliability milestone and its remaining limits.
 
@@ -153,4 +153,4 @@ flowchart TD
 
 When changing a public command, tool schema, configuration file, limit, or persistence rule, update the corresponding chapter. When fixing a bug, add the failure mechanism and relevant test to the troubleshooting chapter. Keep credentials out of examples. Keep the history chapter historical rather than rewriting past milestones to resemble the latest code.
 
-This handbook describes the actual project. It does not claim production certification, model training, persistent undo, subagent execution, or plugin loading that has not been implemented.
+This handbook describes the actual project. File undo and one bounded read-only subagent are implemented with limits. The handbook does not claim model training, unrestricted multi-agent execution, executable plugin loading, or production certification.

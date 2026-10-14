@@ -50,37 +50,45 @@ flowchart LR
     A --> I
 ```
 
-## 3. Complete application commit timeline
+## 3. Selected application milestones through 14 October 2026
 
-This is the repository's application history through the documented snapshot. Commit titles are historical records; descriptions explain the mechanism added or improved. Several commits group multiple changes, so a row is a milestone rather than a claim that only one file changed.
+Commit titles are historical records; descriptions explain the mechanism added or improved. This is a milestone timeline, not a row for every commit. Several commits group related changes. Links use the current Orynx repository URL.
 
 | Date | Commit | Milestone and explanation |
 | --- | --- | --- |
-| 23 Sep 2026 | [`6c3ffd6`](https://github.com/MetalCloth/mini-hermes/commit/6c3ffd6) | **Initial project setup.** Established the educational project structure. A Codex provider and provider test already existed; many future subsystem files were placeholders. |
-| 23 Sep 2026 | [`f7216f6`](https://github.com/MetalCloth/mini-hermes/commit/f7216f6) | **Codex provider demo.** Made it possible to send a prompt through a concrete entrypoint and see a model response. |
-| 24 Sep 2026 | [`0957b20`](https://github.com/MetalCloth/mini-hermes/commit/0957b20) | **Plain-text conversation driver.** Added a conversation around the model rather than a one-shot request. |
-| 24 Sep 2026 | [`585ff25`](https://github.com/MetalCloth/mini-hermes/commit/585ff25) | **Terminal and file tools.** Introduced operations the harness could execute on the selected project. |
-| 24 Sep 2026 | [`a7ed987`](https://github.com/MetalCloth/mini-hermes/commit/a7ed987) | **Bounded conversation context.** Selected recent turns so history could not grow without limit in every request. |
-| 24 Sep 2026 | [`b54727e`](https://github.com/MetalCloth/mini-hermes/commit/b54727e) | **SQLite sessions.** Conversations could survive process exit. |
-| 24 Sep 2026 | [`c262447`](https://github.com/MetalCloth/mini-hermes/commit/c262447) | **Oversized tool result cap.** Stopped large tool outputs from overwhelming later requests. |
-| 24 Sep 2026 | [`baa72b0`](https://github.com/MetalCloth/mini-hermes/commit/baa72b0) | **System prompt.** Established product identity and instructions about tools and answers. |
-| 24 Sep 2026 | [`a8f6982`](https://github.com/MetalCloth/mini-hermes/commit/a8f6982) | **Project instructions.** Loaded the root `AGENTS.md` into the model's instructional context. |
-| 24 Sep 2026 | [`5d30bee`](https://github.com/MetalCloth/mini-hermes/commit/5d30bee) | **Multiple sessions.** Replaced the assumption of a single permanent chat with independent saved conversations. |
-| 24 Sep 2026 | [`3cc73b1`](https://github.com/MetalCloth/mini-hermes/commit/3cc73b1) | **Multiple project folders.** Bound chats to their active folder instead of assuming one developer-specific project. |
-| 24 Sep 2026 | [`9770616`](https://github.com/MetalCloth/mini-hermes/commit/9770616) | **Firecrawl extraction and project search.** Added web-page reading and narrower file discovery. |
-| 24 Sep 2026 | [`fd0aaea`](https://github.com/MetalCloth/mini-hermes/commit/fd0aaea) | **Browser interaction, streaming, session search.** Exposed progress, page actions, and retrieval of saved conversations. |
-| 24 Sep 2026 | [`bbac2fd`](https://github.com/MetalCloth/mini-hermes/commit/bbac2fd) | **React dashboard.** Added a local browser interface around the existing Python harness. |
-| 25 Sep 2026 | [`509e469`](https://github.com/MetalCloth/mini-hermes/commit/509e469) | **Dashboard UI iteration.** Developed the visual interface while the search path still needed repair. |
-| 25 Sep 2026 | [`f4a9415`](https://github.com/MetalCloth/mini-hermes/commit/f4a9415) | **Tavily search.** Replaced the fragile search scraper with an authenticated search API and actionable configuration/errors. |
-| 25 Sep 2026 | [`ddb04f0`](https://github.com/MetalCloth/mini-hermes/commit/ddb04f0) | **Markdown and session controls.** Improved answer rendering, including mathematical notation, and chat management. |
-| 25 Sep 2026 | [`67d3261`](https://github.com/MetalCloth/mini-hermes/commit/67d3261) | **File approvals and recovery.** Improved reviewable edits, guarded file operations, undo-related behavior, and truthful incomplete-turn handling. |
-| 26 Sep 2026 | [`98bb00c`](https://github.com/MetalCloth/mini-hermes/commit/98bb00c) | **First MCP integrations.** Added Context7, GitHub, and Playwright using the MCP SDK, discovery, routing, and policy decisions. |
-| 26 Sep 2026 | [`b38f0c0`](https://github.com/MetalCloth/mini-hermes/commit/b38f0c0) | **Full-screen terminal UI.** Added Textual as a direct Python frontend over the same backend responsibilities. |
-| 26 Sep 2026 | [`38fc615`](https://github.com/MetalCloth/mini-hermes/commit/38fc615) | **TUI refinement and MCP fixes.** Iterated layout, pickers, slash commands, and startup/settings behavior. |
-| 27 Sep 2026 | [`c2f2cfa`](https://github.com/MetalCloth/mini-hermes/commit/c2f2cfa) | **Nine hosted connections and Notion OAuth.** Switched the external integration set toward official hosted servers and explicit Notion browser authorization. |
-| 27 Sep 2026 | [`d40669d`](https://github.com/MetalCloth/mini-hermes/commit/d40669d) | **Model effort, speed, and picker improvements.** Read capabilities from the local Codex catalog, persisted settings per model/session, and repaired version/picker presentation issues. |
-| 27 Sep 2026 | [`4a04a15`](https://github.com/MetalCloth/mini-hermes/commit/4a04a15) | **TUI MCP management and tool browser.** Added enable/disable/reconnect/login controls and compact searchable tool rows with separate details. |
-| 27 Sep 2026 | [`b81462d`](https://github.com/MetalCloth/mini-hermes/commit/b81462d) | **Theme-matched scrollbars.** Replaced the conspicuous default blue scrollbar across scrollable terminal surfaces with narrow theme colors. |
+| 23 Sep 2026 | [`6c3ffd6`](https://github.com/MetalCloth/orynx/commit/6c3ffd6) | **Initial project setup.** Established the educational project structure. A Codex provider and provider test already existed; many future subsystem files were placeholders. |
+| 23 Sep 2026 | [`f7216f6`](https://github.com/MetalCloth/orynx/commit/f7216f6) | **Codex provider demo.** Made it possible to send a prompt through a concrete entrypoint and see a model response. |
+| 24 Sep 2026 | [`0957b20`](https://github.com/MetalCloth/orynx/commit/0957b20) | **Plain-text conversation driver.** Added a conversation around the model rather than a one-shot request. |
+| 24 Sep 2026 | [`585ff25`](https://github.com/MetalCloth/orynx/commit/585ff25) | **Terminal and file tools.** Introduced operations the harness could execute on the selected project. |
+| 24 Sep 2026 | [`a7ed987`](https://github.com/MetalCloth/orynx/commit/a7ed987) | **Bounded conversation context.** Selected recent turns so history could not grow without limit in every request. |
+| 24 Sep 2026 | [`b54727e`](https://github.com/MetalCloth/orynx/commit/b54727e) | **SQLite sessions.** Conversations could survive process exit. |
+| 24 Sep 2026 | [`c262447`](https://github.com/MetalCloth/orynx/commit/c262447) | **Oversized tool result cap.** Stopped large tool outputs from overwhelming later requests. |
+| 24 Sep 2026 | [`baa72b0`](https://github.com/MetalCloth/orynx/commit/baa72b0) | **System prompt.** Established product identity and instructions about tools and answers. |
+| 24 Sep 2026 | [`a8f6982`](https://github.com/MetalCloth/orynx/commit/a8f6982) | **Project instructions.** Loaded the root `AGENTS.md` into the model's instructional context. |
+| 24 Sep 2026 | [`5d30bee`](https://github.com/MetalCloth/orynx/commit/5d30bee) | **Multiple sessions.** Replaced the assumption of a single permanent chat with independent saved conversations. |
+| 24 Sep 2026 | [`3cc73b1`](https://github.com/MetalCloth/orynx/commit/3cc73b1) | **Multiple project folders.** Bound chats to their active folder instead of assuming one developer-specific project. |
+| 24 Sep 2026 | [`9770616`](https://github.com/MetalCloth/orynx/commit/9770616) | **Firecrawl extraction and project search.** Added web-page reading and narrower file discovery. |
+| 24 Sep 2026 | [`fd0aaea`](https://github.com/MetalCloth/orynx/commit/fd0aaea) | **Browser interaction, streaming, session search.** Exposed progress, page actions, and retrieval of saved conversations. |
+| 24 Sep 2026 | [`bbac2fd`](https://github.com/MetalCloth/orynx/commit/bbac2fd) | **React dashboard.** Added a local browser interface around the existing Python harness. |
+| 25 Sep 2026 | [`509e469`](https://github.com/MetalCloth/orynx/commit/509e469) | **Dashboard UI iteration.** Developed the visual interface while the search path still needed repair. |
+| 25 Sep 2026 | [`f4a9415`](https://github.com/MetalCloth/orynx/commit/f4a9415) | **Tavily search.** Replaced the fragile search scraper with an authenticated search API and actionable configuration/errors. |
+| 25 Sep 2026 | [`ddb04f0`](https://github.com/MetalCloth/orynx/commit/ddb04f0) | **Markdown and session controls.** Improved answer rendering, including mathematical notation, and chat management. |
+| 25 Sep 2026 | [`67d3261`](https://github.com/MetalCloth/orynx/commit/67d3261) | **File approvals and recovery.** Improved reviewable edits, guarded file operations, undo-related behavior, and truthful incomplete-turn handling. |
+| 26 Sep 2026 | [`98bb00c`](https://github.com/MetalCloth/orynx/commit/98bb00c) | **First MCP integrations.** Added Context7, GitHub, and Playwright using the MCP SDK, discovery, routing, and policy decisions. |
+| 26 Sep 2026 | [`b38f0c0`](https://github.com/MetalCloth/orynx/commit/b38f0c0) | **Full-screen terminal UI.** Added Textual as a direct Python frontend over the same backend responsibilities. |
+| 26 Sep 2026 | [`38fc615`](https://github.com/MetalCloth/orynx/commit/38fc615) | **TUI refinement and MCP fixes.** Iterated layout, pickers, slash commands, and startup/settings behavior. |
+| 27 Sep 2026 | [`c2f2cfa`](https://github.com/MetalCloth/orynx/commit/c2f2cfa) | **Nine hosted connections and Notion OAuth.** Switched the external integration set toward official hosted servers and explicit Notion browser authorization. |
+| 27 Sep 2026 | [`d40669d`](https://github.com/MetalCloth/orynx/commit/d40669d) | **Model effort, speed, and picker improvements.** Read capabilities from the local Codex catalog, persisted settings per model/session, and repaired version/picker presentation issues. |
+| 27 Sep 2026 | [`4a04a15`](https://github.com/MetalCloth/orynx/commit/4a04a15) | **TUI MCP management and tool browser.** Added enable/disable/reconnect/login controls and compact searchable tool rows with separate details. |
+| 27 Sep 2026 | [`b81462d`](https://github.com/MetalCloth/orynx/commit/b81462d) | **Theme-matched scrollbars.** Replaced the conspicuous default blue scrollbar across scrollable terminal surfaces with narrow theme colors. |
+| 28 Sep 2026 | [`8e969a4`](https://github.com/MetalCloth/orynx/commit/8e969a4) | **Context and harness reliability.** Added context compression and improved turn handling, diagnostics, and offline evaluations. |
+| 29 Sep 2026 | [`f147081`](https://github.com/MetalCloth/orynx/commit/f147081) | **Bounded research delegation.** Added the isolated read-only subagent, read-only Git inspection, and selectively loaded local skills. |
+| 28–30 Sep 2026 | [`19d0e81`](https://github.com/MetalCloth/orynx/commit/19d0e81), [`58e410a`](https://github.com/MetalCloth/orynx/commit/58e410a), [`0045cae`](https://github.com/MetalCloth/orynx/commit/0045cae), [`9b789ea`](https://github.com/MetalCloth/orynx/commit/9b789ea) | **First local computer-use flow.** Added a scoped computer-use preview, connected it to the selected model, and improved action screenshots and readable traces. |
+| 1 Oct 2026 | [`aee6de3`](https://github.com/MetalCloth/orynx/commit/aee6de3), [`69fa5ee`](https://github.com/MetalCloth/orynx/commit/69fa5ee) | **Computer input guidance and Gemini provider.** Tuned desktop input guidance and timing, then added Gemini as a model provider. |
+| 2 Oct 2026 | [`b7bfdaf`](https://github.com/MetalCloth/orynx/commit/b7bfdaf), [`36ee525`](https://github.com/MetalCloth/orynx/commit/36ee525) | **Structured computer planning.** Improved computer-mode reliability and moved planning actions to structured calls. |
+| 3–4 Oct 2026 | [`07e6c91`](https://github.com/MetalCloth/orynx/commit/07e6c91), [`cea8509`](https://github.com/MetalCloth/orynx/commit/cea8509), [`1f53f91`](https://github.com/MetalCloth/orynx/commit/1f53f91) | **CUA observation with local input.** Added CUA observations, routed keyboard input through dotool, added snapshot-bound element clicks, and bounded no-input re-observation. |
+| 5–6 Oct 2026 | [`4a65943`](https://github.com/MetalCloth/orynx/commit/4a65943), [`6c77e35`](https://github.com/MetalCloth/orynx/commit/6c77e35), [`9c53923`](https://github.com/MetalCloth/orynx/commit/9c53923), [`4dc9ff9`](https://github.com/MetalCloth/orynx/commit/4dc9ff9) | **Integrated `/computer` and richer traces.** Reworked computer use around scoped CUA tools, recorded MCP startup timing and action details, and routed clicks through dotool. |
+| 14 Oct 2026 | [`26fc7e6`](https://github.com/MetalCloth/orynx/commit/26fc7e6), [`1d9319b`](https://github.com/MetalCloth/orynx/commit/1d9319b), [`32fb353`](https://github.com/MetalCloth/orynx/commit/32fb353), [`af35f1c`](https://github.com/MetalCloth/orynx/commit/af35f1c) | **Voice input and microphone feedback.** Added push-to-talk transcription, integrated voice and computer events into traces, added microphone selection and diagnostics, and displayed a live input-level meter. |
 
 ## 4. Development phases and the reason for each
 
@@ -94,7 +102,8 @@ flowchart TD
     F --> G["Phase 7: Add MCP interoperability"]
     G --> H["Phase 8: Build and refine the terminal application"]
     H --> I["Phase 9: Hosted connections, OAuth, model controls, management"]
-    I --> J["Current: Document the complete implementation"]
+    I --> J["Phase 10: Integrate scoped computer use and voice input"]
+    J --> K["Current: Keep documentation aligned with implementation"]
 ```
 
 ### Model connectivity before agent complexity

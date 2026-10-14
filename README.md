@@ -1,10 +1,10 @@
 # Oryn
 
-Oryn is a local, educational coding assistant with Codex and Gemini model providers. It has a Python agent loop and tools, SQLite chat history, a full-screen terminal UI, MCP connections, and a React dashboard.
+Oryn is a local, educational coding assistant with Codex and Gemini model providers. It has a Python agent loop and tools, SQLite chat history, local computer-use tools, push-to-talk voice transcription in the TUI, MCP connections, and a React dashboard.
 
 ## Detailed documentation
 
-Start with the [Oryn engineering handbook](src/docs/README.md). It explains the complete development history, architecture, provider, tool loop, context, sessions, recovery, file editing and undo, web services, MCP/OAuth, both interfaces, testing, and roadmap with diagrams and worked examples.
+Start with the [Oryn engineering handbook](src/docs/README.md). It explains key development milestones, architecture, providers, the tool loop, context, sessions, recovery, file editing and undo, web services, MCP/OAuth, computer use, voice input, both interfaces, testing, and roadmap with diagrams and worked examples.
 
 - [Architecture and request flow](src/docs/architecture.md)
 - [Setup and credential configuration](src/docs/02-installation-and-configuration.md)
@@ -20,8 +20,8 @@ dashboard needs Node.js `^20.19.0` or `>=22.12.0` and npm; the optional local Pl
 needs Node.js/npm. The MCP error-handling path uses Python 3.11's `BaseExceptionGroup`.
 
 ```fish
-git clone https://github.com/MetalCloth/mini-hermes.git
-cd mini-hermes
+git clone https://github.com/MetalCloth/orynx.git
+cd orynx
 python3 -m venv .venv
 source .venv/bin/activate.fish
 python -m pip install -r requirements.txt
