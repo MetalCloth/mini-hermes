@@ -866,6 +866,7 @@ class OrynTUI(App[None]):
         self._palette_draft: str | None = None
         self.pending_images: list[dict[str, Any]] = []
         self._voice_recorder: VoiceRecorder | None = None
+        self._voice_meter_timer = None
         self._voice_transcribing = False
         self._voice_trace: ComputerTrace | None = None
 
@@ -916,6 +917,7 @@ class OrynTUI(App[None]):
                     with Horizontal(id="composer-footer"):
                         yield Static("enter send   shift+enter new line", id="send-hint")
                         yield Static("/ commands", id="composer-commands")
+                        yield Static("", id="voice-meter", markup=False)
                         yield Button("Mic · F8", id="voice-button")
             yield Static(id="home-spacer")
             with Horizontal(id="app-footer"):
@@ -951,6 +953,9 @@ class OrynTUI(App[None]):
 
     def on_unmount(self) -> None:
         self._cancel_active_turn()
+        if self._voice_meter_timer is not None:
+            self._voice_meter_timer.stop()
+            self._voice_meter_timer = None
         if self._voice_recorder is not None:
             recorder, self._voice_recorder = self._voice_recorder, None
             try:
@@ -1393,13 +1398,36 @@ class OrynTUI(App[None]):
             input_host_api=self._voice_recorder.input_host_api,
         )
         self.query_one("#voice-button", Button).label = "Stop · F8"
+        self.query_one("#voice-meter", Static).set_class(True, "recording")
+        self._voice_meter_timer = self.set_interval(0.1, self._refresh_voice_meter)
+        self._refresh_voice_meter()
         self.query_one("#composer", TextArea).focus()
         self._set_activity("Recording · press Stop or F8 when you’re done", working=True)
+
+    def _refresh_voice_meter(self) -> None:
+        recorder = self._voice_recorder
+        if recorder is None:
+            return
+        level = recorder.input_level_dbfs
+        bars = 0 if level is None else round(max(0, min(1, (level + 60) / 48)) * 8)
+        meter = self.query_one("#voice-meter", Static)
+        meter.update("MIC " + "█" * bars + "░" * (8 - bars))
+        meter.set_class(level is not None and level > -55, "signal")
+
+    def _hide_voice_meter(self) -> None:
+        if self._voice_meter_timer is not None:
+            self._voice_meter_timer.stop()
+            self._voice_meter_timer = None
+        meter = self.query_one("#voice-meter", Static)
+        meter.update("")
+        meter.set_class(False, "recording")
+        meter.set_class(False, "signal")
 
     def _finish_voice_recording(self) -> None:
         recorder, self._voice_recorder = self._voice_recorder, None
         if recorder is None:
             return
+        self._hide_voice_meter()
         self.query_one("#voice-button", Button).label = "Mic · F8"
         try:
             audio = recorder.stop()

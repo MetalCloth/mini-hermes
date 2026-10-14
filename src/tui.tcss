@@ -86,6 +86,9 @@ VerticalScroll, OptionList, TextArea {
 #composer-footer { height: 1; padding: 0 2; color: $oryn-muted; }
 #send-hint { width: 1fr; color: $oryn-muted; }
 #composer-commands { width: auto; color: $oryn-muted; }
+#voice-meter { display: none; width: auto; margin-right: 1; color: $oryn-muted; }
+#voice-meter.recording { display: block; }
+#voice-meter.signal { color: $oryn-peach; text-style: bold; }
 #voice-button {
     width: auto; height: 1; min-height: 1; min-width: 0;
     border: none; padding: 0 1; background: transparent; color: $oryn-muted;

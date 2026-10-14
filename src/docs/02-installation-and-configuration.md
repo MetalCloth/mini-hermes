@@ -263,6 +263,9 @@ The provider reads the key from `~/.mini-hermes/gemini.env` or the `GEMINI_API_K
 The TUI's `Mic · F8` control records while active. Click it or press F8 again to stop. Oryn
 sends the recording to ElevenLabs Scribe v2, inserts the returned transcript into the composer,
 and waits for you to review and press Enter. It does not send the transcript automatically.
+While recording, a live input-level meter in the composer footer shows sound reaching the
+selected microphone. It measures signal strength, not pitch or whether speech is intelligible;
+transcription still starts after you stop recording.
 Use `/mic` to choose a microphone or return to **System default**. Oryn uses the system default
 until you choose a device. A chosen device is remembered in
 `~/.mini-hermes/voice-settings.json`; it does not change the operating system's default. If the

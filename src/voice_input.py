@@ -170,6 +170,7 @@ class VoiceRecorder:
         self._lock = threading.Lock()
         self._frames = 0
         self._limit_frames = 0
+        self._input_level_dbfs: float | None = None
         self.input_overflow = False
         self.limit_reached = False
         self._closed = False
@@ -228,7 +229,11 @@ class VoiceRecorder:
             remaining = self._limit_frames - self._frames
             kept_frames = min(frames, max(0, remaining))
             if kept_frames:
-                self._chunks.append(bytes(memoryview(data)[:kept_frames * 2]))
+                block = memoryview(data)[:kept_frames * 2]
+                self._chunks.append(bytes(block))
+                samples = block.cast("h")
+                rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+                self._input_level_dbfs = round(20 * math.log10(rms / 32768), 1) if rms else None
                 self._frames += kept_frames
             if self._frames >= self._limit_frames:
                 self.limit_reached = True
@@ -258,6 +263,11 @@ class VoiceRecorder:
             if self.sample_rate <= 0:
                 return 0
             return round(self._frames * 1000 / self.sample_rate)
+
+    @property
+    def input_level_dbfs(self) -> float | None:
+        with self._lock:
+            return self._input_level_dbfs
 
     def _close_stream(self) -> None:
         if self._closed:
