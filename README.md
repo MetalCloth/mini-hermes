@@ -65,15 +65,15 @@ For push-to-talk, click **Mic · F8** or press F8 to start recording, then click
 
 You can also type `/effort high`, `/effort default`, `/speed fast`, or `/speed standard` directly. Oryn sends the catalog's client version in provider requests, falling back to the installed `codex --version`, instead of hardcoding the old `0.144.1` version. Open the Codex CLI to refresh its catalog after upgrading it.
 
-Choose Gemini models from `/models` or launch Oryn with `--model gemini-3.8-flash`. Put `GEMINI_API_KEY=your-key` in `~/.mini-hermes/gemini.env`; the key is read from that file or the `GEMINI_API_KEY` environment variable and sent only in Google's API-key header. Oryn currently lists Gemini 3 text models, supports image input, streamed text, tool calls, and adjustable reasoning. The selected provider is also used by `/computer`.
+Choose Gemini models from `/models` or launch Oryn with `--model gemini-3.8-flash`. Put `GEMINI_API_KEY=your-key` in `~/.mini-hermes/gemini.env`; the key is read from that file or the `GEMINI_API_KEY` environment variable and sent only in Google's API-key header. Oryn currently lists Gemini 3 text models, supports image input, streamed text, tool calls, and adjustable reasoning. The selected provider is also used for local desktop tools in the TUI.
 
 Use `./oryn repl` for the original line-based terminal chat, or `./oryn dashboard` for the React browser UI.
 
-## Computer mode (selected model)
+## Computer use in regular chat
 
-On this Hyprland desktop, install [CUA Driver](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.32.0) (`cua-driver` 0.32.0 tested), `grim`, and [dotool](https://github.com/nick-tgcs/dotool`). Put the CUA executable on `PATH` or in this checkout's `.venv/bin/cua-driver`; the latter is installed on this laptop. Oryn starts CUA with `cua-driver serve` and calls it through a private CLI socket, not MCP. Dotool needs `/dev/uinput` write permission. Oryn sets CUA's native Wayland flag for its child process. CUA is the default `/computer` driver; set `ORYN_COMPUTER_DRIVER=dotool` before launching Oryn to use the screenshot + dotool driver for all desktop actions. CUA currently requires one unscaled monitor at `(0, 0)`. Configure the selected provider with `codex login` for Codex or `GEMINI_API_KEY` for Gemini. `/computer` uses the currently selected model, reasoning effort, and speed. The model must support image input. The default model is `gpt-5.6-luna`; choose another with `/models`. `/computer` does not use the OpenRouter key.
+On this Hyprland desktop, install [CUA Driver](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.32.0) (`cua-driver` 0.32.0 tested), `grim`, and [dotool](https://github.com/nick-tgcs/dotool). Put the CUA executable on `PATH` or in this checkout's `.venv/bin/cua-driver`; the latter is installed on this laptop. Oryn starts CUA with `cua-driver serve` and calls it through a private CLI socket, not MCP. Dotool needs `/dev/uinput` write permission. Oryn sets CUA's native Wayland flag for its child process. CUA is the default driver; set `ORYN_COMPUTER_DRIVER=dotool` before launching Oryn to use desktop screenshots and dotool without CUA window discovery or native verification. CUA currently requires one unscaled monitor at `(0, 0)`. Configure the selected provider with `codex login` for Codex or `GEMINI_API_KEY` for Gemini. Local computer tools appear in regular TUI chat when the selected model supports image input. The default model is `gpt-5.6-luna`; choose another with `/models`. Computer use does not require the OpenRouter key.
 
-Select `/computer` from the command list, or type `/computer` and press Enter. The next message becomes a computer task; `/computer open Settings` starts one directly. The selected model handles that task in Oryn's normal conversation and tool loop, with the same session history, context compaction, reasoning setting, and turn budget. The mode exposes the `computer_*` tools plus read-only web and project-file lookup; remote browser automation, terminal, file writes, git, and MCP tools are reserved for normal chat. There is no forced `computer_plan` call or fixed switch countdown. Esc stops the active turn.
+Just ask in a normal message, for example, “Open Settings and turn on dark mode.” The selected model sees the usual Oryn tools and the four `computer_*` tools in the same conversation; it chooses local desktop tools when the task needs the live screen. The same turn can also use web, project, terminal, browser, and MCP tools. Oryn starts the desktop session only if the model calls a computer tool; Dotool runs only when an input action is sent. Ordinary replies do not start the desktop driver. The old `/computer <task>` spelling remains a compatibility shortcut and follows this same normal route; `/computer --dry-run <task>` still previews the first proposed input. There is no separate mode or forced `computer_plan` call. Esc stops the active turn.
 
 The scoped `computer_observe` tool lists visible CUA windows, observes an exact `pid` and `window_id`, or captures the desktop. A window observation includes a bounded accessibility tree and screenshot where CUA can prove the window image. On Wayland, CUA may return the tree with `surface_identity_unproven`; Oryn then focuses the exact window, refreshes its tree, and captures a desktop image. The model can request tree only for a cheaper later observation. Screenshots go to the selected model as image-bearing tool results for its next decision; saved history retains compact text outcomes, not those screenshots or old control lists.
 
@@ -81,9 +81,11 @@ The scoped `computer_observe` tool lists visible CUA windows, observes an exact 
 
 For exact native window or accessibility conditions, `computer_wait` and `computer_act.wait_for` call CUA `verify_state` with a maximum ten-second wait. `unknown` is not success. For visual loading or unsupported conditions, `computer_observe.min_age_ms` waits only until the previous observation is old enough, counting model thinking time, then takes one fresh look. There is no site-specific poller. `/computer --dry-run open Settings` previews the first proposed input without sending it. With `ORYN_COMPUTER_DRIVER=dotool`, observation and input use desktop screenshots and dotool only; exact-window and native verify tools are unavailable. The [measurement plan](src/docs/18-computer-perception-plan.md) and [CUA trial](src/docs/20-cua-driver-hyprland-experiment.md) remain historical records.
 
-For a live computer-mode trace, start Oryn with `./scripts/computer-log.sh run` and run
-`./scripts/computer-log.sh follow` in another terminal. The readable view shows model timing,
-every tool call used during the task, visible windows and controls, target-to-coordinate mapping,
+For a live computer-tool trace, start Oryn with `./scripts/computer-log.sh run`, ask it to use the
+desktop in an ordinary message, and run `./scripts/computer-log.sh follow` in another terminal.
+While tracing is enabled, the log covers each TUI turn; a desktop task's trace includes earlier
+search or browser calls as well as later CUA/dotool actions. The readable view shows model timing,
+every tool call, visible windows and controls, target-to-coordinate mapping,
 desktop input results, waits, and the observation returned after each action. IDs link each tool
 call, observation, action, and resulting state. Use `./scripts/computer-log.sh follow --raw` for
 the underlying JSONL records. Local traces are private files under `logs/`; they can include
@@ -98,7 +100,7 @@ remain visible in the remote trace, so enable it only when that screen content i
 The local JSONL trace remains the detailed source. See [computer trace logging](src/docs/22-computer-tracing.md)
 for the event links, privacy boundaries, and limitations.
 The old `computer_benchmark.py` applies to historical planner traces, not the current main-loop path.
-The [current `/computer` decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
+The [current computer-use decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 
@@ -201,7 +203,7 @@ If an MCP server is missing or cannot start, Oryn continues with its built-in to
 - `src/agent/` — prompt/context preparation and the conversation/tool loop
 - `src/providers/` — model clients and the legacy computer planning adapter
 - `src/tools/computer_session.py` and `src/tools/computer_driver.py` — scoped computer tools and local input driver
-- `src/computer.py` — legacy screenshot/action loop, no longer used by the TUI `/computer` path
+- `src/computer.py` — legacy screenshot/action loop, no longer used by the TUI's main conversation path
 - `src/tools/` — terminal, file, web, and browser tools
 - `src/session/` — SQLite chat history
 - `src/mcp/` — hosted/local connections, discovery, policy, and Notion OAuth

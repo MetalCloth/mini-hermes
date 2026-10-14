@@ -86,4 +86,4 @@ For `click` and `double_click`, the model supplies a point from the latest scree
 
 ## Artifacts and scope
 
-The temporary binary, harnesses, and retained JSONL traces are in `/tmp/cua-driver-experiment-v0.32.0`. During this isolated experiment, no Oryn production code, configuration defaults, or provider loop were changed. Pre-existing workspace edits were left untouched. No commit or push was made. Those scope statements describe the experiment, not the later CUA integration or the [current TUI `/computer` flow](21-cua-main-loop.md).
+The temporary binary, harnesses, and retained JSONL traces are in `/tmp/cua-driver-experiment-v0.32.0`. During this isolated experiment, no Oryn production code, configuration defaults, or provider loop were changed. Pre-existing workspace edits were left untouched. No commit or push was made. Those scope statements describe the experiment, not the later CUA integration or the [current TUI computer-use flow](21-cua-main-loop.md).

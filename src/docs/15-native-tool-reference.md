@@ -4,6 +4,8 @@
 
 This reference was checked against the actual `tool_schemas()` output in [registry.py](../tools/registry.py). It lists the 22 native model-facing functions. `load_skill` is advertised only when valid local skills exist; MCP names and arguments are discovered dynamically.
 
+The TUI adds four `computer_*` functions to ordinary turns when the selected model supports image input. They are implemented by [`ComputerSession`](../tools/computer_session.py), not by `tool_schemas()`; see the [computer-use flow](21-cua-main-loop.md) for their schemas and local desktop boundary.
+
 ## Reading a schema
 
 Every native tool is advertised as a function with `strict: true`. Parameters are an object with `additionalProperties: false`. The required fields below are the schema requirements, even when the corresponding Python function has default arguments. Runtime functions enforce additional limits described in their implementation chapters; a description alone is not a JSON Schema constraint.

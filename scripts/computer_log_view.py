@@ -379,6 +379,52 @@ def format_record(record: dict) -> str:
     if event == "langsmith_status":
         detail = record.get("reason") or record.get("error_class") or record.get("project") or ""
         return f"{stamp}  LANGSMITH · {record.get('status', '?')} · {_short(detail, 160)}"
+    if event == "voice_recording_started":
+        return (
+            f"{stamp}  VOICE RECORDING STARTED · {record.get('sample_rate', '?')} Hz · "
+            f"cap {record.get('max_duration_seconds', '?')}s"
+        )
+    if event == "voice_recording_stopped":
+        duration = record.get("recording_ms")
+        duration_text = f"{duration / 1000:.2f}s" if isinstance(duration, int) else "?s"
+        limit = " · limit reached" if record.get("limit_reached") else ""
+        return (
+            f"{stamp}  VOICE RECORDING STOPPED · {duration_text} · "
+            f"{record.get('audio_bytes', '?')} WAV bytes{limit}"
+        )
+    if event == "voice_audio_levels":
+        if not record.get("available"):
+            detail = "levels unavailable"
+        elif record.get("peak_dbfs") is None:
+            detail = "silent signal"
+        else:
+            detail = f"peak {record['peak_dbfs']} dBFS · RMS {record.get('rms_dbfs', '?')} dBFS"
+        return f"{stamp}  VOICE SIGNAL · {detail}"
+    if event == "voice_transcription_started":
+        duration = record.get("recording_ms")
+        duration_text = f"{duration / 1000:.2f}s" if isinstance(duration, int) else "?s"
+        return (
+            f"{stamp}  VOICE UPLOAD · {record.get('model', '?')} · {duration_text} · "
+            f"{record.get('audio_bytes', '?')} WAV bytes"
+        )
+    if event == "voice_transcription_finished":
+        return (
+            f"{stamp}  VOICE TRANSCRIPTION OK · {record.get('elapsed_ms', '?')}ms · "
+            f"{record.get('transcript_chars', '?')} transcript chars"
+        )
+    if event in {"voice_input_failed", "voice_recording_failed", "voice_transcription_failed"}:
+        phase = f"{record.get('phase')} · " if record.get("phase") else ""
+        error_class = f" · {record['error_class']}" if record.get("error_class") else ""
+        elapsed = f" · {record['elapsed_ms']}ms" if isinstance(record.get("elapsed_ms"), int) else ""
+        error_code = record.get("error_code", "unknown")
+        if error_code == "no_speech":
+            error_code = "ElevenLabs returned no recognized speech"
+        return (
+            f"{stamp}  VOICE FAILED · {phase}{error_code}"
+            f"{elapsed}{error_class}"
+        )
+    if event == "voice_recording_cancelled":
+        return f"{stamp}  VOICE RECORDING CANCELLED · {record.get('reason', 'unknown')}"
 
     fields = ", ".join(
         f"{key}={_short(value, 100)}"
@@ -402,7 +448,8 @@ def main() -> None:
                 rendered = f"#{sequence:04}  {rendered}"
             if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
                 event = record.get("event", "")
-                if (event in {"computer_task_failed", "model_error", "turn_error"}
+                if (event in {"computer_task_failed", "model_error", "turn_error",
+                              "voice_input_failed", "voice_recording_failed", "voice_transcription_failed"}
                         or (event == "computer_preflight" and not record.get("success"))):
                     color = "\033[31m"
                 elif event in {"computer_task_started", "computer_task_start", "computer_task_finished", "computer_task_done"}:
@@ -413,6 +460,12 @@ def main() -> None:
                     color = "\033[32m"
                 elif event in {"computer_action_start", "computer_action_target", "dotool_start", "dotool_result"}:
                     color = "\033[33m"
+                elif event in {"voice_recording_started", "voice_transcription_started"}:
+                    color = "\033[35m"
+                elif event in {"voice_recording_stopped", "voice_audio_levels"}:
+                    color = "\033[36m"
+                elif event == "voice_transcription_finished":
+                    color = "\033[32m"
                 elif event == "tool_call":
                     color = "\033[33m" if record.get("phase") == "start" else "\033[32m"
                 else:

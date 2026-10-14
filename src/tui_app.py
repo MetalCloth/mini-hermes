@@ -40,17 +40,19 @@ from src.providers.router import available_models, provider_for_model, provider_
 from src.providers.types import ToolCall
 from src.session.sqlite_store import DEFAULT_DB_PATH, SQLiteSessionStore
 from src.tools.file_tools import FileChange
-from src.tools.computer_session import ComputerSession
+from src.tools.computer_session import ComputerSession, computer_tool_schemas
 from src.tools.registry import tool_schemas
 from src.tools.terminal_tool import TerminalJobManager
-from src.voice_input import VoiceInputError, VoiceRecorder, elevenlabs_api_key, transcribe_wav
+from src.voice_input import (
+    MAX_RECORDING_SECONDS, VoiceInputError, VoiceRecorder, elevenlabs_api_key, transcribe_wav,
+    wav_signal_levels,
+)
 
 
 DEFAULT_MODEL = "gpt-5.6-luna"
 COMMANDS = (
     ("new", "New session"),
     ("delete", "Delete this session and return home"),
-    ("computer", "Use the computer for the next message"),
     ("help", "Show help"),
     ("mcps", "Manage MCP connections"),
     ("models", "Switch model"),
@@ -827,6 +829,7 @@ class OrynTUI(App[None]):
         self._restore_model_settings()
         self.mcp_client = mcp_client
         self.tools = initial_tools
+        self._sync_computer_tools()
         self.turn_limits = turn_limits or TurnLimits()
         self.file_change_history: dict[str, list[FileChange]] = {
             session_id: undo_history if undo_history is not None else [],
@@ -856,11 +859,11 @@ class OrynTUI(App[None]):
         self._pending_navigation: str | None = None
         self._pending_approval: ApprovalRequest | None = None
         self._pending_computer_question: ComputerQuestion | None = None
-        self._computer_armed = False
         self._palette_draft: str | None = None
         self.pending_images: list[dict[str, Any]] = []
         self._voice_recorder: VoiceRecorder | None = None
         self._voice_transcribing = False
+        self._voice_trace: ComputerTrace | None = None
 
     @property
     def undo_history(self) -> list[FileChange]:
@@ -892,7 +895,6 @@ class OrynTUI(App[None]):
                 with Vertical(id="composer-wrap"):
                     yield PalettePanel(id="palette-overlay")
                     with Vertical(id="composer-frame"):
-                        yield Static("Computer · next message controls your desktop · Esc to cancel", id="computer-mode")
                         yield ChatComposer(
                             id="composer",
                             placeholder="Ask anything…",
@@ -946,11 +948,14 @@ class OrynTUI(App[None]):
     def on_unmount(self) -> None:
         self._cancel_active_turn()
         if self._voice_recorder is not None:
+            recorder, self._voice_recorder = self._voice_recorder, None
             try:
-                self._voice_recorder.discard()
+                recorder.discard()
             except Exception:
                 pass
-            self._voice_recorder = None
+            trace = self._voice_trace
+            self._write_voice_trace(trace, "voice_recording_cancelled", reason="app_closed")
+            self._close_voice_trace(trace)
         if self._pending_approval:
             self._pending_approval.resolve(False)
             self._pending_approval = None
@@ -1076,6 +1081,7 @@ class OrynTUI(App[None]):
         self.mcp_statuses = event.statuses
         self.mcp_servers = event.servers
         self.tools = tool_schemas(event.schemas)
+        self._sync_computer_tools()
         self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
         self._refresh_mcp_view()
         if not self.turn_active:
@@ -1142,6 +1148,7 @@ class OrynTUI(App[None]):
             self.mcp_busy = False
             self.mcp_servers = self.mcp_client.status_snapshot()
             self.tools = tool_schemas(self.mcp_client.tool_schemas())
+            self._sync_computer_tools()
             self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
             self._refresh_mcp_view()
 
@@ -1173,36 +1180,37 @@ class OrynTUI(App[None]):
             return
         if not prompt and not self.pending_images:
             return
-        computer_task = None
+        computer_dry_run = False
         if prompt.startswith("/"):
             parts = prompt[1:].strip().split(maxsplit=1)
             if not parts:
                 parts = [""]
             name = COMMAND_ALIASES.get(parts[0].casefold(), parts[0].casefold())
-            if name not in dict(COMMANDS):
-                selected = self.query_one("#palette-options", OptionList).highlighted_option
-                if not selected or not selected.id:
+            if name == "computer":
+                if len(parts) == 1:
+                    self._set_activity(
+                        "Computer use is part of normal chat now; describe the desktop task in a regular message.",
+                        working=False,
+                    )
                     return
-                name = selected.id
-            if name == "computer" and len(parts) > 1:
-                computer_task = parts[1]
+                prompt = parts[1].strip()
+                if prompt == "--dry-run":
+                    self._set_activity("Add a computer task after --dry-run.", working=False, error=True)
+                    return
+                if prompt.startswith("--dry-run "):
+                    computer_dry_run = True
+                    prompt = prompt.removeprefix("--dry-run ").strip()
+                    if not prompt:
+                        self._set_activity("Add a computer task after --dry-run.", working=False, error=True)
+                        return
             else:
+                if name not in dict(COMMANDS):
+                    selected = self.query_one("#palette-options", OptionList).highlighted_option
+                    if not selected or not selected.id:
+                        return
+                    name = selected.id
                 self._select_palette_command(name, parts[1] if len(parts) > 1 else None)
                 return
-        elif self._computer_armed:
-            computer_task = prompt
-
-        if computer_task and (
-            computer_task == "--dry-run"
-            or (computer_task.startswith("--dry-run ")
-                and not computer_task.removeprefix("--dry-run ").strip())
-        ):
-            self._set_activity("Add a computer task after --dry-run.", working=False, error=True)
-            return
-
-        if (computer_task or self._computer_armed) and self.pending_images:
-            self._set_activity("/computer captures the desktop itself. Remove attached images first.", working=False, error=True)
-            return
 
         if self.mcp_busy:
             self._set_activity("MCP connections are updating. Your draft is safe; send it when they finish.", working=True)
@@ -1243,8 +1251,6 @@ class OrynTUI(App[None]):
         await transcript.mount(self._current_reply)
         self._scroll_to_bottom(force=True)
         composer.clear()
-        if computer_task:
-            self._set_computer_armed(False)
         self.history.append(user_message)
         self.pending_images.clear()
         self._refresh_attachments()
@@ -1254,13 +1260,13 @@ class OrynTUI(App[None]):
         self.turn_active = True
         self._reply_text = ""
         self._partial_reply_text = ""
-        self._set_activity(f"{self.model} is preparing computer tools" if computer_task else "Oryn is thinking", working=True)
+        self._set_activity("Oryn is thinking", working=True)
         self._cancel_event = threading.Event()
         # Provider and tool calls block, but must not hold the TUI open at shutdown.
         self._turn_thread = threading.Thread(
             target=self._run_turn,
-            args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event, computer_task),
-            name="oryn-computer-turn" if computer_task else "oryn-agent-turn", daemon=True,
+            args=(self.history, self.provider, list(self.tools), self.project_root, self._cancel_event, computer_dry_run),
+            name="oryn-agent-turn", daemon=True,
         )
         self._turn_thread.start()
 
@@ -1279,8 +1285,6 @@ class OrynTUI(App[None]):
     def action_dismiss_palette(self) -> None:
         if self.query_one("#palette-overlay", PalettePanel).display:
             self._hide_palette()
-        elif self._computer_armed:
-            self._set_computer_armed(False)
 
     async def action_new_session(self) -> None:
         if len(self.screen_stack) == 1:
@@ -1352,7 +1356,16 @@ class OrynTUI(App[None]):
         if self._voice_recorder is not None:
             self._finish_voice_recording()
             return
+        try:
+            self._voice_trace = ComputerTrace.from_environment()
+        except Exception:
+            self._voice_trace = None
         if not elevenlabs_api_key():
+            trace = self._voice_trace
+            self._write_voice_trace(
+                trace, "voice_input_failed", phase="configuration", error_code="missing_api_key",
+            )
+            self._close_voice_trace(trace)
             self._set_activity(
                 "Add ELEVENLABS_API_KEY to ~/.mini-hermes/elevenlabs.env to enable voice input.",
                 working=False, error=True,
@@ -1361,8 +1374,18 @@ class OrynTUI(App[None]):
         try:
             self._voice_recorder = VoiceRecorder()
         except VoiceInputError as exc:
+            trace = self._voice_trace
+            self._write_voice_trace(
+                trace, "voice_recording_failed", error_code=exc.code,
+                error_class=type(exc).__name__,
+            )
+            self._close_voice_trace(trace)
             self._set_activity(str(exc), working=False, error=True)
             return
+        self._write_voice_trace(
+            self._voice_trace, "voice_recording_started", sample_rate=self._voice_recorder.sample_rate,
+            max_duration_seconds=MAX_RECORDING_SECONDS,
+        )
         self.query_one("#voice-button", Button).label = "Stop · F8"
         self.query_one("#composer", TextArea).focus()
         self._set_activity("Recording · press Stop or F8 when you’re done", working=True)
@@ -1374,31 +1397,94 @@ class OrynTUI(App[None]):
         self.query_one("#voice-button", Button).label = "Mic · F8"
         try:
             audio = recorder.stop()
-        except Exception:
+        except Exception as exc:
+            trace = self._voice_trace
+            self._write_voice_trace(
+                trace, "voice_recording_failed", error_code="stop_failed",
+                error_class=type(exc).__name__,
+            )
+            self._close_voice_trace(trace)
             self._set_activity("Could not finish reading the microphone recording.", working=False, error=True)
             return
+        duration_ms = recorder.duration_ms
+        trace = self._voice_trace
+        self._write_voice_trace(
+            trace, "voice_recording_stopped", recording_ms=duration_ms,
+            audio_bytes=len(audio), sample_rate=recorder.sample_rate,
+            limit_reached=recorder.limit_reached,
+        )
         if not audio:
+            self._write_voice_trace(
+                trace, "voice_input_failed", phase="capture", error_code="no_audio",
+            )
+            self._close_voice_trace(trace)
             self._set_activity("No audio was captured. Check the microphone and try again.", working=False, error=True)
             return
         self._voice_transcribing = True
+        self._write_voice_trace(
+            trace, "voice_transcription_started", model="scribe_v2",
+            recording_ms=duration_ms, audio_bytes=len(audio),
+        )
         self._set_activity(
             "Recording limit reached · transcribing" if recorder.limit_reached
             else "Transcribing with ElevenLabs…",
             working=True,
         )
         threading.Thread(
-            target=self._transcribe_voice, args=(audio,), name="oryn-voice-transcription", daemon=True,
+            target=self._transcribe_voice, args=(audio, trace), name="oryn-voice-transcription", daemon=True,
         ).start()
 
-    def _transcribe_voice(self, audio: bytes) -> None:
+    def _transcribe_voice(self, audio: bytes, trace: ComputerTrace | None) -> None:
+        levels_available, peak_dbfs, rms_dbfs = wav_signal_levels(audio)
+        self._write_voice_trace(
+            trace, "voice_audio_levels", available=levels_available,
+            peak_dbfs=peak_dbfs, rms_dbfs=rms_dbfs,
+        )
+        started = monotonic()
         try:
-            self.post_message(VoiceTranscriptionFinished(transcribe_wav(audio), None))
+            transcript = transcribe_wav(audio)
         except VoiceInputError as exc:
-            self.post_message(VoiceTranscriptionFinished(None, str(exc)))
-        except Exception:
-            self.post_message(VoiceTranscriptionFinished(
+            self._write_voice_trace(
+                trace, "voice_transcription_failed", elapsed_ms=round((monotonic() - started) * 1000),
+                error_code=exc.code,
+            )
+            event = VoiceTranscriptionFinished(None, str(exc))
+        except Exception as exc:
+            self._write_voice_trace(
+                trace, "voice_transcription_failed", elapsed_ms=round((monotonic() - started) * 1000),
+                error_code="unexpected_error", error_class=type(exc).__name__,
+            )
+            event = VoiceTranscriptionFinished(
                 None, "Voice transcription failed unexpectedly. Try recording again.",
-            ))
+            )
+        else:
+            self._write_voice_trace(
+                trace, "voice_transcription_finished", elapsed_ms=round((monotonic() - started) * 1000),
+                transcript_chars=len(transcript),
+            )
+            event = VoiceTranscriptionFinished(transcript, None)
+        finally:
+            self._close_voice_trace(trace)
+        self.post_message(event)
+
+    @staticmethod
+    def _write_voice_trace(trace: ComputerTrace | None, event: str, **fields: Any) -> None:
+        if trace is None:
+            return
+        try:
+            trace.write(event, **fields)
+        except Exception:
+            pass
+
+    def _close_voice_trace(self, trace: ComputerTrace | None) -> None:
+        if trace is None:
+            return
+        try:
+            trace.close()
+        except Exception:
+            pass
+        if self._voice_trace is trace:
+            self._voice_trace = None
 
     def _show_palette(self, query: str = "") -> None:
         palette = self.query_one("#palette-overlay", PalettePanel)
@@ -1422,12 +1508,6 @@ class OrynTUI(App[None]):
             draft, self._palette_draft = self._palette_draft, None
             composer.load_text(draft)
         composer.focus()
-
-    def _set_computer_armed(self, armed: bool) -> None:
-        self._computer_armed = armed
-        self.query_one("#computer-mode", Static).display = armed
-        if armed:
-            self.query_one("#composer", TextArea).focus()
 
     def _select_palette_command(self, name: str, argument: str | None = None) -> None:
         if self.turn_active and COMMAND_ALIASES.get(name, name) not in COMMANDS_DURING_TURN:
@@ -1468,15 +1548,6 @@ class OrynTUI(App[None]):
             self.push_screen(ToolsScreen(self.tools), lambda _: self.query_one("#composer", TextArea).focus())
         elif name == "mcps":
             self.push_screen(MCPManagerScreen(), lambda _: self.query_one("#composer", TextArea).focus())
-        elif name == "computer":
-            if argument:
-                self.query_one("#composer", TextArea).load_text(f"/computer {argument}")
-                await self.action_send_prompt()
-            else:
-                if self.pending_images:
-                    self._set_activity("Remove attached images before using /computer.", working=False, error=True)
-                else:
-                    self._set_computer_armed(True)
         elif name == "help":
             body = (
                 "COMMANDS\n"
@@ -1489,7 +1560,6 @@ class OrynTUI(App[None]):
                 "/project   Switch project folder\n"
                 "/tools     List available tools\n"
                 "/mcps      Enable, disable, reconnect, or sign in\n"
-                "/computer  Use the selected model to control the desktop for your next message; Esc cancels\n"
                 "/help      Show this guide\n"
                 "/exit      Close Oryn\n\n"
                 "KEYS\n"
@@ -1506,6 +1576,7 @@ class OrynTUI(App[None]):
                 "Shift+Enter Add a new line\n"
                 "Ctrl+C    Stop turn, or quit when idle\n"
                 "Esc       Close a dialog or deny approval"
+                "\n\nComputer tools are available in ordinary messages when the selected model supports images."
             )
             self.push_screen(InfoScreen("ORYN QUICK GUIDE", body))
         elif name in {"quit", "exit", "q"}:
@@ -1516,7 +1587,6 @@ class OrynTUI(App[None]):
     async def _new_session(self) -> None:
         if self._queue_navigation("__new_session__"):
             return
-        self._set_computer_armed(False)
         self.session_id = ""
         self._draft_model_settings = {self.model: self._model_settings()}
         self.file_change_history[""] = []
@@ -1591,7 +1661,6 @@ class OrynTUI(App[None]):
             return
         if self._queue_navigation(session_id):
             return
-        self._set_computer_armed(False)
         saved_root = self.store.session_project_root(session_id)
         project_root = _resolve_project_root(Path(saved_root) if saved_root else APP_ROOT)
         self.project_root = project_root
@@ -1604,6 +1673,8 @@ class OrynTUI(App[None]):
         self._refresh_attachments()
         self.model = self.store.session_model(session_id) or DEFAULT_MODEL
         self.provider = provider_for_model(self.model, self._codex_auth_file)
+        self._sync_computer_tools()
+        self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
         self._restore_model_settings()
         self.history = _base_history(project_root)
         self.history.extend(self.store.load_messages(session_id))
@@ -1702,6 +1773,8 @@ class OrynTUI(App[None]):
             self._draft_model_settings[self.model] = self._model_settings()
         self.model = model
         self.provider = provider_for_model(self.model, self._codex_auth_file)
+        self._sync_computer_tools()
+        self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
         self.model_labels.setdefault(self.model, self.model)
         self._restore_model_settings()
         self._refresh_header()
@@ -1712,6 +1785,11 @@ class OrynTUI(App[None]):
 
     def _model_settings(self) -> dict[str, str]:
         return {"reasoning_effort": self.provider.reasoning_effort, "service_tier": self.provider.service_tier}
+
+    def _sync_computer_tools(self) -> None:
+        self.tools = [tool for tool in self.tools if not tool["name"].startswith("computer_")]
+        if self.provider.supports_image_input() is True:
+            self.tools.extend(computer_tool_schemas())
 
     def _restore_model_settings(self) -> None:
         saved = (self.store.session_model_settings(self.session_id, self.model) if self.session_id
@@ -1762,6 +1840,8 @@ class OrynTUI(App[None]):
                 self._set_activity(str(exc), working=False, error=True)
             else:
                 self.provider = next_provider
+                self._sync_computer_tools()
+                self.query_one("#tool-count", Static).update(f"{len(self.tools)} tools")
                 self._refresh_header()
                 self._set_activity(
                     f"{self._effort_label()} · {self._speed_label()}"
@@ -1904,7 +1984,7 @@ class OrynTUI(App[None]):
         tools: list[dict[str, Any]],
         project_root: Path,
         cancel_event: threading.Event,
-        computer_task: str | None = None,
+        computer_dry_run: bool = False,
     ) -> None:
         started_at = self._turn_started_at if self._turn_started_at is not None else monotonic()
         worker_started_at = monotonic()
@@ -1928,9 +2008,61 @@ class OrynTUI(App[None]):
         )
         confirm_mcp = lambda name, preview: self._request_approval(f"Call MCP tool {name}", preview)
         trace = None
-        computer_session = None
+        computer_sessions: list[ComputerSession] = []
+        computer_used = False
+        computer_trace_started = False
         finished = None
+
+        def ensure_computer_trace() -> None:
+            nonlocal trace, computer_trace_started
+            if trace is None:
+                trace = ComputerTrace.from_environment()
+            if trace is not None and not computer_trace_started:
+                task = next((str(message.get("content") or "") for message in reversed(history)
+                             if message.get("role") == "user"), "")
+                trace.write(
+                    "computer_task_started", task=task, dry_run=computer_dry_run,
+                    model=self.model,
+                    worker_queue_delay_ms=round((worker_started_at - started_at) * 1000),
+                    elapsed_since_turn_start_ms=round((monotonic() - started_at) * 1000),
+                )
+                computer_trace_started = True
+
+        def create_computer_session() -> ComputerSession:
+            nonlocal computer_used
+            computer_used = True
+            ensure_computer_trace()
+            driver_started = monotonic()
+            try:
+                session = ComputerSession(
+                    cancel_event,
+                    confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
+                    ask_user=lambda question: self._ask_computer_question(question, cancel_event),
+                    dry_run=computer_dry_run, trace=trace,
+                )
+            except Exception as exc:
+                if trace is not None:
+                    trace.write(
+                        "computer_driver_start_failed", error_class=type(exc).__name__,
+                        elapsed_ms=round((monotonic() - driver_started) * 1000),
+                    )
+                raise
+            computer_sessions.append(session)
+            if trace is not None:
+                trace.write(
+                    "computer_driver_started", driver="cua" if session.cua else "dotool",
+                    elapsed_ms=round((monotonic() - driver_started) * 1000),
+                )
+                if self.mcp_client is not None:
+                    trace.write("mcp_status", phase="computer_tool_start", **self.mcp_client.diagnostic_snapshot())
+            return session
+
         def tool_event(phase: str, call: ToolCall, result: str | None) -> None:
+            nonlocal computer_used
+            if call.name.startswith("computer_"):
+                computer_used = True
+                if phase == "start":
+                    ensure_computer_trace()
             self.post_message(ToolActivity(phase, call, result))
             if trace:
                 encoded_arguments = (
@@ -1960,38 +2092,7 @@ class OrynTUI(App[None]):
                             diagnostic_type=event["type"],
                             **{key: value for key, value in event.items() if key != "type"})
         try:
-            if computer_task:
-                trace = ComputerTrace.from_environment()
-                dry_run = computer_task.startswith("--dry-run ")
-                if trace:
-                    trace.write(
-                        "computer_task_started", task=computer_task, dry_run=dry_run,
-                        model=self.model,
-                        worker_queue_delay_ms=round((worker_started_at - started_at) * 1000),
-                        elapsed_since_turn_start_ms=round((monotonic() - started_at) * 1000),
-                    )
-                image_check_started = monotonic()
-                if provider.supports_image_input() is not True:
-                    raise ValueError(f"{self.model} does not have confirmed image input. Choose a model with image support.")
-                if trace:
-                    trace.write(
-                        "computer_preflight", stage="image_support", success=True,
-                        elapsed_ms=round((monotonic() - image_check_started) * 1000),
-                    )
-                driver_started = monotonic()
-                computer_session = ComputerSession(
-                    cancel_event,
-                    confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
-                    ask_user=lambda question: self._ask_computer_question(question, cancel_event),
-                    dry_run=dry_run, trace=trace,
-                )
-                if trace:
-                    trace.write(
-                        "computer_driver_started", driver="cua" if computer_session.cua else "dotool",
-                        elapsed_ms=round((monotonic() - driver_started) * 1000),
-                    )
-                    if self.mcp_client is not None:
-                        trace.write("mcp_status", phase="task_start", **self.mcp_client.diagnostic_snapshot())
+            trace = ComputerTrace.from_environment()
             answer = run_turn(
                 history,
                 provider.complete,
@@ -2016,7 +2117,11 @@ class OrynTUI(App[None]):
                 file_change_journal=file_change_journal,
                 terminal_jobs=terminal_jobs,
                 on_diagnostic=diagnostic,
-                computer_session=computer_session,
+                computer_session_factory=(
+                    create_computer_session
+                    if provider.supports_image_input() is True else None
+                ),
+                computer_dry_run=computer_dry_run,
             )
         except TurnLimitReached as exc:
             finished = TurnFinished(None, str(exc), paused=True)
@@ -2027,13 +2132,13 @@ class OrynTUI(App[None]):
         else:
             finished = TurnFinished(answer, None)
         finally:
-            if trace is not None and finished is not None:
+            if computer_used and trace is not None and finished is not None:
                 trace.write(
                     "computer_task_cancelled" if finished.cancelled else
                     "computer_task_failed" if finished.error else "computer_task_finished",
                     error=finished.error, answer=finished.answer[:1000] if finished.answer else None,
                 )
-            if computer_session is not None:
+            for computer_session in computer_sessions:
                 try:
                     computer_session.close()
                 except Exception as exc:

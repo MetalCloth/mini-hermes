@@ -25,14 +25,6 @@ from src.tools.terminal_tool import TerminalJobManager
 Message = dict[str, Any]
 MAX_TOOL_RESULT_CHARS = 20_000
 
-# /computer controls the local desktop. Keep its catalog small and safe while
-# retaining read-only context lookup that can help identify what to do there.
-COMPUTER_SUPPORT_TOOL_NAMES = frozenset({
-    "read_file", "search_files", "web_search", "web_extract",
-})
-COMPUTER_INLINE_SKILL_NAMES = frozenset({"computer-cua", "computer-dotool"})
-
-
 class TurnCancelled(Exception):
     """The user stopped the active agent turn."""
 
@@ -92,43 +84,36 @@ def run_turn(
     on_diagnostic: Callable[[str, dict[str, Any]], None] | None = None,
     tool_allowlist: set[str] | None = None,
     computer_session: ComputerSession | None = None,
+    computer_session_factory: Callable[[], ComputerSession] | None = None,
+    computer_dry_run: bool = False,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
     native_tools = [
         tool for tool in tools
-        if not tool["name"].startswith("mcp__") and tool["name"] != "load_mcp_tools"
+        if not tool["name"].startswith(("mcp__", "computer_")) and tool["name"] != "load_mcp_tools"
     ]
     effective_tool_allowlist = tool_allowlist
-    if computer_session is not None:
-        computer_schemas = computer_tool_schemas()
-        computer_names = {tool["name"] for tool in computer_schemas}
-        computer_allowlist = COMPUTER_SUPPORT_TOOL_NAMES | computer_names | {"load_skill"}
-        effective_tool_allowlist = (
-            computer_allowlist if tool_allowlist is None
-            else computer_allowlist & tool_allowlist
-        )
-        native_tools = [tool for tool in native_tools if tool["name"] in effective_tool_allowlist]
-        native_tools.extend(
-            tool for tool in computer_schemas if tool["name"] in effective_tool_allowlist
-        )
+    computer_schemas = (
+        computer_tool_schemas()
+        if computer_session is not None or computer_session_factory is not None
+        else []
+    )
+    if tool_allowlist is not None:
+        computer_schemas = [schema for schema in computer_schemas if schema["name"] in tool_allowlist]
+    computer_names = {tool["name"] for tool in computer_schemas}
+    advertised_tool_names = {tool["name"] for tool in native_tools}
+    native_tools.extend(
+        tool for tool in computer_schemas if tool["name"] not in advertised_tool_names
+    )
+    computer_tools_available = bool(computer_schemas)
     local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
-    if computer_session is not None:
-        local_tool_names.update(tool["name"] for tool in computer_tool_schemas())
+    local_tool_names.update(computer_names)
     from src.agent.skills import discover_skills, skill_loader_tool
     if effective_tool_allowlist is None or "load_skill" in effective_tool_allowlist:
         available_skills, skill_problems = discover_skills(project_root)
     else:
         available_skills, skill_problems = {}, []
-    if computer_session is not None:
-        # The core CUA and Dotool guidance is already present in the compact
-        # computer prompt and tool contracts. Offer only additional computer
-        # environment guides, not unrelated skills from the full catalog.
-        available_skills = {
-            name: skill for name, skill in available_skills.items()
-            if name not in COMPUTER_INLINE_SKILL_NAMES
-            and ("computer" in name.casefold() or "/computer" in skill.description.casefold())
-        }
     loaded_skills: set[str] = set()
     loaded_servers: set[str] = set()
     limits = limits or TurnLimits()
@@ -209,7 +194,7 @@ def run_turn(
             }
             if remaining_skills and (effective_tool_allowlist is None or "load_skill" in effective_tool_allowlist):
                 tools.append(skill_loader_tool(remaining_skills))
-            if mcp_client is not None and computer_session is None:
+            if mcp_client is not None:
                 mcp_directory_started = time.monotonic()
                 directory = mcp_client.tool_directory()
                 mcp_snapshot = mcp_client.diagnostic_snapshot()
@@ -269,13 +254,13 @@ def run_turn(
                         save_summary=save_context_summary,
                         model=getattr(getattr(complete, "__self__", None), "model", None),
                     )
-                    if computer_session is not None:
+                    if computer_tools_available:
                         position = 0
                         while (position < len(request_messages)
                                and request_messages[position].get("role") in {"system", "developer"}):
                             position += 1
                         computer_instruction = COMPUTER_INSTRUCTIONS
-                        if computer_session.dry_run:
+                        if computer_dry_run or (computer_session is not None and computer_session.dry_run):
                             computer_instruction += "\nThis is a dry run. Call computer_act for the first proposed input; the harness will preview it without sending input, then summarize the preview."
                         request_messages.insert(position, {"role": "developer", "content": computer_instruction})
                         request_tokens = estimate_context_tokens(request_messages, tools, model_name)
@@ -371,7 +356,13 @@ def run_turn(
                 try:
                     if effective_tool_allowlist is not None and call.name not in effective_tool_allowlist:
                         raise ValueError("This tool is outside the allowed set for this turn and was not run.")
-                    if call.name.startswith("computer_") and computer_session is not None:
+                    if call.name.startswith("computer_"):
+                        if call.name not in computer_names:
+                            raise ValueError("Computer-use tools are unavailable in this turn or this tool name is not supported.")
+                        if computer_session is None:
+                            if computer_session_factory is None:
+                                raise RuntimeError("Computer-use tools have no local desktop session factory.")
+                            computer_session = computer_session_factory()
                         result = computer_session.execute(call.name, call.arguments)
                     elif call.name == "load_skill":
                         from src.agent.skills import load_skill

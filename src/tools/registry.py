@@ -197,7 +197,7 @@ def tool_schemas(mcp_tools: list[dict[str, Any]] | None = None) -> list[dict[str
                 "when configured, otherwise reads HTML directly. If the page cannot "
                 "be read, try another result. Use browser_open for pages needing clicks or forms. "
                 "The browser tools use a remote Firecrawl session, not local Brave or the user's desktop. "
-                "For local GUI interaction, use /computer tools when available."
+                "For local desktop interaction, use the computer_* tools when available; these control the user's live desktop, not a remote browser."
             ),
             "parameters": {
                 "type": "object", "properties": {

@@ -18,7 +18,7 @@ class CuaDriver(HyprlandDriver):
         # CUA's desktop coordinates refer to the whole display. Until multi-monitor
         # mapping is verified, refuse input that might land on another monitor.
         if self.monitor_rect != (0.0, 0.0, float(self.width), float(self.height)) or self.desktop_bounds != (0.0, 0.0, float(self.width), float(self.height)):
-            raise RuntimeError("CUA computer mode currently needs one unscaled monitor at (0, 0). Set ORYN_COMPUTER_DRIVER=dotool for this layout.")
+            raise RuntimeError("The CUA driver currently needs one unscaled monitor at (0, 0). Set ORYN_COMPUTER_DRIVER=dotool for this layout.")
         local = Path(__file__).resolve().parents[2] / ".venv/bin/cua-driver"
         self.binary = shutil.which("cua-driver") or (str(local) if local.is_file() else None)
         if not self.binary:

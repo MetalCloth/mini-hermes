@@ -1,9 +1,15 @@
 # Computer trace logging
 
-This chapter describes the diagnostic trace written when Oryn runs with
-`ORYN_COMPUTER_LOG_FILE`, normally set by `./scripts/computer-log.sh run`. It covers the
-whole computer task, including any other tools the model calls during that task. The trace
-is generic: it records event types and IDs, not rules for a particular website or app.
+This chapter describes the diagnostic trace written for each TUI turn while Oryn runs with
+`ORYN_COMPUTER_LOG_FILE`, normally set by `./scripts/computer-log.sh run`. If the model later
+uses the desktop, the same trace includes the full turn from its first model request, including
+any web, browser, project, terminal, or MCP tools called before the first desktop action. The
+trace is generic: it records event types and IDs, not rules for a particular website or app.
+
+When voice input is used under `computer-log.sh run`, the same JSONL file records recording
+start/stop, sample rate, audio byte count and duration, peak/RMS signal levels, transcription
+time, transcript length, and a safe error code on failure. It never records the audio,
+transcript text, or API key.
 
 ## What a trace connects
 
@@ -26,7 +32,7 @@ For a numbered-control click, the local trace records the control index, role, l
 requested screenshot point when applicable, and the mapped monitor point. For other actions,
 it records the requested input, the dotool command/result, elapsed time, and whether the next
 observation included a screenshot. Startup events measure the delay from submitting the turn to
-the worker, provider image-support check, computer-driver startup, and entry to the agent loop.
+the worker, first computer-driver startup, and model/tool-loop activity.
 Each model request records preparation time separately from model-response time; failures and
 retries record attempt duration and whether the provider call began. Model records include
 counts and timings, not private reasoning text.
@@ -61,7 +67,9 @@ The trace does record screenshot dimensions, image scope, and whether an image w
 ## Optional LangSmith export
 
 LangSmith export is explicitly off unless `ORYN_LANGSMITH_TRACING=1` and `LANGSMITH_API_KEY`
-are both set. `LANGSMITH_PROJECT` selects the project; the default is `oryn-computer`.
+are both set. `LANGSMITH_PROJECT` selects the project; the default is `oryn-computer`. With
+the tracing launcher enabled, that project can also contain ordinary TUI turns that never use
+the desktop.
 For example:
 
 ```bash
@@ -84,7 +92,7 @@ selection errors. Control labels and values may reveal what is on screen. Only e
 tracing when that data is acceptable to send to LangSmith.
 
 The local JSONL file remains the detailed source; LangSmith is a remote overview and is not
-needed for computer mode to run.
+needed for local desktop tools to run.
 
 ## Limits
 
@@ -95,8 +103,8 @@ needed for computer mode to run.
   concluding that a result was complete.
 - LangSmith delivery is asynchronous and best-effort; a local record can exist even when its
   remote span does not.
-- This trace has no app-specific filtering or polling behavior. It records the general tool,
-  observation, wait, input, and result events that occur during a computer task.
+- This trace has no app-specific filtering or polling behavior. While enabled, it records each
+  TUI turn; desktop turns add the general observation, wait, input, and result events.
 
 ## Implementation map
 
@@ -105,6 +113,6 @@ needed for computer mode to run.
 - [`ComputerSession`](../tools/computer_session.py) records windows, observations, targets,
   waits, actions, and resulting observations.
 - [`HyprlandDriver`](../tools/computer_driver.py) records the actual dotool command and result.
-- [`OrynTUI`](../tui_app.py) records all tool calls and model/turn diagnostics for computer
-  tasks.
+- [`OrynTUI`](../tui_app.py) records all tool calls and model/turn diagnostics for traced TUI
+  turns, including those that later use the desktop.
 - [`computer_log_view.py`](../../scripts/computer_log_view.py) renders the readable live view.

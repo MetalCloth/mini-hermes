@@ -1,6 +1,6 @@
 ---
 name: caelestia-hyprland
-description: Use for Oryn /computer tasks on the user's Caelestia-style Hyprland desktop, especially launcher, app, workspace, and window shortcuts.
+description: Use for Oryn local-desktop tasks on the user's Caelestia-style Hyprland desktop, especially launcher, app, workspace, and window shortcuts.
 ---
 
 # Caelestia Hyprland desktop profile
@@ -125,7 +125,7 @@ Treat sleep, lock, and shell-session actions as intentional system operations: p
 - The dashboard can show media, weather, and performance values such as battery, GPU, CPU, memory, storage, and network.
 - On this laptop, moving the pointer into the very top-edge hotspot automatically expands the dashboard panel, notch-style; it is an edge-triggered panel, not a click-to-open control or a tooltip. Its Dashboard, Media, Performance, and Weather tabs run across the top.
 - A separate narrow control pill appears at the top-right edge. The screenshot shows a speaker slider, a moon-marked slider, and a sun button. Identify their current state from the screen; do not guess the moon control's exact effect.
-- The `/computer` action schema has no standalone pointer-move action, so it cannot deliberately reach this hotspot without another action. Use the panel's controls when it is already visible, or use another visible route.
+- The `computer_act` schema has no standalone pointer-move action, so it cannot deliberately reach this hotspot without another action. Use the panel's controls when it is already visible, or use another visible route.
 - The launcher searches apps and exposes actions. The shell README documents `>wallpaper` to open the wallpaper switcher; prefixes and available actions can be customized.
 
 ## Operating rule
