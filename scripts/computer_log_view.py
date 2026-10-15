@@ -203,7 +203,12 @@ def format_record(record: dict) -> str:
     if event == "computer_action_start":
         action_id = f" · action {record['action_id']}" if record.get("action_id") else ""
         observation_id = f" · from {record['observation_id']}" if record.get("observation_id") else ""
-        return f"{stamp}  ACTION{action_id} · {_action(record.get('action', {}))}{observation_id}"
+        actions = record.get("actions")
+        description = (
+            " → ".join(_action(item) for item in actions if isinstance(item, dict))
+            if isinstance(actions, list) else _action(record.get("action") or {})
+        )
+        return f"{stamp}  ACTION{action_id} · {description}{observation_id}"
     if event == "computer_action_target":
         target = record.get("target")
         if isinstance(target, dict):
@@ -223,6 +228,8 @@ def format_record(record: dict) -> str:
         )
     if event == "computer_action_result":
         outcome = record.get("outcome", {})
+        step = (f" · step {record['step_index']}/{record['step_count']}"
+                if record.get("step_count", 1) > 1 else "")
         route = f" · {outcome['route']}" if isinstance(outcome, dict) and outcome.get("route") else ""
         effect = outcome.get("effect", "?") if isinstance(outcome, dict) else "?"
         detail = ""
@@ -230,7 +237,7 @@ def format_record(record: dict) -> str:
             reason = outcome.get("reason") or outcome.get("error") or outcome.get("message")
             if reason:
                 detail = f" · {_short(reason, 180)}"
-        return f"{stamp}  ACTION RESULT · {effect}{route}{detail} · action {record.get('action_id', '?')}"
+        return f"{stamp}  ACTION RESULT{step} · {effect}{route}{detail} · action {record.get('action_id', '?')}"
     if event == "computer_action_complete":
         error = f" · {_short(record.get('observation_error'), 180)}" if record.get("observation_error") else ""
         return (

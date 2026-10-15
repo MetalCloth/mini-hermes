@@ -32,7 +32,8 @@ other IDs connect the parts that are easy to lose when reading a flat log:
 For a numbered-control click, the local trace records the control index, role, label, frame,
 requested screenshot point when applicable, and the mapped monitor point. For other actions,
 it records the requested input, the dotool command/result, elapsed time, and whether the next
-observation included a screenshot. Startup events measure the delay from submitting the turn to
+observation included a screenshot. A focus/edit sequence shares one `action_id`; each attempted
+input has a step number and its own outcome, and one observation follows the sequence. Startup events measure the delay from submitting the turn to
 the worker, first computer-driver startup, and model/tool-loop activity.
 Each model request records preparation time separately from model-response time; failures and
 retries record attempt duration and whether the provider call began. Model records include
