@@ -10,7 +10,7 @@ exact CUA windows, accessibility controls, and native checks are unavailable.
 
 | Part | Job |
 | --- | --- |
-| `computer_task` | Saved checklist: goal, constraints, steps, done checks, progress, and evidence. It does not control the screen or prove success. |
+| `computer_task` | Optional saved checklist for longer tasks: goal, constraints, steps, done checks, progress, and evidence. It does not control the screen or prove success. |
 | `computer_observe` | Look at the desktop, a list of windows, or one window. It does not send input. |
 | CUA | Read windows, screenshots, accessibility data, and exact native conditions. |
 | `computer_act` + dotool | Send a click, key, text, or scroll, then return a fresh observation. |
@@ -85,12 +85,23 @@ The IDs below are invented. Suppose Brave is open on WhatsApp Web:
 3. `computer_act` uses `obs-a` for an input. Oryn validates the current target and sends
    the input in that call without a confirmation prompt. The result includes a fresh
    observation, say `obs-b`. Reusing `obs-a` is rejected.
-4. The model inspects `obs-b`, or uses `computer_wait` with a supported exact condition.
-   It records a verified step in `computer_task` only when the observed evidence supports it.
+4. The model inspects `obs-b` and can use it directly for the next action. It calls
+   `computer_observe` again only if the UI is still loading or this result is insufficient;
+   it can use `computer_wait` for a supported exact condition. A short task needs no
+   `computer_task` record. For longer tasks, one `record` call can update multiple steps
+   and checks, each with its own evidence.
 
 The input result `sent` means the dotool command completed. The model checks the resulting
 observation before claiming that the app changed. `refused` means Oryn stopped the requested
 input before dispatch; `unknown` means its occurrence is uncertain.
+
+For longer tasks, `computer_task({"operation":"record","updates":[...]})` can mark up to
+eight steps and six done checks in one call. Each item names `kind` (`step` or `check`), a
+1-based `index`, a valid `status`, and evidence for `verified` or `blocked`. The older
+single-step and single-check fields still work. If the next action is already clear from
+the last observation, the model can issue `record` before `computer_act` in the same
+response. After the final result, it can issue `record` then `finish` together. It must
+never record evidence from an action it has not yet seen.
 
 ## What stays in history
 

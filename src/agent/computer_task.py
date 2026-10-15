@@ -9,10 +9,12 @@ def computer_task_schema() -> dict[str, Any]:
     return {
         "type": "function", "name": "computer_task",
         "description": (
-            "Keep a compact goal and progress record for a computer task. Start with a goal, "
-            "checkable done criteria, and short steps; record facts and evidence after observing "
-            "tool results; finish only after checking the result. This stores the model's record, "
-            "not an automatic success verdict. The environment binds remote browser versus "
+            "Keep a compact goal and progress record when a computer task has several uncertain stages "
+            "or must survive interruption. Short single-outcome tasks do not need a record. Start with "
+            "a goal, checkable done criteria, and short steps; record several evidence-backed updates "
+            "in one call after observing tool results; finish only after checking the result. "
+            "This stores the model's record, not an automatic success verdict. "
+            "The environment binds remote browser versus "
             "local desktop tools for this turn. mixed requires route_reason; record an upgrade "
             "to mixed to keep existing progress. Fields belonging to another operation and empty "
             "record placeholders are ignored."
@@ -34,6 +36,14 @@ def computer_task_schema() -> dict[str, Any]:
                             "description": "Record only: verified requires observed evidence."},
             "check_index": {"type": "integer", "description": "Record only: 1-based done check to update."},
             "check_status": {"type": "string", "enum": ["pending", "verified"]},
+            "updates": {"type": "array", "maxItems": 14, "items": {
+                "type": "object", "additionalProperties": False, "properties": {
+                    "kind": {"type": "string", "enum": ["step", "check"]},
+                    "index": {"type": "integer", "description": "1-based step or done-check index."},
+                    "status": {"type": "string", "enum": ["pending", "working", "verified", "blocked"]},
+                    "evidence": {"type": "string", "description": "Required for verified or blocked updates."},
+                }, "required": ["kind", "index", "status"],
+            }, "description": "Record only: multiple step/check changes supported by results already seen."},
             "evidence": {"type": "string", "description": "What a fresh observation or tool result showed."},
             "fact": {"type": "string", "description": "Record only: a fact to carry between apps."},
             "source": {"type": "string", "description": "Record only: where that fact came from."},
@@ -82,7 +92,7 @@ class ComputerTaskLedger:
         operation = args["operation"]
         fields = {
             "start": {"operation", "goal", "constraints", "done_checks", "steps", "environment", "route_reason"},
-            "record": {"operation", "step_index", "step_status", "check_index", "check_status",
+            "record": {"operation", "step_index", "step_status", "check_index", "check_status", "updates",
                        "evidence", "fact", "source", "next_step", "environment", "route_reason"},
             "finish": {"operation", "result", "evidence"},
         }
@@ -91,6 +101,8 @@ class ComputerTaskLedger:
         args = {key: value for key, value in args.items() if key in fields[operation]}
         if operation == "record":
             # The flat provider schema may fill optional fields that do not describe this update.
+            if args.get("updates") == []:
+                args.pop("updates")
             for key in ("evidence", "fact", "source", "next_step", "route_reason"):
                 if args.get(key) == "":
                     args.pop(key)
@@ -129,8 +141,10 @@ class ComputerTaskLedger:
             if operation == "record":
                 state["status"] = "active"
                 state["final_evidence"] = ""
-                if not ({"step_index", "check_index", "fact", "next_step", "environment"} & set(args)):
+                if not ({"step_index", "check_index", "updates", "fact", "next_step", "environment"} & set(args)):
                     raise ValueError("Record a step, done check, fact, next_step, or mixed environment upgrade.")
+                if "updates" in args and {"step_index", "step_status", "check_index", "check_status", "evidence"} & set(args):
+                    raise ValueError("Use updates or the flat step/check fields, not both.")
                 if "environment" in args:
                     if state["environment"] == "mixed" or args["environment"] != "mixed":
                         raise ValueError("A task environment can only be upgraded once to mixed.")
@@ -139,6 +153,7 @@ class ComputerTaskLedger:
                 elif "route_reason" in args:
                     raise ValueError("route_reason needs an environment upgrade to mixed.")
                 evidence = args.get("evidence", "")
+                verified_step = False
                 if "step_index" in args:
                     index = args["step_index"]
                     if type(index) is not int or not 1 <= index <= len(state["steps"]):
@@ -151,6 +166,7 @@ class ComputerTaskLedger:
                     elif evidence:
                         evidence = _text(evidence, "evidence", 500)
                     state["steps"][index - 1].update(status=status, evidence=evidence)
+                    verified_step = status == "verified"
                 elif "step_status" in args:
                     raise ValueError("step_status needs step_index.")
                 if "check_index" in args:
@@ -166,6 +182,32 @@ class ComputerTaskLedger:
                     raise ValueError("check_status needs check_index.")
                 if "evidence" in args and not {"step_index", "check_index"} & set(args):
                     raise ValueError("evidence needs step_index or check_index.")
+                if "updates" in args:
+                    updates = args["updates"]
+                    if not isinstance(updates, list) or not 1 <= len(updates) <= 14:
+                        raise ValueError("updates needs 1–14 step/check changes.")
+                    seen = set()
+                    for update in updates:
+                        if (not isinstance(update, dict) or set(update) - {"kind", "index", "status", "evidence"}
+                                or not {"kind", "index", "status"} <= set(update)):
+                            raise ValueError("Each update needs kind, index, status, and optional evidence.")
+                        kind, index, status = update["kind"], update["index"], update["status"]
+                        if kind not in ("step", "check") or type(index) is not int:
+                            raise ValueError("Update kind must be step or check with a 1-based index.")
+                        target = state["steps"] if kind == "step" else state["done_checks"]
+                        if not 1 <= index <= len(target) or (kind, index) in seen:
+                            raise ValueError("Update index must be current and unique within the batch.")
+                        seen.add((kind, index))
+                        allowed = ("working", "verified", "blocked") if kind == "step" else ("pending", "verified")
+                        if status not in allowed:
+                            raise ValueError("Update status is invalid for its step or done check.")
+                        item_evidence = update.get("evidence", "")
+                        if status in ("verified", "blocked"):
+                            item_evidence = _text(item_evidence, "evidence", 500)
+                        elif "evidence" in update and item_evidence != "":
+                            item_evidence = _text(item_evidence, "evidence", 500)
+                        target[index - 1].update(status=status, evidence=item_evidence if status != "pending" else "")
+                        verified_step = verified_step or (kind == "step" and status == "verified")
                 if "fact" in args or "source" in args:
                     if len(state["facts"]) >= 12:
                         raise ValueError("The task already has twelve facts; keep only relevant facts in a new task.")
@@ -173,7 +215,7 @@ class ComputerTaskLedger:
                                            "source": _text(args.get("source"), "source", 200)})
                 if "next_step" in args:
                     state["next_step"] = _text(args["next_step"], "next_step", 200)
-                elif "step_index" in args and args["step_status"] == "verified":
+                elif verified_step:
                     state["next_step"] = next(
                         (step["description"] for step in state["steps"] if step["status"] != "verified"), "",
                     )
