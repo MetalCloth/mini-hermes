@@ -14,7 +14,7 @@ class ComputerLogViewTests(unittest.TestCase):
             "event": "cua_call_result", "tool": "click", "success": True,
             "route": "global_input", "effect": "unverifiable", "elapsed_ms": 120,
         })
-        self.assertIn("CUA OK · click · global_input · unverifiable · 120ms", line)
+        self.assertIn("CUA OK · click · global_input · sent · 120ms", line)
         fallback = format_record({"event": "cua_dotool_fallback", "action": "hotkey"})
         self.assertIn("CUA FALLBACK · dotool hotkey", fallback)
 

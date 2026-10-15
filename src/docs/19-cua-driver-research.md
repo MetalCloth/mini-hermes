@@ -82,7 +82,7 @@ Window actions use a window-local coordinate space; desktop actions use display 
 The documented agent policy starts with an accessibility action, usually in background mode. Its result can say:
 
 - `confirmed` / `verified`: the driver read the changed state back through accessibility;
-- `unverifiable`: it dispatched the action but could not prove the application changed;
+- a sent-input status: it dispatched the action but could not prove the application changed;
 - `suspected_noop`: the semantic action likely did nothing;
 - `escalation.recommended`: a next route such as screenshot pixels, browser page tools, or foreground delivery, with a reason.
 
@@ -192,7 +192,7 @@ No subsystem is approved or implemented by this note. For a future design discus
 1. Keep observation sources and input execution as distinct responsibilities, but let one observation carry compact semantic structure and matching pixels.
 2. Let action arguments select semantic versus pixel targeting; do not make the model choose an abstract perception mode before it sees the screen.
 3. Make every semantic action refer to a fresh, exact target/snapshot and reject stale handles.
-4. Return machine-readable `verified`, `unverifiable`, degraded, refusal, and next-route information. Do not equate command exit code with success.
+4. Return machine-readable verification, sent-input, degraded, refusal, and next-route information. Do not equate command exit code with success.
 5. Treat Linux support as a matrix of tested compositor × app/toolkit × action routes, not a single “Wayland supported” checkbox.
 6. Use browser/CDP only after exact browser/tab binding and explicit profile authorization; keep it separate from generic desktop clicks.
 7. Optimize the agent loop and evidence payload, not only the low-level click/typing implementation.

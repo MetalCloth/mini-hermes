@@ -18,6 +18,7 @@ def _short(value: object, limit: int = 240) -> str:
         if "INFO using forced backend" not in line
     )
     text = " ".join(" ".join(lines).split())
+    text = text.replace("unverifiable", "sent")
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -231,7 +232,7 @@ def format_record(record: dict) -> str:
         step = (f" · step {record['step_index']}/{record['step_count']}"
                 if record.get("step_count", 1) > 1 else "")
         route = f" · {outcome['route']}" if isinstance(outcome, dict) and outcome.get("route") else ""
-        effect = outcome.get("effect", "?") if isinstance(outcome, dict) else "?"
+        effect = _short(outcome.get("effect", "?")) if isinstance(outcome, dict) else "?"
         detail = ""
         if isinstance(outcome, dict):
             reason = outcome.get("reason") or outcome.get("error") or outcome.get("message")
@@ -333,7 +334,7 @@ def format_record(record: dict) -> str:
     if event == "cua_call_result":
         label = "CUA OK" if record.get("success") else "CUA FAILED"
         route = f" · {record['route']}" if record.get("route") else ""
-        effect = f" · {record['effect']}" if record.get("effect") else ""
+        effect = f" · {_short(record['effect'])}" if record.get("effect") else ""
         duration = f" · {record['elapsed_ms']}ms" if record.get("elapsed_ms") is not None else ""
         error = f"\n  {_short(record['error'], 500)}" if record.get("error") else ""
         return f"{stamp}  {label} · {record.get('tool', '?')}{route}{effect}{duration}{error}"

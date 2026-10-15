@@ -118,6 +118,8 @@ class CuaDriver(HyprlandDriver):
             response = json.loads(stdout)
         except json.JSONDecodeError:
             response = None
+        if isinstance(response, dict) and response.get("effect") == "unverifiable":
+            response["effect"] = "sent"
         refused = isinstance(response, dict) and response.get("effect") == "refused"
         accepted = (isinstance(response, dict) and (
             (process.returncode == 0 and (allow_refusal or not refused))

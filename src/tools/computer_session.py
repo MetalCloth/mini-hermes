@@ -25,7 +25,7 @@ For a substantial computer task, start computer_task with the user's goal, const
 
 Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers and windows then exact window IDs for another named app. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Never reuse a stale ID, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends all input. For key chords use super+w; use leftmeta only as a standalone Super tap.
 
-Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `unverifiable` means input was sent without proof of its UI effect; `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. Wait only for a bounded, supported condition or one fresh visual observation. For sending, deleting, buying, publishing, or submitting, set requires_confirmation=true with a concrete reason. Oryn also requires approval for clicks and keys that could commit an action, even if this flag is omitted. Claim completion only when fresh local evidence shows the requested state."""
+Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. Wait only for a bounded, supported condition or one fresh visual observation. For sending, deleting, buying, publishing, or submitting, set requires_confirmation=true with a concrete reason. Oryn also requires approval for clicks and keys that could commit an action, even if this flag is omitted. Claim completion only when fresh local evidence shows the requested state."""
 
 
 def computer_tool_schemas() -> list[dict[str, Any]]:
@@ -946,7 +946,7 @@ class ComputerSession:
             )
         else:
             raise ValueError("This action has no dotool route.")
-        return {"effect": "unverifiable", "route": "dotool", "message": "Input sent; inspect fresh state before repeating."}
+        return {"effect": "sent", "route": "dotool", "message": "Input command completed; inspect fresh state before repeating."}
 
     def _click(
         self, snapshot: dict, action: dict, *, trace_context: dict[str, Any] | None = None,

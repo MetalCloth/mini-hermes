@@ -31,7 +31,7 @@ A window observation reports `screenshot_included` and `image_scope`. When `scre
 | --- | --- |
 | `effect:"confirmed"` | The driver has readback evidence for the input. Still verify the task's postcondition. |
 | `effect:"partial"` | Only part of the requested input may have landed. Inspect fresh state before repairing only the remaining work. |
-| `effect:"unverifiable"` | Input may have been delivered without proof of its UI effect. Observe first; never replay automatically. Dotool actions normally report this. |
+| `effect:"sent"` | The input command completed without proof of its UI effect. Observe first; never replay automatically. Dotool actions normally report this. |
 | `effect:"suspected_noop"` | Available evidence suggests no useful change. Inspect fresh state and choose a reasoned next step. |
 | `effect:"refused"` | The selected route did not send the requested input. For Oryn preflight reasons such as `active_window_changed`, `target_focus_failed`, or an unmappable control frame, the requested click/key was not dispatched; inspect the returned fresh observation and choose from current state. An `escalation` is a suggestion, not permission or an automatic retry. CUA does not dispatch a click fallback. |
 | `effect:"unknown"`, timeout, or cancellation | Input may or may not have occurred. Do not replay it. Observe the current state before deciding what to do. |
