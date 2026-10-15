@@ -100,7 +100,7 @@ remain visible in the remote trace, so enable it only when that screen content i
 The local JSONL trace remains the detailed source. See [computer trace logging](src/docs/22-computer-tracing.md)
 for the event links, privacy boundaries, and limitations.
 The old `computer_benchmark.py` applies to historical planner traces, not the current main-loop path.
-The [current computer-use decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
+The [computer-use cheat sheet](src/docs/23-computer-use-cheat-sheet.md) lists the tools, observation modes, IDs, and saved history. The [current computer-use decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.
 
