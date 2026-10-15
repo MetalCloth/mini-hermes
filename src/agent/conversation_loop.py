@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Event, Timer
 from typing import Any
 
+from src.agent.computer_task import ComputerTaskLedger
 from src.agent.compression import compact_for_request
 from src.agent.context import estimate_context_tokens
 from src.mcp.adapter import mcp_loader_tool
@@ -86,6 +87,9 @@ def run_turn(
     computer_session: ComputerSession | None = None,
     computer_session_factory: Callable[[], ComputerSession] | None = None,
     computer_dry_run: bool = False,
+    load_computer_task: Callable[[], dict[str, Any] | None] | None = None,
+    save_computer_task: Callable[[dict[str, Any]], None] | None = None,
+    ask_computer_user: Callable[[str], str | None] | None = None,
 ) -> str:
     """Keep the tool cycle in the harness; return only when the model is done."""
     browser = BrowserSession()
@@ -107,6 +111,11 @@ def run_turn(
         tool for tool in computer_schemas if tool["name"] not in advertised_tool_names
     )
     computer_tools_available = bool(computer_schemas)
+    computer_task = ComputerTaskLedger(
+        load_computer_task() if computer_tools_available and load_computer_task else None,
+        None if computer_dry_run else save_computer_task,
+    )
+    route_scope: str | None = None
     local_tool_names = {tool["name"] for tool in tool_schemas()} | {"load_mcp_tools", "load_skill"}
     local_tool_names.update(computer_names)
     from src.agent.skills import discover_skills, skill_loader_tool
@@ -260,6 +269,8 @@ def run_turn(
                                and request_messages[position].get("role") in {"system", "developer"}):
                             position += 1
                         computer_instruction = COMPUTER_INSTRUCTIONS
+                        if saved_task := computer_task.context():
+                            computer_instruction += "\n\n" + saved_task
                         if computer_dry_run or (computer_session is not None and computer_session.dry_run):
                             computer_instruction += "\nThis is a dry run. Call computer_act for the first proposed input; the harness will preview it without sending input, then summarize the preview."
                         request_messages.insert(position, {"role": "developer", "content": computer_instruction})
@@ -356,14 +367,40 @@ def run_turn(
                 try:
                     if effective_tool_allowlist is not None and call.name not in effective_tool_allowlist:
                         raise ValueError("This tool is outside the allowed set for this turn and was not run.")
-                    if call.name.startswith("computer_"):
+                    if call.name == "computer_task":
+                        if call.name not in computer_names:
+                            raise ValueError("Computer task records are unavailable in this turn.")
+                        declared = (
+                            call.arguments.get("environment")
+                            if isinstance(call.arguments, dict) and "environment" in call.arguments
+                            else (computer_task.state or {}).get("environment")
+                        )
+                        if route_scope not in (None, "mixed") and declared not in (route_scope, "mixed"):
+                            raise ValueError("This turn already uses another UI environment. Declare mixed only if the user's task needs both.")
+                        if route_scope == "mixed" and declared != "mixed":
+                            raise ValueError("This turn already uses both UI environments; keep its task environment mixed.")
+                        result = computer_task.apply(call.arguments)
+                        route_scope = "mixed" if "mixed" in (route_scope, computer_task.state["environment"]) else declared
+                    elif call.name.startswith("computer_"):
                         if call.name not in computer_names:
                             raise ValueError("Computer-use tools are unavailable in this turn or this tool name is not supported.")
-                        if computer_session is None:
-                            if computer_session_factory is None:
-                                raise RuntimeError("Computer-use tools have no local desktop session factory.")
-                            computer_session = computer_session_factory()
-                        result = computer_session.execute(call.name, call.arguments)
+                        if route_scope == "remote_browser" and call.name != "computer_ask_user":
+                            raise ValueError("This turn is bound to the remote browser. Start a mixed task if the user's request also needs the live desktop.")
+                        if route_scope is None and call.name != "computer_ask_user":
+                            route_scope = "local_desktop"
+                        if call.name == "computer_ask_user" and computer_session is None and ask_computer_user:
+                            question = ComputerSession.validate_question(call.arguments)
+                            check_cancelled()
+                            answer = ask_computer_user(question)
+                            check_cancelled()
+                            result = json.dumps({"answer": answer, "answered": answer is not None,
+                                                 "next": "Observe again before desktop input."}, ensure_ascii=False)
+                        else:
+                            if computer_session is None:
+                                if computer_session_factory is None:
+                                    raise RuntimeError("Computer-use tools have no local desktop session factory.")
+                                computer_session = computer_session_factory()
+                            result = computer_session.execute(call.name, call.arguments)
                     elif call.name == "load_skill":
                         from src.agent.skills import load_skill
 
@@ -451,6 +488,10 @@ def run_turn(
                                 file_change_journal=file_change_journal,
                             )
                         elif call.name.startswith("browser_"):
+                            if route_scope == "local_desktop":
+                                raise ValueError("This task is bound to the live local desktop. browser_* controls a separate remote session; use computer_* or explicitly start a mixed task.")
+                            if route_scope is None:
+                                route_scope = "remote_browser"
                             result = execute_tool(*args, browser=browser)
                         elif call.name.startswith("terminal"):
                             result = execute_tool(

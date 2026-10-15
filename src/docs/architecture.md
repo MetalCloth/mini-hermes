@@ -17,10 +17,11 @@ The word **harness** means this surrounding machinery. A strong harness makes th
 | Gemini transport | [gemini.py](../providers/gemini.py) | Reads the local API key, converts history/tools/images, streams GenerateContent responses |
 | Provider result types | [types.py](../providers/types.py) | Defines a `ToolCall` and a `ModelResponse`, including provider metadata needed to continue tool calls |
 | Turn execution | [conversation_loop.py](../agent/conversation_loop.py) | Repeats model requests and sequential tool execution, enforces round and result limits |
+| Computer task record | [computer_task.py](../agent/computer_task.py) | Validates model-maintained goals, constraints, steps, facts, and evidence; the turn loop enforces its declared UI environment |
 | Context preparation | [context.py](../agent/context.py), [compression.py](../agent/compression.py) | Estimates request tokens, compacts older completed turns, and selects recent whole turns |
 | Product instructions | [system_prompt.py](../agent/system_prompt.py) | Supplies Oryn identity, formatting guidance, tool discipline, and recovery instructions |
 | Project instructions | [project_context.py](../agent/project_context.py) | Reads a root `AGENTS.md` safely and with a size limit |
-| Session storage | [sqlite_store.py](../session/sqlite_store.py) | Stores transcripts, context checkpoints, durable undo journal, diagnostics, and session metadata |
+| Session storage | [sqlite_store.py](../session/sqlite_store.py) | Stores transcripts, context checkpoints, computer task records, durable undo journal, diagnostics, and session metadata |
 | Tool catalog and dispatch | [registry.py](../tools/registry.py) | Describes native operations and routes calls to implementations |
 | File operations | [file_tools.py](../tools/file_tools.py) | Reads, searches, writes, edits, previews, records undo snapshots, and restores guarded changes |
 | Terminal execution | [terminal_tool.py](../tools/terminal_tool.py) | Runs approved Bubblewrap commands as chat-owned PTY jobs with read/input/stop controls |

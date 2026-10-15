@@ -2221,6 +2221,9 @@ class OrynTUI(App[None]):
                     if provider.supports_image_input() is True else None
                 ),
                 computer_dry_run=computer_dry_run,
+                load_computer_task=lambda: self.store.load_computer_task(session_id),
+                save_computer_task=lambda task: self.store.save_computer_task(session_id, task),
+                ask_computer_user=lambda question: self._ask_computer_question(question, cancel_event),
             )
         except TurnLimitReached as exc:
             finished = TurnFinished(None, str(exc), paused=True)

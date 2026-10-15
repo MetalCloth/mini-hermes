@@ -4,7 +4,7 @@
 
 This reference was checked against the actual `tool_schemas()` output in [registry.py](../tools/registry.py). It lists the 22 native model-facing functions. `load_skill` is advertised only when valid local skills exist; MCP names and arguments are discovered dynamically.
 
-The TUI adds four `computer_*` functions to ordinary turns when the selected model supports image input. They are implemented by [`ComputerSession`](../tools/computer_session.py), not by `tool_schemas()`; see the [computer-use flow](21-cua-main-loop.md) for their schemas and local desktop boundary.
+The TUI adds five `computer_*` functions to ordinary turns when the selected model supports image input. [`ComputerTaskLedger`](../agent/computer_task.py) owns the task record, while [`ComputerSession`](../tools/computer_session.py) owns desktop observations and input. They are outside `tool_schemas()`; see the [computer-use flow](21-cua-main-loop.md) for their schemas and environment boundary.
 
 ## Reading a schema
 

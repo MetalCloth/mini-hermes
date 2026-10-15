@@ -43,6 +43,11 @@ class SQLiteSessionStore:
                     "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
                 )
                 connection.execute(
+                    "CREATE TABLE IF NOT EXISTS computer_tasks "
+                    "(session_id TEXT PRIMARY KEY, task_json TEXT NOT NULL, "
+                    "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+                )
+                connection.execute(
                     "CREATE TABLE IF NOT EXISTS file_changes ("
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, "
                     "project_root TEXT NOT NULL, path TEXT NOT NULL, "
@@ -288,6 +293,7 @@ class SQLiteSessionStore:
             with connection:
                 connection.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
                 connection.execute("DELETE FROM context_summaries WHERE session_id = ?", (session_id,))
+                connection.execute("DELETE FROM computer_tasks WHERE session_id = ?", (session_id,))
                 connection.execute("DELETE FROM file_changes WHERE session_id = ?", (session_id,))
                 connection.execute("DELETE FROM diagnostic_events WHERE session_id = ?", (session_id,))
                 cursor = connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -311,6 +317,55 @@ class SQLiteSessionStore:
                 or covered_messages < 1 or not re.fullmatch(r"[0-9a-f]{64}", digest or "")):
             return None
         return summary, covered_messages, digest
+
+    def load_computer_task(self, session_id: str) -> dict[str, Any] | None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            row = connection.execute(
+                "SELECT task_json FROM computer_tasks WHERE session_id = ?", (session_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if not row:
+            return None
+        try:
+            task = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if (not isinstance(task, dict) or not isinstance(task.get("goal"), str)
+                or task.get("environment") not in ("local_desktop", "remote_browser", "mixed")
+                or task.get("status") not in ("active", "blocked", "complete")
+                or not isinstance(task.get("next_step"), str)
+                or not isinstance(task.get("done_checks"), list) or not 1 <= len(task["done_checks"]) <= 6
+                or not all(isinstance(check, dict) and check.get("status") in ("pending", "verified")
+                           for check in task["done_checks"])
+                or not isinstance(task.get("steps"), list) or not 1 <= len(task["steps"]) <= 8
+                or not all(isinstance(step, dict) and step.get("status") in ("pending", "working", "verified", "blocked")
+                           for step in task["steps"])
+                or not isinstance(task.get("facts"), list)):
+            return None
+        return task
+
+    def save_computer_task(self, session_id: str, task: dict[str, Any]) -> None:
+        if not isinstance(task, dict):
+            raise ValueError("Computer task must be an object.")
+        encoded = json.dumps(task, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > 12_000:
+            raise ValueError("Computer task is too large to save.")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT INTO sessions (id) VALUES (?) ON CONFLICT(id) DO NOTHING", (session_id,),
+                )
+                connection.execute(
+                    "INSERT INTO computer_tasks (session_id, task_json, updated_at) "
+                    "VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(session_id) DO UPDATE SET "
+                    "task_json = excluded.task_json, updated_at = CURRENT_TIMESTAMP",
+                    (session_id, encoded),
+                )
+        finally:
+            connection.close()
 
     def save_context_summary(
         self, session_id: str, summary: str, covered_messages: int, covered_digest: str,

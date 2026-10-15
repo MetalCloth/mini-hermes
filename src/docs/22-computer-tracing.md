@@ -35,6 +35,7 @@ it records the requested input, the dotool command/result, elapsed time, and whe
 observation included a screenshot. A focus/edit sequence shares one `action_id`; each attempted
 input has a step number and its own outcome, and one observation follows the sequence. Startup events measure the delay from submitting the turn to
 the worker, first computer-driver startup, and model/tool-loop activity.
+`computer_task` updates appear as ordinary tool-call entries in the local trace. The current task record is stored in SQLite; the trace's bounded argument and result previews are not a replacement for that record.
 Each model request records preparation time separately from model-response time; failures and
 retries record attempt duration and whether the provider call began. Model records include
 counts and timings, not private reasoning text.

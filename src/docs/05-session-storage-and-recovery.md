@@ -12,6 +12,8 @@ A session is not a live model process. The model is called afresh with selected 
 
 For a TUI computer-tool call, the live screenshot is sent to the model for its next decision, then removed before the turn's messages are stored. The saved tool result keeps a compact text outcome and its call ID. Reloading the chat therefore restores the action history, but cannot reopen the earlier screen image. See the [computer decision record](21-cua-main-loop.md).
 
+The TUI can also save one model-maintained `computer_task` record per chat: goal, constraints, done checks, steps, source-labeled facts, and progress. Active or blocked records are injected as compact context in later image-capable TUI turns. It records what the model says it observed; it is separate from native verification results and is removed when the chat is deleted.
+
 ## 2. Why SQLite
 
 Python includes SQLite support. The application can open a local file, create tables, append messages transactionally, and query history without running another service. This fits the project's local educational scope.
@@ -30,6 +32,7 @@ The default parent directory is owner-only (`0700`) and the database is set to o
 erDiagram
     sessions ||--o{ messages : "associated by session_id"
     sessions ||--o| context_summaries : "rolling checkpoint"
+    sessions ||--o| computer_tasks : "computer task record"
     sessions ||--o{ file_changes : "undo journal"
     sessions ||--o{ diagnostic_events : "redacted metadata"
     sessions {
@@ -51,6 +54,11 @@ erDiagram
         TEXT summary
         INTEGER covered_messages
         TEXT covered_digest
+    }
+    computer_tasks {
+        TEXT session_id PK
+        TEXT task_json
+        TEXT updated_at
     }
     file_changes {
         INTEGER id PK
