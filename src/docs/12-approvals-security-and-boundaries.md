@@ -36,8 +36,9 @@ This is the boundary between a plan and an authorized effect. It is separate fro
 | `web_search` | No | Key/configuration, query/result validation, bounded response |
 | `web_extract` | No | Public URL and response validation |
 | Native Firecrawl browser actions | **No explicit action approval in dispatcher** | Public initial URL, bounded known commands/refs/values |
+| `computer_act` local desktop input | No | Current single-use observation, window/focus checks, control-frame and coordinate validation |
 
-That last row is an existing policy gap if the desired product promise is “approve every external mutation.” Do not document a stronger guarantee than the code provides. The MCP browser path has its own policy below.
+Native Firecrawl browser actions and local desktop input both run without per-action approval. Do not document a stronger guarantee than the code provides. The MCP browser path has its own policy below.
 
 ## 3. MCP approval matrix
 

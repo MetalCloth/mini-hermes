@@ -15,7 +15,7 @@ exact CUA windows, accessibility controls, and native checks are unavailable.
 | CUA | Read windows, screenshots, accessibility data, and exact native conditions. |
 | `computer_act` + dotool | Send a click, key, text, or scroll, then return a fresh observation. |
 | `computer_wait` | Wait for one supported CUA condition in an exact window, then return a fresh observation. |
-| `computer_ask_user` | Ask for a clarification during the same turn. |
+| `computer_ask_user` | Ask for a clarification during the same turn; refresh the current observation with the answer when possible. |
 
 ## Four ways to observe
 
@@ -24,12 +24,13 @@ exact CUA windows, accessibility controls, and native checks are unavailable.
 | `computer_observe({"mode":"windows"})` | `list_windows` | Visible app/window metadata: `pid`, `window_id`, title, app name, bounds. No screenshot, accessibility tree, or actionable observation ID. |
 | `computer_observe({"mode":"active"})` | Match the focused Hyprland window with `list_windows`, then `get_window_state` | That window's screenshot and bounded accessibility controls/tree when a unique match exists. Otherwise a desktop screenshot. |
 | `computer_observe({"mode":"window","pid":4321,"window_id":71})` | `get_window_state` | The specified window's bounded controls/tree and a screenshot when available. On Wayland, Oryn may fall back to a desktop screenshot while keeping the exact window's tree. |
-| `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot, plus read-only labels from the active window when CUA can safely match it. These labels are not numbered click targets. |
+| `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot, plus read-only labels from the active window when CUA can safely match it. These labels have no actionable indices; use `mode="active"` for `click_element`. |
 
 `start_session` and `end_session` prepare and close CUA; they are not screen reads.
 The accessibility tree is what an app exposes to the desktop, not a direct browser DOM feed.
 Some apps expose only a generic window. Window and active observations send at most 60 actionable
-controls and a 1,200-character tree excerpt to the model.
+controls and a 1,200-character tree excerpt to the model. When a document is exposed, its
+controls come before browser chrome in that bounded list.
 `mode="windows"` has no image; `mode="desktop"` always has one. `image=false` can skip an
 exact-window screenshot, but an active-mode fallback can still return a desktop image.
 
@@ -81,9 +82,9 @@ The IDs below are invented. Suppose Brave is open on WhatsApp Web:
 2. `computer_observe({"mode":"window","pid":4321,"window_id":71})` returns
    `observation_id="obs-a"`, a screenshot, and perhaps `[3] textbox "Search chats"`
    if Brave exposes that control.
-3. `computer_act` uses `obs-a` for an input. Clicks and keys outside a small navigation
-   allowlist require approval; after approval Oryn reobserves before input. When input runs,
-   the result includes a new observation, say `obs-b`. Reusing `obs-a` is rejected.
+3. `computer_act` uses `obs-a` for an input. Oryn validates the current target and sends
+   the input in that call without a confirmation prompt. The result includes a fresh
+   observation, say `obs-b`. Reusing `obs-a` is rejected.
 4. The model inspects `obs-b`, or uses `computer_wait` with a supported exact condition.
    It records a verified step in `computer_task` only when the observed evidence supports it.
 

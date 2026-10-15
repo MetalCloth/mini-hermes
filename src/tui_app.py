@@ -2135,7 +2135,6 @@ class OrynTUI(App[None]):
             try:
                 session = ComputerSession(
                     cancel_event,
-                    confirm_action=lambda preview: self._request_approval("Confirm desktop action", preview),
                     ask_user=lambda question: self._ask_computer_question(question, cancel_event),
                     dry_run=computer_dry_run, trace=trace,
                 )

@@ -23,16 +23,16 @@ COMPUTER_INSTRUCTIONS = """computer_observe, computer_act, and computer_wait use
 
 For a substantial computer task, start computer_task with the user's goal, constraints, observable done checks, short steps, and environment. You can request computer_task and the first observation in one model response. Record progress only after reading actual tool results; its ledger is memory, not automatic verification. An unfinished saved task keeps its route on the next turn; start a new task before UI input if the user has requested a different task. The declared environment keeps local desktop and remote Firecrawl browser actions separate unless the task explicitly needs both. Do not switch to a mixed environment merely to bypass a route error.
 
-Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers and windows then exact window IDs for another named app. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Never reuse a stale ID, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends all input. For key chords use super+w; use leftmeta only as a standalone Super tap.
+Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers and windows then exact window IDs for another named app. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Never reuse a stale ID, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends all input. For key chords use super+w; use leftmeta only as a standalone Super tap.
 
-Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. Wait only for a bounded, supported condition or one fresh visual observation. For sending, deleting, buying, publishing, or submitting, set requires_confirmation=true with a concrete reason. Oryn also requires approval for clicks and keys that could commit an action, even if this flag is omitted. Claim completion only when fresh local evidence shows the requested state."""
+Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. If a fresh image shows a page or app still loading, take one bounded visual observation before concluding it failed. Computer actions run without a confirmation prompt; use computer_ask_user only when the task lacks information needed to choose a target or action. After computer_ask_user, use the fresh observation returned with the answer, or observe if none was returned. Claim completion only when fresh local evidence shows the requested state."""
 
 
 def computer_tool_schemas() -> list[dict[str, Any]]:
     action_schema = {"type": "object", "additionalProperties": False, "properties": {
         "type": {"type": "string", "enum": ["click_element", "click", "double_click", "right_click", "scroll", "key", "type"],
                  "description": "One Dotool input grounded in the current observation. CUA does not dispatch input."},
-        "element_index": {"type": "integer", "description": "Current numbered control; Dotool clicks its mapped frame center."},
+        "element_index": {"type": "integer", "description": "Numbered control from a current scope=window result only; desktop labels have no click indices."},
         "x": {"type": "integer", "description": "Screenshot pixel x from the latest image-backed observation."},
         "y": {"type": "integer", "description": "Screenshot pixel y from the latest image-backed observation."},
         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
@@ -42,7 +42,7 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
     return [
         computer_task_schema(),
         {"type": "function", "name": "computer_observe", "description":
-         "Observe the user's live local desktop when a task needs it. Prefer active for a focused app: it binds CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds a read-only active-window accessibility summary when available; windows then window selects another named app. windows has no screenshot; image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After an unchanged app-launch shortcut, allow one bounded desktop observation before replanning.",
+         "Observe the user's live local desktop when a task needs it. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. windows then window selects another named app. windows has no screenshot; image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a still-loading page or unchanged app launch, allow one bounded visual observation before replanning.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "mode": {"type": "string", "enum": ["active", "windows", "window", "desktop"],
                       "description": "active observes the focused window with CUA when uniquely matched; windows lists targets; window uses exact pid/window_id; desktop captures the current screen."},
@@ -53,15 +53,13 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
                             "description": "Minimum age of the previous capture before taking this one; one capture only."},
          }, "required": ["mode"]}},
         {"type": "function", "name": "computer_act", "description":
-         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Mark consequential external actions for approval.",
+         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "observation_id": {"type": "string", "description": "ID from the latest computer_observe or computer_wait result; single use."},
              "action": action_schema,
              "actions": {"type": "array", "items": action_schema,
                          "description": "Predictable focus/edit sequence only, e.g. key ctrl+l, type a URL, key enter. At most one click, first; no scrolling or repeated typing."},
              "expected_result": {"type": "string", "description": "Visible result to check in the fresh observation; required with actions."},
-             "requires_confirmation": {"type": "boolean", "description": "Set true for sending, deleting, buying, publishing, or submitting. Oryn also prompts for clicks and committing keys when this is omitted."},
-             "confirmation_reason": {"type": "string", "description": "Concrete reason required when requires_confirmation is true."},
              "wait_for": {"type": "object", "description":
                           "One native predicate, for example {\"element\":{\"selector\":{\"role\":\"button\",\"label_contains\":\"Save\"},\"exists\":true}} or {\"window\":{\"exists\":false}}. Exact CUA window mode only."},
              "wait_timeout_ms": {"type": "integer", "minimum": 0, "maximum": 10000,
@@ -79,7 +77,7 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
              "image": {"type": "boolean", "description": "False returns an accessibility-only observation if the native predicate succeeds; failures still get a screenshot."},
          }, "required": ["observation_id", "expect"]}},
         {"type": "function", "name": "computer_ask_user", "description":
-         "Ask the user a concise clarification and continue the same computer turn with their answer.",
+         "Ask for missing task information only when it is needed to choose the next action; do not ask permission for computer input. Continue the same turn. When a current observation exists, return a fresh observation with the answer; use its new ID for input.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "question": {"type": "string"},
          }, "required": ["question"]}},
@@ -104,19 +102,16 @@ class ActionNotDispatched(RuntimeError):
 
 class ComputerSession:
     def __init__(
-        self, cancel_event: Event, confirm_action: Callable[[str], bool],
-        ask_user: Callable[[str], str | None], *, dry_run: bool = False, trace=None,
+        self, cancel_event: Event, ask_user: Callable[[str], str | None], *,
+        dry_run: bool = False, trace=None,
     ) -> None:
         self.cancel_event = cancel_event
-        self.confirm_action = confirm_action
         self.ask_user = ask_user
         self.dry_run = dry_run
         self.trace = trace
         self.driver = CuaDriver(trace) if computer_driver_name() == "cua" else HyprlandDriver(trace)
         self.cua = isinstance(self.driver, CuaDriver)
         self.current: dict[str, Any] | None = None
-        self.approved: tuple | None = None
-        self.approved_observation_id: str | None = None
         self.dry_run_used = False
 
     def close(self) -> None:
@@ -162,8 +157,6 @@ class ComputerSession:
         started = time.monotonic()
         self._check_cancel()
         self.current = None
-        self.approved = None
-        self.approved_observation_id = None
         if not self.cua:
             return ComputerResult("Dotool-only mode has no CUA window directory. Use computer_observe(mode=\"desktop\").")
         payload = {"on_screen_only": True}
@@ -256,21 +249,16 @@ class ComputerSession:
                              "value": str(row.get("value") or "")[:100]})
             if len(controls) == 60:
                 break
-        tree = str(state.get("tree_markdown") or "")
-        if page_start:
-            document = tree.casefold().find("document")
-            if document >= 0:
-                tree = tree[document:]
         return {
             "source": "cua_active_window", "pid": pid, "window_id": window_id,
             "window_title": str(state.get("window_title") or "")[:160],
-            "controls": controls, "tree_excerpt": tree[:1200],
+            "controls": controls, "actionable": False,
             "elements_complete": state.get("elements_complete"),
-            "note": "Read-only labels from the active window. Use mode=active for numbered controls.",
+            "note": "Read-only labels; no element_index is available here. Use mode=active for numbered controls.",
         }
 
     def _desktop(self, *, cause: dict[str, str] | None = None,
-                 with_accessibility: bool = True) -> ComputerResult:
+                 with_accessibility: bool = True, retry_focus: bool = True) -> ComputerResult:
         started = time.monotonic()
         self._check_cancel()
         before = self.driver.active_window_stamp()
@@ -304,9 +292,13 @@ class ComputerSession:
             size, capture_id = (image["width"], image["height"]), None
         stamp = self.driver.active_window_stamp()
         if stamp != before:
+            if retry_focus:
+                return self._desktop(cause=cause, with_accessibility=with_accessibility, retry_focus=False)
             raise RuntimeError("The active window changed while the desktop image was captured. Observe again.")
         active = self.driver._active_window_data()
         if active.get("address") != stamp[0]:
+            if retry_focus:
+                return self._desktop(cause=cause, with_accessibility=with_accessibility, retry_focus=False)
             raise RuntimeError("The active window changed after the desktop image was captured. Observe again.")
         pid = active.get("pid") if type(active.get("pid")) is int else None
         accessibility = self._active_accessibility(stamp) if self.cua and with_accessibility else None
@@ -392,6 +384,17 @@ class ComputerSession:
             if isinstance(row, dict) and type(row.get("element_index")) is int
             and isinstance(row.get("element_token"), str)
         }
+        ordered_elements = list(elements.items())
+        document_at = next((position for position, (_, row) in enumerate(ordered_elements)
+                            if "document" in str(row.get("role") or "").casefold()), None)
+        if document_at is not None:
+            # shortcut: the document boundary is a heuristic; use pixels if page controls remain omitted.
+            ordered_elements = ordered_elements[document_at:] + ordered_elements[:document_at]
+        tree = str(state.get("tree_markdown") or "")
+        if document_at is not None:
+            document_text = tree.casefold().find("document")
+            if document_text >= 0:
+                tree = tree[document_text:]
         size = (image["width"], image["height"]) if image else None
         snapshot = self._new_snapshot(
             mode="window", pid=pid, window_id=window_id, bounds=bounds,
@@ -410,7 +413,7 @@ class ComputerSession:
                              total_element_count=state.get("total_element_count"),
                              elements_complete=state.get("elements_complete"), cause=cause)
         controls = []
-        for index, row in elements.items():
+        for index, row in ordered_elements:
             if len(controls) >= 60:
                 break
             actions = row.get("actions")
@@ -433,7 +436,7 @@ class ComputerSession:
             "screenshot_error": screenshot_error, "elements_complete": state.get("elements_complete"),
             "total_element_count": state.get("total_element_count"),
             "controls": controls,
-            "tree_excerpt": str(state.get("tree_markdown") or "")[:1200],
+            "tree_excerpt": tree[:1200],
             "note": "Control indices and image coordinates belong only to this observation_id.",
         }, ensure_ascii=False)
         snapshot["elements"] = {item["index"]: elements[item["index"]] for item in controls}
@@ -445,7 +448,7 @@ class ComputerSession:
             self.trace.write(
                 "computer_observation_detail", observation_id=snapshot["id"],
                 model_controls=controls, mapping_frames=mapping_frames,
-                tree_excerpt=str(state.get("tree_markdown") or "")[:1200],
+                tree_excerpt=tree[:1200],
                 model_control_count=len(controls),
                 model_controls_omitted_count=max(0, len(elements) - len(controls)),
                 elapsed_ms=round((time.monotonic() - started) * 1000),
@@ -546,6 +549,13 @@ class ComputerSession:
     def _fresh_after(self, snapshot: dict, image_requested: bool, cause: dict[str, str]) -> tuple[ComputerResult, str | None]:
         if snapshot["mode"] == "desktop":
             return self._desktop(cause=cause), None
+        if cause["kind"] == "action":
+            try:
+                active_pid = self.driver._active_window_data().get("pid")
+            except RuntimeError:
+                active_pid = snapshot["pid"]
+            if active_pid != snapshot["pid"]:
+                return self._desktop(cause=cause), None
         try:
             return self._window(snapshot["pid"], snapshot["window_id"], image_requested, cause=cause), None
         except (RuntimeError, ValueError) as exc:
@@ -626,7 +636,9 @@ class ComputerSession:
         if not isinstance(name, str) or name not in fields or set(value) != fields[name]:
             raise ValueError("Unsupported or incomplete computer action.")
         if name == "click_element":
-            if (snapshot["mode"] != "window" or type(value["element_index"]) is not int
+            if snapshot["mode"] != "window":
+                raise ValueError("click_element needs a scope=window result with numbered controls; desktop labels are read-only. Observe the active or exact window, or use screenshot coordinates.")
+            if (type(value["element_index"]) is not int
                     or value["element_index"] not in snapshot["elements"]):
                 raise ValueError("Control index is absent from this exact window observation.")
         elif name in {"click", "double_click", "right_click", "scroll"}:
@@ -671,38 +683,6 @@ class ComputerSession:
                        for action in actions[:-1])):
             raise ValueError("A sequence needs one single-line type step, keys, and at most one opening click; enter must be last. Observe between other inputs.")
         return actions
-
-    @staticmethod
-    def _policy_confirmation_reason(actions: list[dict]) -> str:
-        # shortcut: arbitrary apps can attach side effects to any input; gate ambiguous clicks and keys until app intent is independently available.
-        safe_keys = {
-            "leftmeta", "super+w", "ctrl+l", "ctrl+f", "ctrl+a", "ctrl+c",
-            "tab", "shift+tab", "escape", "esc", "up", "down", "left", "right",
-            "pageup", "pagedown", "home", "end", "alt+tab", "ctrl+tab", "ctrl+shift+tab",
-        }
-        for action in actions:
-            kind = action["type"]
-            if kind in {"click_element", "click", "double_click", "right_click"}:
-                return "A click can activate a control or submit a change; inspect this target before approving."
-            if kind == "key" and action["key"].casefold() not in safe_keys:
-                return "This key can submit or change content; inspect the target before approving."
-            if kind == "type" and any(char in action["text"] for char in "\r\n"):
-                return "Typed line breaks can submit or execute content; inspect the target before approving."
-        return ""
-
-    @staticmethod
-    def _identity(snapshot: dict, action: dict) -> tuple:
-        row = snapshot["elements"].get(action.get("element_index")) if action["type"] == "click_element" else None
-        bounds = snapshot.get("bounds")
-        geometry = tuple(bounds.get(key) for key in ("x", "y", "width", "height")) if isinstance(bounds, dict) else None
-        target = (snapshot.get("mode"), snapshot.get("pid"), snapshot.get("window_id"), geometry,
-                  snapshot.get("image_scope"), snapshot.get("size"),
-                  snapshot.get("stamp") if snapshot.get("mode") == "desktop" else None)
-        if row is not None:
-            frame = row.get("screenshot_frame") or row.get("frame")
-            frame_key = json.dumps(frame, sort_keys=True) if isinstance(frame, dict) else None
-            return target + ("click_element", row.get("role"), row.get("label"), row.get("value"), frame_key)
-        return target + (json.dumps(action, ensure_ascii=False, sort_keys=True),)
 
     def _check_desktop_stamp(self, snapshot: dict, route: str) -> None:
         try:
@@ -751,14 +731,11 @@ class ComputerSession:
             return
         self._focus_exact_window(snapshot["pid"], snapshot.get("bounds"))
 
-    def _focus_exact_window(self, pid: int | None, bounds: dict | None, *,
-                            address: str | None = None) -> None:
+    def _focus_exact_window(self, pid: int | None, bounds: dict | None) -> None:
         if not isinstance(bounds, dict):
             raise RuntimeError("No usable target window bounds for safe focus.")
-        if pid is None and address is None:
+        if pid is None:
             raise RuntimeError("The target has no window identity for safe focus.")
-        if address is not None and not re.fullmatch(r"0x[0-9a-fA-F]+", address):
-            raise RuntimeError("The approved desktop target has an invalid window address.")
         try:
             result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, check=True, timeout=5)
             clients = json.loads(result.stdout)
@@ -768,9 +745,7 @@ class ComputerSession:
         for client in clients if isinstance(clients, list) else []:
             if not isinstance(client, dict):
                 continue
-            if address is not None and client.get("address") != address:
-                continue
-            if pid is not None and client.get("pid") != pid:
+            if client.get("pid") != pid:
                 continue
             at, size = client.get("at"), client.get("size")
             if not (isinstance(at, list) and isinstance(size, list) and len(at) == len(size) == 2):
@@ -975,7 +950,7 @@ class ComputerSession:
 
     def act(self, args: dict[str, Any]) -> ComputerResult:
         if not isinstance(args, dict) or set(args) - {
-            "observation_id", "action", "actions", "expected_result", "requires_confirmation", "confirmation_reason",
+            "observation_id", "action", "actions", "expected_result",
             "wait_for", "wait_timeout_ms", "image",
         }:
             raise ValueError("Invalid computer_act arguments.")
@@ -986,17 +961,6 @@ class ComputerSession:
             raise ValueError("expected_result must be at most 300 characters.")
         if len(actions) > 1 and not expected_result.strip():
             raise ValueError("A sequence needs a concrete expected_result to check in the fresh observation.")
-        model_approval = args.get("requires_confirmation", False)
-        reason = args.get("confirmation_reason", "")
-        if type(model_approval) is not bool or not isinstance(reason, str) or len(reason) > 500:
-            raise ValueError("Invalid confirmation fields.")
-        if model_approval and not reason.strip():
-            raise ValueError("A confirmed action needs a concrete reason.")
-        if not model_approval and reason:
-            raise ValueError("confirmation_reason requires requires_confirmation=true.")
-        policy_reason = self._policy_confirmation_reason(actions)
-        approval = model_approval or bool(policy_reason)
-        reason = reason or policy_reason
         wait_for = args.get("wait_for")
         wait_ms = args.get("wait_timeout_ms", 5000)
         image_requested = args.get("image", True)
@@ -1010,70 +974,12 @@ class ComputerSession:
                 raise ValueError("wait_for needs an exact CUA window observation.")
             if type(wait_ms) is not int or not 0 <= wait_ms <= 10000:
                 raise ValueError("wait_timeout_ms must be 0–10000.")
-        identity = tuple(self._identity(snapshot, action) for action in actions)
         if self.dry_run:
             snapshot["used"] = True
             self.dry_run_used = True
             proposed = actions[0] if len(actions) == 1 else actions
             return ComputerResult("Dry run: no input sent. Proposed action: " + json.dumps(proposed, ensure_ascii=False))
-        if self.approved is not None:
-            if self.approved == identity and self.approved_observation_id != snapshot["id"]:
-                self.approved = None
-                self.approved_observation_id = None
-                if not approval:
-                    raise ValueError("The prior approval expired after another observation. Request approval again.")
-            elif self.approved != identity:
-                self.approved = None
-                self.approved_observation_id = None
-        if approval and self.approved != identity:
-            reviewed_actions = []
-            for action in actions:
-                reviewed = {"action": action}
-                if action["type"] == "click_element":
-                    row = snapshot["elements"][action["element_index"]]
-                    reviewed["control"] = {
-                        "role": row.get("role"), "label": str(row.get("label") or "")[:100],
-                        "value": str(row.get("value") or "")[:100],
-                    }
-                reviewed_actions.append(reviewed)
-            preview = json.dumps({"reason": reason, "target": {
-                "mode": snapshot["mode"], "pid": snapshot.get("pid"),
-                "window_id": snapshot.get("window_id"), "bounds": snapshot.get("bounds"),
-                "image_scope": snapshot.get("image_scope"), "image_size": snapshot.get("size"),
-                "active_window_stamp": snapshot.get("stamp") if snapshot["mode"] == "desktop" else None,
-            }, "actions": reviewed_actions}, ensure_ascii=False, indent=2)
-            if not self.confirm_action(preview):
-                snapshot["used"] = True
-                self.approved = None
-                self.approved_observation_id = None
-                return ComputerResult("The user denied this desktop action. No input was sent.")
-            self.approved = identity
-            snapshot["used"] = True
-            # The approval dialog can change focus and GUI state. Re-observe before input.
-            try:
-                if snapshot["mode"] == "desktop" and snapshot["stamp"][0] is not None:
-                    stamp = snapshot["stamp"]
-                    bounds = dict(zip(("x", "y", "width", "height"), (*stamp[2], *stamp[3])))
-                    self._focus_exact_window(snapshot.get("pid"), bounds, address=stamp[0])
-                observation = (self._window(snapshot["pid"], snapshot["window_id"], True)
-                               if snapshot["mode"] == "window" else self._desktop())
-            except (RuntimeError, ValueError):
-                self.approved = None
-                self.approved_observation_id = None
-                raise
-            if snapshot["mode"] == "desktop" and self.current["stamp"] != snapshot["stamp"]:
-                self.approved = None
-                self.approved_observation_id = None
-                prefix = "Approved, but the desktop target changed during approval. No input was sent. Observe and choose a current target.\n"
-                return ComputerResult(prefix + observation.text, observation.images,
-                                      prefix + (observation.history_text or observation.text))
-            self.approved_observation_id = self.current["id"]
-            prefix = "Approved, but no input sent yet. Recheck the fresh observation and reissue the same action or sequence with its new observation_id.\n"
-            return ComputerResult(prefix + observation.text, observation.images,
-                                  prefix + (observation.history_text or observation.text))
         snapshot["used"] = True
-        self.approved = None
-        self.approved_observation_id = None
         action_id = uuid.uuid4().hex[:12]
         trace_context = {"action_id": action_id, "observation_id": snapshot["id"]}
         if self.trace:
@@ -1179,11 +1085,24 @@ class ComputerSession:
         self._check_cancel()
         answer = self.ask_user(question)
         self._check_cancel()
+        previous = self.current
         self.current = None
-        self.approved = None
-        self.approved_observation_id = None
-        return ComputerResult(json.dumps({"answer": answer, "answered": answer is not None,
-                                          "next": "Observe again before desktop input."}, ensure_ascii=False))
+        result = {"answer": answer, "answered": answer is not None}
+        if answer is not None and previous is not None:
+            try:
+                observation, fallback = self._fresh_after(previous, True, {"kind": "clarification"})
+            except (RuntimeError, ValueError) as exc:
+                result.update(observation_error=str(exc), next="Observe again before desktop input.")
+            else:
+                result["next"] = "Use the fresh observation_id below for any desktop input."
+                if fallback:
+                    result["window_observation_error"] = fallback
+                prefix = json.dumps(result, ensure_ascii=False) + "\n"
+                return ComputerResult(prefix + observation.text, observation.images,
+                                      prefix + (observation.history_text or observation.text))
+        else:
+            result["next"] = "Observe again before desktop input."
+        return ComputerResult(json.dumps(result, ensure_ascii=False))
 
     def execute(self, name: str, args: dict[str, Any]) -> ComputerResult:
         if self.dry_run_used and name != "computer_ask_user":
