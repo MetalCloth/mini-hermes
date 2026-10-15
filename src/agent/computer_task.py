@@ -14,7 +14,8 @@ def computer_task_schema() -> dict[str, Any]:
             "tool results; finish only after checking the result. This stores the model's record, "
             "not an automatic success verdict. The environment binds remote browser versus "
             "local desktop tools for this turn. mixed requires route_reason; record an upgrade "
-            "to mixed to keep existing progress."
+            "to mixed to keep existing progress. Fields belonging to another operation and empty "
+            "record placeholders are ignored."
         ),
         "parameters": {"type": "object", "additionalProperties": False, "properties": {
             "operation": {"type": "string", "enum": ["start", "record", "finish"]},
@@ -79,14 +80,28 @@ class ComputerTaskLedger:
         if not isinstance(args, dict) or args.get("operation") not in ("start", "record", "finish"):
             raise ValueError("computer_task needs operation=start, record, or finish.")
         operation = args["operation"]
-        allowed = {
+        fields = {
             "start": {"operation", "goal", "constraints", "done_checks", "steps", "environment", "route_reason"},
             "record": {"operation", "step_index", "step_status", "check_index", "check_status",
                        "evidence", "fact", "source", "next_step", "environment", "route_reason"},
             "finish": {"operation", "result", "evidence"},
-        }[operation]
-        if set(args) - allowed:
+        }
+        if set(args) - set().union(*fields.values()):
             raise ValueError(f"Unexpected fields for computer_task {operation}.")
+        args = {key: value for key, value in args.items() if key in fields[operation]}
+        if operation == "record":
+            # The flat provider schema may fill optional fields that do not describe this update.
+            for key in ("evidence", "fact", "source", "next_step", "route_reason"):
+                if args.get(key) == "":
+                    args.pop(key)
+            for index, status, neutral in (("step_index", "step_status", "working"),
+                                           ("check_index", "check_status", "pending")):
+                if args.get(index) == 0:
+                    args.pop(index)
+                if index not in args and args.get(status) == neutral:
+                    args.pop(status)
+            if args.get("environment") in ("local_desktop", "remote_browser"):
+                args.pop("environment")
         if operation == "start":
             environment = args.get("environment")
             if environment not in ("local_desktop", "remote_browser", "mixed"):
