@@ -30,7 +30,9 @@ other IDs connect the parts that are easy to lose when reading a flat log:
 | `cause` | A returned observation to the action or wait that led to it |
 
 For a numbered-control click, the local trace records the control index, role, label, frame,
-requested screenshot point when applicable, and the mapped monitor point. A `focus_window` action
+requested screenshot point when applicable, and the mapped monitor point. A desktop zoom
+records its source observation, overview region, native monitor frame, and crop dimensions.
+A `focus_window` action
 records the selected window index, Hyprland outcome, and following observation. For other actions,
 it records the requested input, the dotool command/result, elapsed time, and whether the next
 observation included a screenshot. A focus/edit sequence shares one `action_id`; each attempted
@@ -59,15 +61,23 @@ needed.
 
 ## Local privacy boundary
 
-The launcher creates each JSONL file with mode `0600`. It stores no screenshot pixels.
+The launcher creates each JSONL file with mode `0600`. By default it stores no screenshot pixels.
 However, local records can contain task text, tool arguments/results, typed text, window
 titles, accessibility labels and values, and a short accessibility-tree excerpt. Treat the
 file as private; remove it when it is no longer useful. Voice traces also contain microphone
 device and host API names, which may identify hardware attached to the local machine.
 
-The logging captures what Oryn can serialize about an observation. It does not preserve the
-actual screenshot image, so it cannot later reproduce exactly what the vision model saw.
-The trace does record screenshot dimensions, image scope, and whether an image was attached.
+The logging captures what Oryn can serialize about an observation. Its default trace cannot
+reproduce exactly what the vision model saw. It records screenshot dimensions, image scope,
+and whether an image was attached. For click diagnosis, start with
+`./scripts/computer-log.sh run --images`: each coordinate click saves the original pre-action
+image with the requested point marked in a sibling `*-images/` directory. That directory is
+mode `0700` and its JPEG files are mode `0600`. The trace links each marked image to its
+action. It also attempts a post-input Hyprland cursor readback and records the offset from
+the requested point in logical desktop pixels. A window manager or app may move the cursor
+after the click, so this readback helps diagnose pointer placement but is not proof of where
+the click was delivered. The images can show private desktop content; remove the directory
+with the trace when it is no longer needed.
 
 ## Optional LangSmith export
 
@@ -89,7 +99,7 @@ is best-effort: a missing SDK, bad key, or network failure is recorded in the lo
 the local log continues. The background upload may not finish if the process is terminated
 immediately after a task.
 
-The remote trace excludes screenshot pixels, task and prompt text, final answer text, typed
+The remote trace excludes screenshot pixels and local marked-image paths, task and prompt text, final answer text, typed
 text, full tool arguments/results, window titles, and full accessibility-tree excerpts. It
 does retain timings, event names, IDs, action/target metadata, and control labels/frames.
 Selection values for choice-like controls can also be present because they help diagnose
@@ -101,7 +111,8 @@ needed for local desktop tools to run.
 
 ## Limits
 
-- A screenshot is represented by metadata only, not an image artifact.
+- A screenshot is represented by metadata only unless local `run --images` was selected;
+  that mode saves marked pre-click images, not every observation or the post-action image.
 - Model reasoning is not logged. Tool calls and observable effects are logged, which is enough
   to connect choices to execution without storing hidden reasoning.
 - Local tool outputs are bounded previews. Check `result_chars` and `result_truncated` before

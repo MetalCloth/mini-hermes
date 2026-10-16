@@ -18,7 +18,7 @@ and native checks are unavailable.
 | `computer_wait` | Wait for one supported CUA condition in an exact window, then return a fresh observation. |
 | `computer_ask_user` | Ask for a clarification during the same turn; refresh the current observation with the answer when possible. |
 
-## Four ways to observe
+## Ways to observe
 
 | Model call | Desktop read | What the model receives |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ and native checks are unavailable.
 | `computer_observe({"mode":"active"})` | Match the focused Hyprland window with `list_windows`, then `get_window_state` | That window's screenshot and bounded accessibility controls/tree when a unique match exists. Otherwise a desktop screenshot. |
 | `computer_observe({"mode":"window","pid":4321,"window_id":71})` | `get_window_state` | The specified window's bounded controls/tree and a screenshot when available. On Wayland, Oryn may fall back to a desktop screenshot while keeping the exact window's tree. |
 | `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot, plus read-only labels from the active window when CUA can safely match it. These labels have no actionable indices; use `mode="active"` for `click_element`. |
+| `computer_observe({"mode":"desktop","observation_id":"obs-a","region":{"x":400,"y":150,"width":300,"height":250}})` | One native-resolution desktop capture, cropped to a region of the latest full desktop image | One zoomed image with a new ID. The region uses `obs-a` pixels; a click from the crop uses crop-local pixels and maps back to the monitor. A crop click returns a fresh full desktop image. |
 
 `start_session` and `end_session` prepare and close CUA; they are not screen reads.
 The accessibility tree is what an app exposes to the desktop, not a direct browser DOM feed.
@@ -35,6 +36,9 @@ controls come before browser chrome in that bounded list.
 `mode="windows"` has no image but supplies an `observation_id` for `focus_window`;
 `mode="desktop"` always has an image. `image=false` can skip an
 exact-window screenshot, but an active-mode fallback can still return a desktop image.
+The full desktop overview is capped at a 1,200-pixel long edge. Zooming is optional for
+small or uncertain visual targets; the crop's native long edge must be at most 1,200 pixels.
+Each result says `image_scope` so the model can distinguish a full desktop image from a crop.
 
 ### What `verify_state` checks
 
@@ -121,5 +125,6 @@ and can carry an unfinished goal and progress into a later turn. Observation IDs
 indices cannot be reused in that later turn: Oryn must observe again.
 
 The optional JSONL diagnostic trace links calls, actions, and observations, but stores image
-metadata rather than screenshot pixels. For implementation details, see
+metadata rather than screenshot pixels by default. `computer-log.sh run --images` saves private
+pre-click images with the requested point marked; see
 [the main-loop decision record](21-cua-main-loop.md) and [computer tracing](22-computer-tracing.md).

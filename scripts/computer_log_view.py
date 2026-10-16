@@ -230,10 +230,22 @@ def format_record(record: dict) -> str:
             point = record.get("requested_point") or {}
             target_text = f"image point ({point.get('x', '?')}, {point.get('y', '?')})"
         mapped = record.get("mapped_monitor_point", {})
-        return (
+        summary = (
             f"{stamp}  TARGET · {target_text} · mapped monitor point "
             f"({mapped.get('x', '?')}, {mapped.get('y', '?')}) · "
             f"action {record.get('action_id', '?')}"
+        )
+        marked_image_path = record.get("marked_image_path")
+        return summary + (f"\n  Marked image: {marked_image_path}" if marked_image_path else "")
+    if event == "computer_cursor_readback":
+        if record.get("status") == "unavailable":
+            return f"{stamp}  POINTER · position unavailable · action {record.get('action_id', '?')}"
+        actual = record.get("post_input_cursor_logical") or {}
+        offset = record.get("offset_logical") or {}
+        return (
+            f"{stamp}  POINTER · after input ({actual.get('x', '?')}, {actual.get('y', '?')})"
+            f" · offset ({offset.get('x', '?')}, {offset.get('y', '?')}) logical px"
+            f" · action {record.get('action_id', '?')}"
         )
     if event == "computer_action_result":
         outcome = record.get("outcome", {})

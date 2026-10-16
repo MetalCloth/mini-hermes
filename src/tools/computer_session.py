@@ -23,7 +23,7 @@ COMPUTER_INSTRUCTIONS = """computer_observe, computer_act, and computer_wait use
 
 Use computer_task for multiple independent outcomes, work across apps, or a long task likely to need resuming. Opening one file, changing one setting, or sending one message is one outcome even if it takes several UI actions: skip the task record. If you start one, keep steps and done checks minimal. Request the start and first observation in one model response. Record only progress supported by tool results you have already received; use one record call with updates for several step/check changes, with evidence inside each update. When the next input is already clear, put that record call before computer_act in the same model response. After final evidence, put record then finish in the same response. If a relevant saved task already exists, update its observed steps and checks together, then finish it. If a record call fails, change the fields named by the error rather than repeating the same call. Do not spend a separate model round only marking a step working. The ledger is memory, not automatic verification. An unfinished saved task keeps its route on the next turn; start a new task before UI input if the user has requested a different task. The declared environment keeps local desktop and remote Firecrawl browser actions separate unless the task explicitly needs both. Do not switch to a mixed environment merely to bypass a route error.
 
-Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly; do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
+Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. For a small or uncertain desktop target, zoom a region of the latest full desktop image with computer_observe(mode=desktop, observation_id=..., region={x,y,width,height}); the returned image has its own local click coordinates. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly; do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. After a missed visual click, inspect the fresh image and zoom or choose another visible route before guessing nearby coordinates again. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
 
 Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. If a fresh image shows a page or app still loading, take one bounded visual observation before concluding it failed. Computer actions run without a confirmation prompt; use computer_ask_user only when the task lacks information needed to choose a target or action. After computer_ask_user, use the fresh observation returned with the answer, or observe if none was returned. Claim completion only when fresh local evidence shows the requested state."""
 
@@ -34,8 +34,8 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
                  "description": "Focus one listed Hyprland window or send one Dotool input grounded in the current observation. CUA does not dispatch input."},
         "window_index": {"type": "integer", "description": "Window index from the latest mode=windows list; focus_window only."},
         "element_index": {"type": "integer", "description": "Numbered control from a current scope=window result only; desktop labels have no click indices."},
-        "x": {"type": "integer", "description": "Screenshot pixel x from the latest image-backed observation."},
-        "y": {"type": "integer", "description": "Screenshot pixel y from the latest image-backed observation."},
+        "x": {"type": "integer", "description": "Pixel x in the latest attached image; local to a desktop zoom crop when image_scope is desktop_region."},
+        "y": {"type": "integer", "description": "Pixel y in the latest attached image; local to a desktop zoom crop when image_scope is desktop_region."},
         "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
         "key": {"type": "string", "description": "Use super+w for a modifier chord and leftmeta only as a standalone Super tap; never use leftmeta+w."},
         "text": {"type": "string"},
@@ -43,7 +43,7 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
     return [
         computer_task_schema(),
         {"type": "function", "name": "computer_observe", "description":
-         "Observe the user's live local desktop when a task needs it. computer_act already returns a fresh observation: use it directly unless the UI is loading, the result lacks the needed image/scope, or the next input is ambiguous. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. windows lists Hyprland windows by workspace and gives one-use indices for focus_window; it has no screenshot. A uniquely matched pid/window_id can be read with window. image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a still-loading page or unchanged app launch, allow one bounded visual observation before replanning.",
+         "Observe the user's live local desktop when a task needs it. computer_act already returns a fresh observation: use it directly unless the UI is loading, the result lacks the needed image/scope, or the next input is ambiguous. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. For a small or uncertain target in a full desktop image, pass that latest observation_id and region={x,y,width,height} in its image pixels to get one full-resolution crop; clicks from the crop use crop-local x/y and map to the desktop. windows lists Hyprland windows by workspace and gives one-use indices for focus_window; it has no screenshot. A uniquely matched pid/window_id can be read with window. image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a missed visual click, inspect the fresh result and zoom or change route instead of clicking nearby at a guess.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "mode": {"type": "string", "enum": ["active", "windows", "window", "desktop"],
                       "description": "active observes the focused window with CUA when uniquely matched; windows lists Hyprland workspaces and windows; window uses exact CUA pid/window_id; desktop captures the current screen."},
@@ -52,6 +52,12 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
              "image": {"type": "boolean", "description": "Active/window modes only. False requests an accessibility-only observation when available."},
              "min_age_ms": {"type": "integer", "minimum": 0, "maximum": 10000,
                             "description": "Minimum age of the previous capture before taking this one; one capture only."},
+             "observation_id": {"type": "string", "description": "Required with region: the latest full desktop observation ID."},
+             "region": {"type": "object", "additionalProperties": False, "properties": {
+                 "x": {"type": "integer"}, "y": {"type": "integer"},
+                 "width": {"type": "integer"}, "height": {"type": "integer"},
+             }, "required": ["x", "y", "width", "height"],
+                 "description": "Desktop mode only: rectangle in the latest full desktop screenshot's pixels. Returns one native-resolution crop; click x/y in the crop image."},
          }, "required": ["mode"]}},
         {"type": "function", "name": "computer_act", "description":
          "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. focus_window uses a window_index from a mode=windows observation, checks the selected Hyprland window, focuses it, and returns a fresh image and CUA tree when available; it cannot be chained. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
@@ -141,12 +147,17 @@ class ComputerSession:
         self._check_cancel()
 
     @staticmethod
-    def _image(data: bytes, *, max_dimension: int | None = None) -> dict[str, Any]:
+    def _image(data: bytes, *, max_dimension: int | None = None,
+               crop: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
         # CUA already scales its captures; do not resize one bound by capture_id.
         with Image.open(io.BytesIO(data)) as source:
             output = io.BytesIO()
             picture = source.convert("RGB")
             try:
+                if crop is not None:
+                    cropped = picture.crop(crop)
+                    picture.close()
+                    picture = cropped
                 if max_dimension and max(picture.size) > max_dimension:
                     picture.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
                 picture.save(output, format="JPEG", quality=88)
@@ -335,16 +346,20 @@ class ComputerSession:
         }
 
     def _desktop(self, *, cause: dict[str, str] | None = None,
-                 with_accessibility: bool = True, retry_focus: bool = True) -> ComputerResult:
+                 with_accessibility: bool = True, retry_focus: bool = True,
+                 zoom: dict[str, Any] | None = None) -> ComputerResult:
         started = time.monotonic()
         self._check_cancel()
         before = self.driver.active_window_stamp()
+        if zoom is not None and before != zoom["stamp"]:
+            raise ValueError("The desktop focus changed since the overview. Observe the full desktop again before zooming.")
         if self.cua:
             self.driver._counter += 1
             path = self.driver.socket.parent / f"observation-{self.driver._counter}.png"
             try:
                 state = self._cua_call("get_desktop_state", {
-                    "max_image_dimension": 1200, "screenshot_out_file": str(path),
+                    "max_image_dimension": 0 if zoom is not None else 1200,
+                    "screenshot_out_file": str(path),
                 })
                 original_size = (
                     state.get("screenshot_original_width", state.get("screenshot_width")),
@@ -352,12 +367,15 @@ class ComputerSession:
                 )
                 if original_size != (self.driver.width, self.driver.height):
                     raise RuntimeError("The desktop layout changed since CUA started. Stop and start a new computer turn.")
+                if zoom is not None and (state.get("screenshot_width"), state.get("screenshot_height")) != original_size:
+                    raise RuntimeError("CUA did not return a native-resolution desktop image for zoom.")
                 if not path.is_file():
                     raise RuntimeError("CUA returned no desktop image.")
-                image = self._image(path.read_bytes())
-                if (image["width"], image["height"]) != (
-                    state.get("screenshot_width"), state.get("screenshot_height")
-                ):
+                image = self._image(path.read_bytes(), crop=zoom["box"] if zoom else None)
+                expected_size = ((zoom["box"][2] - zoom["box"][0],
+                                  zoom["box"][3] - zoom["box"][1]) if zoom else
+                                 (state.get("screenshot_width"), state.get("screenshot_height")))
+                if (image["width"], image["height"]) != expected_size:
                     raise RuntimeError("CUA desktop image dimensions do not match its coordinate frame.")
             finally:
                 path.unlink(missing_ok=True)
@@ -365,24 +383,37 @@ class ComputerSession:
             capture_id = state.get("capture_id")
         else:
             data, _ = self.driver.screenshot()
-            image = self._image(data, max_dimension=1200)
+            image = self._image(data, max_dimension=None if zoom else 1200,
+                                crop=zoom["box"] if zoom else None)
             size, capture_id = (image["width"], image["height"]), None
         stamp = self.driver.active_window_stamp()
         if stamp != before:
+            if zoom is not None:
+                raise ValueError("The desktop focus changed during zoom. Observe the full desktop again.")
             if retry_focus:
                 return self._desktop(cause=cause, with_accessibility=with_accessibility, retry_focus=False)
             raise RuntimeError("The active window changed while the desktop image was captured. Observe again.")
         active = self.driver._active_window_data()
         if active.get("address") != stamp[0]:
+            if zoom is not None:
+                raise ValueError("The desktop focus changed during zoom. Observe the full desktop again.")
             if retry_focus:
                 return self._desktop(cause=cause, with_accessibility=with_accessibility, retry_focus=False)
             raise RuntimeError("The active window changed after the desktop image was captured. Observe again.")
         pid = active.get("pid") if type(active.get("pid")) is int else None
-        accessibility = self._active_accessibility(stamp) if self.cua and with_accessibility else None
-        snapshot = self._new_snapshot(mode="desktop", image_scope="desktop", size=size,
-                                      capture_id=capture_id, stamp=stamp, pid=pid, elements={})
+        accessibility = self._active_accessibility(stamp) if self.cua and with_accessibility and zoom is None else None
+        image_scope = "desktop_region" if zoom else "desktop"
+        frame = ({"x": zoom["box"][0], "y": zoom["box"][1],
+                  "width": size[0], "height": size[1]} if zoom else None)
+        snapshot = self._new_snapshot(mode="desktop", image_scope=image_scope, size=size,
+                                      capture_id=capture_id, stamp=stamp, pid=pid, elements={},
+                                      region_native=frame,
+                                      trace_image=image if self.trace and self.trace.capture_images else None)
         if self.trace:
             self.trace.write("computer_observation", scope="desktop", observation_id=snapshot["id"],
+                             image_scope=image_scope, source_observation_id=zoom["source_id"] if zoom else None,
+                             source_region=zoom["source_region"] if zoom else None,
+                             region_on_monitor=frame,
                              width=size[0], height=size[1], image_bytes=image["size_bytes"],
                              screenshot_included=True, active_window_stamp=stamp,
                              active_window_pid=pid,
@@ -393,13 +424,19 @@ class ComputerSession:
                              elapsed_ms=round((time.monotonic() - started) * 1000))
         return ComputerResult(json.dumps({
             "observation_id": snapshot["id"], "scope": "desktop", "image_size": size,
+            "image_scope": image_scope,
+            **({"source_observation_id": zoom["source_id"],
+                "source_region": zoom["source_region"], "region_on_monitor": frame} if zoom else {}),
             "active_window_stamp": stamp, "active_window_pid": pid,
             "screenshot_included": True,
             "active_accessibility_available": accessibility is not None,
             **({"active_window_accessibility": accessibility} if accessibility else {}),
-            "note": "Coordinates refer to this image only.",
+            "note": "Click coordinates refer to this cropped image only; Oryn maps them to the desktop." if zoom else "Coordinates refer to this image only.",
         }, ensure_ascii=False), [image], json.dumps({
             "observation_id": snapshot["id"], "scope": "desktop", "screenshot_included": True,
+            "image_scope": image_scope,
+            **({"source_observation_id": zoom["source_id"],
+                "source_region": zoom["source_region"]} if zoom else {}),
             "active_accessibility": accessibility is not None,
             "active_control_count": len(accessibility["controls"]) if accessibility else 0,
         }))
@@ -477,6 +514,7 @@ class ComputerSession:
             mode="window", pid=pid, window_id=window_id, bounds=bounds,
             image_scope=image_scope, size=size, capture_id=capture_id,
             elements=elements, stamp=self.driver.active_window_stamp(),
+            trace_image=image if self.trace and self.trace.capture_images else None,
         )
         if self.trace:
             self.trace.write("computer_observation", scope="window", observation_id=snapshot["id"],
@@ -553,17 +591,42 @@ class ComputerSession:
         # The desktop image is safe to show; an ambiguous CUA ID is not safe to act on.
         return self._desktop(cause=cause, with_accessibility=False)
 
+    def _desktop_zoom(self, observation_id: Any, region: Any) -> ComputerResult:
+        source = self._require_snapshot(observation_id)
+        if source["mode"] != "desktop" or source["image_scope"] != "desktop":
+            raise ValueError("Zoom needs the latest full desktop observation_id; observe the full desktop first.")
+        if (not isinstance(region, dict) or set(region) != {"x", "y", "width", "height"}
+                or any(type(region[key]) is not int for key in region)):
+            raise ValueError("region needs integer x, y, width, height from the latest full desktop image.")
+        x, y, width, height = (region[key] for key in ("x", "y", "width", "height"))
+        source_width, source_height = source["size"]
+        if (x < 0 or y < 0 or width <= 0 or height <= 0
+                or x + width > source_width or y + height > source_height):
+            raise ValueError("region must fit inside the latest full desktop image.")
+        box = (round(x * self.driver.width / source_width),
+               round(y * self.driver.height / source_height),
+               round((x + width) * self.driver.width / source_width),
+               round((y + height) * self.driver.height / source_height))
+        if max(box[2] - box[0], box[3] - box[1]) > 1200:
+            raise ValueError("Zoom region is too large for a full-resolution crop; choose a smaller rectangle.")
+        return self._desktop(with_accessibility=False, zoom={
+            "source_id": source["id"], "stamp": source["stamp"],
+            "source_region": region, "box": box,
+        })
+
     def observe(self, args: dict[str, Any]) -> ComputerResult:
-        if not isinstance(args, dict) or set(args) - {"mode", "pid", "window_id", "image", "min_age_ms"}:
+        if not isinstance(args, dict) or set(args) - {"mode", "pid", "window_id", "image", "min_age_ms", "observation_id", "region"}:
             raise ValueError("Invalid computer_observe arguments.")
         mode = args.get("mode")
         if mode not in {"active", "windows", "window", "desktop"}:
             raise ValueError("mode must be active, windows, window, or desktop.")
+        if ("region" in args) != ("observation_id" in args) or ("region" in args and mode != "desktop"):
+            raise ValueError("Use observation_id and region together with mode=desktop to zoom a full desktop image.")
         self._age_wait(args.get("min_age_ms", 0))
         if mode == "windows":
             return self._windows()
         if mode == "desktop":
-            return self._desktop()
+            return self._desktop_zoom(args["observation_id"], args["region"]) if "region" in args else self._desktop()
         if mode == "active":
             return self._active(args.get("image", True))
         return self._window(args.get("pid"), args.get("window_id"), args.get("image", True))
@@ -910,6 +973,11 @@ class ComputerSession:
         size = snapshot.get("size")
         if not size or size[0] <= 0 or size[1] <= 0:
             raise ValueError("A click needs coordinates from an image-backed observation.")
+        if snapshot.get("image_scope") == "desktop_region":
+            frame = snapshot.get("region_native")
+            if not isinstance(frame, dict):
+                raise ValueError("The zoom image has no usable desktop frame.")
+            return frame["x"] + x, frame["y"] + y
         if snapshot.get("image_scope") == "window":
             bounds = self._bounds_values(snapshot.get("bounds"))
             if not bounds:
@@ -989,11 +1057,16 @@ class ComputerSession:
                 requested_point = {
                     "space": "observation_image", "x": action["x"], "y": action["y"],
                 }
+            marked_image_path = self.trace.save_marked_image(
+                snapshot.get("trace_image"), (action["x"], action["y"]), trace_context["action_id"],
+            ) if requested_point and name in {"click", "double_click", "right_click"} else None
             self.trace.write(
                 "computer_action_target", **trace_context, target=target,
                 requested_point=requested_point,
                 mapped_monitor_point={"x": point[0], "y": point[1]},
+                marked_image_path=marked_image_path,
                 image_scope=snapshot.get("image_scope"), image_size=snapshot.get("size"),
+                region_on_monitor=snapshot.get("region_native"),
                 window_bounds=snapshot.get("bounds"),
             )
         try:
@@ -1032,6 +1105,21 @@ class ComputerSession:
             )
         else:
             raise ValueError("This action has no dotool route.")
+        if self.trace and self.trace.capture_images and trace_context and point is not None:
+            try:
+                cursor_x, cursor_y = self.driver.cursor_position()
+                left, top, width, height = self.driver.monitor_rect
+                expected_x = left + point[0] * width / self.driver.width
+                expected_y = top + point[1] * height / self.driver.height
+                self.trace.write(
+                    "computer_cursor_readback", **trace_context,
+                    requested_target_logical={"x": round(expected_x, 2), "y": round(expected_y, 2)},
+                    post_input_cursor_logical={"x": cursor_x, "y": cursor_y},
+                    offset_logical={"x": round(cursor_x - expected_x, 2),
+                                    "y": round(cursor_y - expected_y, 2)},
+                )
+            except RuntimeError:
+                self.trace.write("computer_cursor_readback", **trace_context, status="unavailable")
         return {"effect": "sent", "route": "dotool", "message": "Input command completed; inspect fresh state before repeating."}
 
     def _click(

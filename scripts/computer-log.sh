@@ -11,12 +11,20 @@ fi
 
 case "$mode" in
     run)
+        if [[ "${1:-}" == "--images" ]]; then
+            export ORYN_COMPUTER_TRACE_IMAGES=1
+            shift
+        fi
         mkdir -p "$logs_dir"
         log_file="$logs_dir/computer-$(date -u +%Y%m%dT%H%M%SZ)-$$.jsonl"
         (umask 077; : > "$log_file")
         chmod 600 "$log_file"
         export ORYN_COMPUTER_LOG_FILE="$log_file"
         printf 'Computer trace: %s\n' "$log_file" >&2
+        trace_images="${ORYN_COMPUTER_TRACE_IMAGES:-}"
+        case "${trace_images,,}" in
+            1|true|yes|on) printf 'Marked click images: %s-images\n' "${log_file%.jsonl}" >&2 ;;
+        esac
         printf 'Follow it live in another terminal with: %s follow\n' "$0" >&2
         exec "$repo_dir/oryn" "$@"
         ;;

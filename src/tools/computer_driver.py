@@ -2,6 +2,7 @@
 
 import io
 import json
+from math import isfinite
 import os
 import shutil
 import subprocess
@@ -108,6 +109,21 @@ class HyprlandDriver:
                 and all(value > 0 for value in size)):
             raise RuntimeError("Could not verify the active window geometry.")
         return address, self.monitor_id, tuple(at), tuple(size)
+
+    def cursor_position(self) -> tuple[float, float]:
+        """Read Hyprland's global logical cursor position for optional diagnostics."""
+        try:
+            result = subprocess.run(
+                ["hyprctl", "cursorpos", "-j"], capture_output=True, check=True, timeout=2,
+            )
+            position = json.loads(result.stdout)
+            x, y = position["x"], position["y"]
+            if not (type(x) in (int, float) and type(y) in (int, float)
+                    and isfinite(x) and isfinite(y)):
+                raise ValueError("invalid cursor position")
+            return float(x), float(y)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("Could not read Hyprland cursor position.") from exc
 
     def screenshot(self) -> tuple[bytes, tuple[int, int]]:
         try:

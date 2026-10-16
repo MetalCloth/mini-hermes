@@ -24,10 +24,10 @@ These current bindings override the upstream defaults below:
 
 - `Super` means the Linux Super/Windows-logo key. Tapping and releasing it by itself opens the Caelestia launcher.
 - For Oryn's dotool driver, send a standalone Super tap as `leftmeta` (or `x:Super_L`); `super` is for a modifier chord, not a standalone key.
-- After opening the launcher, take a fresh screenshot. Type an app name only after the screenshot shows the launcher and its input is ready; inspect results before selecting one.
+- After opening the launcher, inspect the fresh desktop screenshot. A clearly grounded visible app row can be clicked directly. If its position is uncertain, zoom the launcher region; if search is visible and ready, typing the app name is another route. Inspect the result before selecting another target.
 - On this laptop, `Super+W` opens Brave per the user-confirmed override above. Check the screenshot to verify it actually opened.
 - `Super+T` opens the terminal (default foot); `Super+C` the editor (default Codium); `Super+E` the file explorer (default Thunar). These apps can also be overridden.
-- For a specific app, use its shortcut only when appropriate; otherwise open the launcher, search, and verify the result.
+- For a specific app, use its shortcut only when appropriate; otherwise open the launcher, choose a grounded visible result or search, and verify the result.
 
 ## Default shortcuts
 

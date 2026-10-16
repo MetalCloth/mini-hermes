@@ -1,12 +1,16 @@
 """Private, flushed JSONL traces for computer-mode debugging."""
 
 from datetime import datetime, timezone
+import base64
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import queue
 import threading
 import uuid
+
+from PIL import Image, ImageDraw
 
 
 _REMOTE_CONTENT_FIELDS = {
@@ -52,6 +56,7 @@ def _langsmith_safe_record(record: dict) -> dict:
     safe.pop("user_content", None)
     safe.pop("tree_excerpt", None)
     safe.pop("window_title", None)
+    safe.pop("marked_image_path", None)
 
     if event in {"computer_tool", "tool_call"}:
         result = safe.pop("result", None)
@@ -212,6 +217,10 @@ class ComputerTrace:
         self._lock = threading.Lock()
         self.trace_id = uuid.uuid4().hex[:12]
         self._sequence = 0
+        self.capture_images = os.environ.get("ORYN_COMPUTER_TRACE_IMAGES", "").strip().casefold() in {
+            "1", "true", "yes", "on",
+        }
+        self.image_dir = self.path.with_name(f"{self.path.stem}-images")
         self._langsmith: _LangSmithExporter | None = None
         enabled = os.environ.get("ORYN_LANGSMITH_TRACING", "").strip().casefold() in {
             "1", "true", "yes", "on",
@@ -234,6 +243,35 @@ class ComputerTrace:
         record = self._write_local(event, **fields)
         if self._langsmith is not None and event != "langsmith_status":
             self._langsmith.submit(record)
+
+    def save_marked_image(self, image: dict | None, point: tuple[int, int], action_id: str) -> str | None:
+        """Optionally keep the exact pre-action image with its requested click marked."""
+        if not self.capture_images or not image:
+            return None
+        marked = None
+        try:
+            with Image.open(BytesIO(base64.b64decode(image["base64_data"], validate=True))) as source:
+                marked = source.convert("RGB")
+            x, y = point
+            if not (0 <= x < marked.width and 0 <= y < marked.height):
+                return None
+            draw = ImageDraw.Draw(marked)
+            draw.ellipse((x - 7, y - 7, x + 7, y + 7), outline="white", width=3)
+            draw.line((x - 11, y, x + 11, y), fill="red", width=2)
+            draw.line((x, y - 11, x, y + 11), fill="red", width=2)
+            self.image_dir.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(self.image_dir, 0o700)
+            path = self.image_dir / f"{self.trace_id}-{action_id}.jpg"
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                marked.save(output, format="JPEG", quality=90)
+            return str(path)
+        except Exception:
+            # A diagnostic image must never prevent the requested input.
+            return None
+        finally:
+            if marked is not None:
+                marked.close()
 
     def _write_local(self, event: str, **fields) -> dict:
         with self._lock:
