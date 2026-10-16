@@ -36,8 +36,8 @@ controls come before browser chrome in that bounded list.
 `mode="windows"` has no image but supplies an `observation_id` for `focus_window`;
 `mode="desktop"` always has an image. `image=false` can skip an
 exact-window screenshot, but an active-mode fallback can still return a desktop image.
-The full desktop overview is capped at a 1,200-pixel long edge. Zooming is optional for
-small or uncertain visual targets; the crop's native long edge must be at most 1,200 pixels.
+The full desktop overview uses the monitor's native pixel dimensions. Zooming is optional for
+small or uncertain visual targets; the crop also keeps its native pixel dimensions.
 Each result says `image_scope` so the model can distinguish a full desktop image from a crop.
 
 ### What `verify_state` checks

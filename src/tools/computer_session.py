@@ -147,9 +147,8 @@ class ComputerSession:
         self._check_cancel()
 
     @staticmethod
-    def _image(data: bytes, *, max_dimension: int | None = None,
-               crop: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
-        # CUA already scales its captures; do not resize one bound by capture_id.
+    def _image(data: bytes, *, crop: tuple[int, int, int, int] | None = None) -> dict[str, Any]:
+        # Preserve screenshot pixels so returned coordinates match the captured image.
         with Image.open(io.BytesIO(data)) as source:
             output = io.BytesIO()
             picture = source.convert("RGB")
@@ -158,8 +157,6 @@ class ComputerSession:
                     cropped = picture.crop(crop)
                     picture.close()
                     picture = cropped
-                if max_dimension and max(picture.size) > max_dimension:
-                    picture.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
                 picture.save(output, format="JPEG", quality=88)
             finally:
                 picture.close()
@@ -358,7 +355,7 @@ class ComputerSession:
             path = self.driver.socket.parent / f"observation-{self.driver._counter}.png"
             try:
                 state = self._cua_call("get_desktop_state", {
-                    "max_image_dimension": 0 if zoom is not None else 1200,
+                    "max_image_dimension": 0,
                     "screenshot_out_file": str(path),
                 })
                 original_size = (
@@ -367,8 +364,8 @@ class ComputerSession:
                 )
                 if original_size != (self.driver.width, self.driver.height):
                     raise RuntimeError("The desktop layout changed since CUA started. Stop and start a new computer turn.")
-                if zoom is not None and (state.get("screenshot_width"), state.get("screenshot_height")) != original_size:
-                    raise RuntimeError("CUA did not return a native-resolution desktop image for zoom.")
+                if (state.get("screenshot_width"), state.get("screenshot_height")) != original_size:
+                    raise RuntimeError("CUA did not return a native-resolution desktop image.")
                 if not path.is_file():
                     raise RuntimeError("CUA returned no desktop image.")
                 image = self._image(path.read_bytes(), crop=zoom["box"] if zoom else None)
@@ -382,9 +379,12 @@ class ComputerSession:
             size = (image["width"], image["height"])
             capture_id = state.get("capture_id")
         else:
-            data, _ = self.driver.screenshot()
-            image = self._image(data, max_dimension=None if zoom else 1200,
-                                crop=zoom["box"] if zoom else None)
+            data, native_size = self.driver.screenshot()
+            image = self._image(data, crop=zoom["box"] if zoom else None)
+            expected_size = ((zoom["box"][2] - zoom["box"][0],
+                              zoom["box"][3] - zoom["box"][1]) if zoom else native_size)
+            if (image["width"], image["height"]) != expected_size:
+                raise RuntimeError("Desktop image dimensions do not match its coordinate frame.")
             size, capture_id = (image["width"], image["height"]), None
         stamp = self.driver.active_window_stamp()
         if stamp != before:
@@ -462,7 +462,7 @@ class ComputerSession:
                 "max_elements": 500, "max_depth": 25, "timeout_ms": 4000,
             }
             if image_requested:
-                request.update(max_image_dimension=1200, screenshot_out_file=str(path))
+                request.update(max_image_dimension=0, screenshot_out_file=str(path))
             state = self._cua_call("get_window_state", request, timeout=7)
             png = path.read_bytes() if image_requested and path.is_file() and path.stat().st_size else None
         finally:
@@ -477,6 +477,11 @@ class ComputerSession:
             state.get("screenshot_width"), state.get("screenshot_height")
         ):
             raise RuntimeError("CUA window image dimensions do not match its coordinate frame.")
+        if image and (image["width"], image["height"]) != (
+            state.get("screenshot_original_width", state.get("screenshot_width")),
+            state.get("screenshot_original_height", state.get("screenshot_height")),
+        ):
+            raise RuntimeError("CUA did not return a native-resolution window image.")
         screenshot_error = state.get("screenshot_error") if image_requested and not png else None
         if image_requested and image is None:
             # Wayland may truthfully return a tree but refuse an unproven window PNG.
@@ -600,15 +605,12 @@ class ComputerSession:
             raise ValueError("region needs integer x, y, width, height from the latest full desktop image.")
         x, y, width, height = (region[key] for key in ("x", "y", "width", "height"))
         source_width, source_height = source["size"]
+        if (source_width, source_height) != (self.driver.width, self.driver.height):
+            raise ValueError("Zoom needs a native-resolution desktop image. Observe the full desktop again.")
         if (x < 0 or y < 0 or width <= 0 or height <= 0
                 or x + width > source_width or y + height > source_height):
             raise ValueError("region must fit inside the latest full desktop image.")
-        box = (round(x * self.driver.width / source_width),
-               round(y * self.driver.height / source_height),
-               round((x + width) * self.driver.width / source_width),
-               round((y + height) * self.driver.height / source_height))
-        if max(box[2] - box[0], box[3] - box[1]) > 1200:
-            raise ValueError("Zoom region is too large for a full-resolution crop; choose a smaller rectangle.")
+        box = (x, y, x + width, y + height)
         return self._desktop(with_accessibility=False, zoom={
             "source_id": source["id"], "stamp": source["stamp"],
             "source_region": region, "box": box,
@@ -620,6 +622,12 @@ class ComputerSession:
         mode = args.get("mode")
         if mode not in {"active", "windows", "window", "desktop"}:
             raise ValueError("mode must be active, windows, window, or desktop.")
+        region = args.get("region")
+        if (args.get("observation_id") == "" and isinstance(region, dict)
+                and set(region) == {"x", "y", "width", "height"}
+                and all(type(value) is int and value == 0 for value in region.values())):
+            # Some tool calls fill both optional zoom fields with empty placeholders.
+            args = {key: value for key, value in args.items() if key not in {"observation_id", "region"}}
         if ("region" in args) != ("observation_id" in args) or ("region" in args and mode != "desktop"):
             raise ValueError("Use observation_id and region together with mode=desktop to zoom a full desktop image.")
         self._age_wait(args.get("min_age_ms", 0))
@@ -986,8 +994,9 @@ class ComputerSession:
             screen_x = bounds_x + x * bounds_width / size[0]
             screen_y = bounds_y + y * bounds_height / size[1]
             return self._monitor_point(screen_x, screen_y)
-        return (round(x * self.driver.width / size[0]),
-                round(y * self.driver.height / size[1]))
+        if snapshot.get("image_scope") != "desktop" or size != (self.driver.width, self.driver.height):
+            raise ValueError("A desktop click needs a native-resolution desktop image.")
+        return x, y
 
     @staticmethod
     def _frame_values(frame: Any) -> tuple[float, float, float, float] | None:
