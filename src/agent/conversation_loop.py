@@ -405,6 +405,16 @@ def run_turn(
                                 if computer_session_factory is None:
                                     raise RuntimeError("Computer-use tools have no local desktop session factory.")
                                 computer_session = computer_session_factory()
+                            if hasattr(computer_session, "goal") and not computer_session.goal:
+                                latest_user = next(
+                                    (message.get("content") for message in reversed(messages)
+                                     if message.get("role") == "user" and isinstance(message.get("content"), str)),
+                                    "",
+                                )
+                                task_state = computer_task.state or {}
+                                task_goal = (task_state.get("goal")
+                                             if task_state.get("status") in {"active", "blocked"} else "")
+                                computer_session.goal = str(task_goal or latest_user)[:300]
                             result = computer_session.execute(call.name, call.arguments)
                         if call.name != "computer_ask_user":
                             route_scope = route_scope or "local_desktop"

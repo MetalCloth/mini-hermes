@@ -1,5 +1,6 @@
 """Local desktop tools for the main agent turn; CUA stays on its private CLI socket."""
 
+import base64
 import io
 import json
 import re
@@ -11,7 +12,7 @@ from math import isfinite
 from threading import Event
 from typing import Any, Callable
 
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 from src.agent.computer_task import computer_task_schema
 from src.images import prepare_image
@@ -23,9 +24,18 @@ COMPUTER_INSTRUCTIONS = """computer_observe, computer_act, and computer_wait use
 
 Use computer_task for multiple independent outcomes, work across apps, or a long task likely to need resuming. Opening one file, changing one setting, or sending one message is one outcome even if it takes several UI actions: skip the task record. If you start one, keep steps and done checks minimal. Request the start and first observation in one model response. Record only progress supported by tool results you have already received; use one record call with updates for several step/check changes, with evidence inside each update. When the next input is already clear, put that record call before computer_act in the same model response. After final evidence, put record then finish in the same response. If a relevant saved task already exists, update its observed steps and checks together, then finish it. If a record call fails, change the fields named by the error rather than repeating the same call. Do not spend a separate model round only marking a step working. The ledger is memory, not automatic verification. An unfinished saved task keeps its route on the next turn; start a new task before UI input if the user has requested a different task. The declared environment keeps local desktop and remote Firecrawl browser actions separate unless the task explicitly needs both. Do not switch to a mixed environment merely to bypass a route error.
 
-Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. For a small or uncertain desktop target, zoom a region of the latest full desktop image with computer_observe(mode=desktop, observation_id=..., region={x,y,width,height}); the returned image has its own local click coordinates. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly; do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. After a missed visual click, inspect the fresh image and zoom or choose another visible route before guessing nearby coordinates again. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
+Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. For a small or uncertain desktop target, zoom a region of the latest full desktop image with computer_observe(mode=desktop, observation_id=..., region={x,y,width,height}); the returned image has its own local click coordinates. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly. After a UI-changing action, the returned screenshot may catch a transition even when controls are visible; if the target is clipped or its position is uncertain, observe again before clicking its coordinates. Otherwise do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. For local desktop actions, prefer click_element for a matching enabled control from a scope=window result; otherwise use pixels from the matching attached screenshot. After a missed visual click, inspect the fresh image and zoom or choose another visible route before guessing nearby coordinates again. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
 
 Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. If a fresh image shows a page or app still loading, take one bounded visual observation before concluding it failed. Computer actions run without a confirmation prompt; use computer_ask_user only when the task lacks information needed to choose a target or action. After computer_ask_user, use the fresh observation returned with the answer, or observe if none was returned. Claim completion only when fresh local evidence shows the requested state."""
+
+
+COMPUTER_INSTRUCTIONS += (
+    "\nPixel clicks compare the target area just before input. If target_changed is returned, no click was sent; "
+    "use the fresh image to choose a new point. A single desktop key action may briefly settle its changed area; "
+    "ui_stability=changing means inspect or wait before a pixel click. "
+    "When computer_progress appears, finish if the latest result meets the user's goal; otherwise change the action "
+    "or state the blocker instead of repeating the same check."
+)
 
 
 def computer_tool_schemas() -> list[dict[str, Any]]:
@@ -120,6 +130,10 @@ class ComputerSession:
         self.cua = isinstance(self.driver, CuaDriver)
         self.current: dict[str, Any] | None = None
         self.dry_run_used = False
+        self.goal = ""
+        self._last_expected_result = ""
+        self._observations_after_action = 0
+        self._recent_actions: list[str] = []
 
     def close(self) -> None:
         if self.cua:
@@ -408,6 +422,7 @@ class ComputerSession:
         snapshot = self._new_snapshot(mode="desktop", image_scope=image_scope, size=size,
                                       capture_id=capture_id, stamp=stamp, pid=pid, elements={},
                                       region_native=frame,
+                                      image_data=image["base64_data"],
                                       trace_image=image if self.trace and self.trace.capture_images else None)
         if self.trace:
             self.trace.write("computer_observation", scope="desktop", observation_id=snapshot["id"],
@@ -519,6 +534,7 @@ class ComputerSession:
             mode="window", pid=pid, window_id=window_id, bounds=bounds,
             image_scope=image_scope, size=size, capture_id=capture_id,
             elements=elements, stamp=self.driver.active_window_stamp(),
+            image_data=image["base64_data"] if image else None,
             trace_image=image if self.trace and self.trace.capture_images else None,
         )
         if self.trace:
@@ -1046,6 +1062,214 @@ class ComputerSession:
             raise ValueError("The control frame is outside the observed window.")
         return self._monitor_point(bounds_x + center_x, bounds_y + center_y)
 
+    @staticmethod
+    def _patch_changed(before: Image.Image, after: Image.Image) -> tuple[bool, float]:
+        # shortcut: fixed visual thresholds may flag animation; tune them from real refusal traces.
+        difference = ImageChops.difference(before, after)
+        try:
+            average = max(ImageStat.Stat(difference).mean)
+            with difference.convert("L") as gray:
+                histogram = gray.histogram()
+            changed_fraction = sum(histogram[32:]) / (before.width * before.height)
+            return average > 14 or changed_fraction > 0.08, round(average, 2)
+        finally:
+            difference.close()
+
+    @staticmethod
+    def _screen_patch(data: bytes, box: tuple[int, int, int, int], size: tuple[int, int]) -> Image.Image:
+        with Image.open(io.BytesIO(data)) as screen:
+            with screen.convert("RGB") as rgb:
+                patch = rgb.crop(box)
+        if patch.size != size:
+            resized = patch.resize(size)
+            patch.close()
+            return resized
+        return patch
+
+    def _image_point_from_monitor(self, snapshot: dict, point: tuple[int, int]) -> tuple[int, int]:
+        if snapshot["image_scope"] == "desktop":
+            return point
+        if snapshot["image_scope"] != "window":
+            raise ActionNotDispatched("dotool", "target_image_missing",
+                                      "No click sent: the control has no comparable image.")
+        bounds = self._bounds_values(snapshot.get("bounds"))
+        if not bounds:
+            raise ActionNotDispatched("dotool", "target_image_missing",
+                                      "No click sent: the control has no current window bounds.")
+        left, top, logical_width, logical_height = self.driver.monitor_rect
+        window_x, window_y, window_width, window_height = bounds
+        x = round((left + point[0] * logical_width / self.driver.width - window_x)
+                  * snapshot["size"][0] / window_width)
+        y = round((top + point[1] * logical_height / self.driver.height - window_y)
+                  * snapshot["size"][1] / window_height)
+        if not (0 <= x < snapshot["size"][0] and 0 <= y < snapshot["size"][1]):
+            raise ActionNotDispatched("dotool", "target_image_missing",
+                                      "No click sent: the control point is outside its window image.")
+        return x, y
+
+    def _preflight_image(self, snapshot: dict) -> tuple[bytes, tuple[int, int]]:
+        if snapshot["image_scope"] != "window":
+            return HyprlandDriver.screenshot(self.driver)
+        self.driver._counter += 1
+        path = self.driver.socket.parent / f"preflight-{self.driver._counter}.png"
+        try:
+            state = self._cua_call("get_window_state", {
+                "pid": snapshot["pid"], "window_id": snapshot["window_id"],
+                "include_screenshot": True, "max_image_dimension": 0,
+                "screenshot_out_file": str(path), "max_elements": 1,
+                "max_depth": 1, "timeout_ms": 4000,
+            }, timeout=7)
+            if not path.is_file():
+                raise RuntimeError("CUA returned no current window image.")
+            size = state.get("screenshot_width"), state.get("screenshot_height")
+            if size != snapshot["size"]:
+                raise RuntimeError("The target window image changed size.")
+            return path.read_bytes(), size
+        finally:
+            path.unlink(missing_ok=True)
+
+    def _preflight_pixel_click(self, snapshot: dict, action: dict,
+                               trace_context: dict[str, Any] | None) -> None:
+        encoded = snapshot.get("image_data")
+        if not isinstance(encoded, str):
+            raise ActionNotDispatched("dotool", "target_image_missing",
+                                      "No click sent: the observed image is unavailable. Observe again.")
+        x, y = action["x"], action["y"]
+        width, height = snapshot["size"]
+        x0, y0 = max(0, x - 36), max(0, y - 24)
+        x1, y1 = min(width, x + 37), min(height, y + 25)
+        if snapshot["image_scope"] == "window":
+            box = (x0, y0, x1, y1)
+        else:
+            left, top = self._dotool_point_from_image(snapshot, x0, y0)
+            right, bottom = self._dotool_point_from_image(snapshot, x1 - 1, y1 - 1)
+            box = (left, top, right + 1, bottom + 1)
+        expected_size = snapshot["size"] if snapshot["image_scope"] == "window" else (
+            self.driver.width, self.driver.height,
+        )
+
+        def capture_patch(size: tuple[int, int]) -> Image.Image:
+            data, actual_size = self._preflight_image(snapshot)
+            if actual_size != expected_size:
+                raise RuntimeError("The selected image changed size.")
+            if snapshot["mode"] == "desktop":
+                self._check_desktop_stamp(snapshot, "dotool")
+            else:
+                self._check_sequence_target(snapshot)
+            return self._screen_patch(data, box, size)
+
+        original = current = None
+        try:
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as source:
+                with source.convert("RGB") as rgb:
+                    original = rgb.crop((x0, y0, x1, y1))
+            current = capture_patch(original.size)
+            changed, average = self._patch_changed(original, current)
+            settled = True
+            if changed:
+                # Wait for the target area, rather than an animated whole screen.
+                settled = False
+                deadline = time.monotonic() + 1.0
+                for _ in range(4):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if self.cancel_event.wait(min(0.12, remaining)):
+                        self._check_cancel()
+                    newer = capture_patch(original.size)
+                    moving, _ = self._patch_changed(current, newer)
+                    current.close()
+                    current = newer
+                    if not moving:
+                        settled = True
+                        break
+            if self.trace:
+                self.trace.write("computer_target_preflight", **(trace_context or {}),
+                                 changed=changed, settled=settled, average_difference=average,
+                                 observation_age_ms=round((time.monotonic() - snapshot["captured_at"]) * 1000))
+        except ActionNotDispatched:
+            raise
+        except InterruptedError:
+            raise
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise ActionNotDispatched(
+                "dotool", "target_check_failed",
+                f"No click sent: the target could not be rechecked. {exc} Observe again.",
+            ) from exc
+        finally:
+            if original is not None:
+                original.close()
+            if current is not None:
+                current.close()
+        if changed:
+            state = "settled" if settled else "still changing"
+            raise ActionNotDispatched(
+                "dotool", "target_changed",
+                f"No click sent: the target area changed since the image was shown. It is {state}; inspect the fresh image before choosing a point.",
+            )
+
+    @staticmethod
+    def _changed_area(before: str, after: str, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+        with Image.open(io.BytesIO(base64.b64decode(before))) as old:
+            with Image.open(io.BytesIO(base64.b64decode(after))) as new:
+                with old.convert("L").resize((160, 90)) as first:
+                    with new.convert("L").resize((160, 90)) as second:
+                        with ImageChops.difference(first, second) as difference:
+                            with difference.point(lambda value: 255 if value > 24 else 0) as mask:
+                                box = mask.getbbox()
+        if box is None:
+            return None
+        x0 = max(0, box[0] * size[0] // 160 - 24)
+        y0 = max(0, box[1] * size[1] // 90 - 24)
+        x1 = min(size[0], (box[2] * size[0] + 159) // 160 + 24)
+        y1 = min(size[1], (box[3] * size[1] + 89) // 90 + 24)
+        return x0, y0, x1, y1
+
+    def _settle_desktop_key(self, before: dict, observation: ComputerResult,
+                            action_id: str) -> tuple[ComputerResult, str | None]:
+        after = self.current
+        if (before.get("image_scope") != "desktop" or not after
+                or after.get("image_scope") != "desktop" or not observation.images
+                or before.get("size") != after.get("size")):
+            return observation, None
+        box = self._changed_area(before["image_data"], after["image_data"], after["size"])
+        if box is None:
+            return observation, None
+        current = self._screen_patch(base64.b64decode(after["image_data"]), box,
+                                     (box[2] - box[0], box[3] - box[1]))
+        moved = False
+        settled = False
+        try:
+            deadline = time.monotonic() + 1.0
+            for _ in range(4):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if self.cancel_event.wait(min(0.12, remaining)):
+                    self._check_cancel()
+                data, size = HyprlandDriver.screenshot(self.driver)
+                if size != after["size"]:
+                    raise RuntimeError("The selected monitor changed size during the action.")
+                if self.driver.active_window_stamp() != after["stamp"]:
+                    moved = True
+                    break
+                newer = self._screen_patch(data, box, current.size)
+                changing, _ = self._patch_changed(current, newer)
+                current.close()
+                current = newer
+                moved = moved or changing
+                if not changing:
+                    settled = True
+                    break
+        finally:
+            current.close()
+        if self.trace:
+            self.trace.write("computer_ui_settle", action_id=action_id,
+                             observation_id=after["id"], changed=moved, settled=settled)
+        if moved:
+            observation = self._desktop(cause={"kind": "settle", "id": action_id})
+        return observation, "settled" if settled else "changing"
+
     def _dotool(
         self, snapshot: dict, action: dict, *, trace_context: dict[str, Any] | None = None,
         target: dict[str, Any] | None = None,
@@ -1089,6 +1313,16 @@ class ComputerSession:
                 "dotool", "target_focus_failed",
                 f"The target could not be focused safely, so the requested input was not sent. {exc} Observe again.",
             ) from exc
+        if name in {"click", "double_click", "right_click"} and snapshot.get("image_data"):
+            if "x" in action:
+                pixel_action = action
+            elif target is not None:
+                x, y = self._image_point_from_monitor(snapshot, point)
+                pixel_action = {"x": x, "y": y}
+            else:
+                pixel_action = None
+            if pixel_action is not None:
+                self._preflight_pixel_click(snapshot, pixel_action, trace_context)
         if name in {"click", "double_click", "right_click", "scroll"}:
             self._check_cancel()
             if name == "click":
@@ -1269,6 +1503,17 @@ class ComputerSession:
                                               "observation_error": str(exc),
                                               "screenshot_included": False,
                                               "next": "Observe windows or desktop before any further input."}, ensure_ascii=False))
+        if (sequence_complete and len(actions) == 1 and actions[0]["type"] == "key"
+                and image_requested):
+            try:
+                observation, stability = self._settle_desktop_key(snapshot, observation, action_id)
+            except InterruptedError:
+                raise
+            except (RuntimeError, ValueError, OSError) as exc:
+                stability = "unknown"
+                result["settle_error"] = str(exc)[:300]
+            if stability:
+                result["ui_stability"] = stability
         if self.trace:
             self.trace.write(
                 "computer_action_complete", **trace_context,
@@ -1277,6 +1522,10 @@ class ComputerSession:
             )
         if fallback:
             result["window_observation_error"] = fallback
+        result["next_decision"] = (
+            "If this fresh observation proves the user's goal, answer now. "
+            "Otherwise choose the next needed action."
+        )
         prefix = json.dumps(result, ensure_ascii=False) + "\n"
         return ComputerResult(prefix + observation.text, observation.images,
                               prefix + (observation.history_text or observation.text))
@@ -1317,9 +1566,46 @@ class ComputerSession:
     def execute(self, name: str, args: dict[str, Any]) -> ComputerResult:
         if self.dry_run_used and name != "computer_ask_user":
             return ComputerResult("Dry run finished after the first proposed input or sequence. Summarize the preview; no desktop input was sent.")
-        return {
+        result = {
             "computer_observe": self.observe,
             "computer_act": self.act,
             "computer_wait": self.wait,
             "computer_ask_user": self.ask,
         }[name](args)
+        if not self.dry_run and name == "computer_act" and isinstance(args, dict):
+            action = args.get("actions") or args.get("action")
+            self._recent_actions.append(json.dumps(action, sort_keys=True, ensure_ascii=False))
+            self._recent_actions = self._recent_actions[-4:]
+            self._last_expected_result = str(args.get("expected_result") or "")[:300]
+            self._observations_after_action = 0
+        elif name in {"computer_observe", "computer_wait"} and self._recent_actions:
+            self._observations_after_action += 1
+        cycle = (len(self._recent_actions) == 4
+                 and self._recent_actions[:2] == self._recent_actions[2:]
+                 and self._recent_actions[0] != self._recent_actions[1])
+        repeated = len(self._recent_actions) >= 3 and len(set(self._recent_actions[-3:])) == 1
+        hint = ""
+        if name == "computer_act" and (cycle or repeated):
+            hint = "The same action route has repeated. Check the current target and choose a different route if the goal has not advanced."
+        elif self._observations_after_action >= 2 and name in {"computer_observe", "computer_wait"}:
+            hint = "Multiple checks followed the last input. If the current result satisfies the user's goal, answer now. Otherwise name what is missing and take a different action or report the blocker."
+        if hint:
+            progress = json.dumps({
+                "computer_progress": {
+                    "goal": self.goal[:300],
+                    "last_expected_result": self._last_expected_result,
+                    "last_action": json.loads(self._recent_actions[-1]) if self._recent_actions else None,
+                    "latest_observation_id": self.current["id"] if self.current else None,
+                    "latest_screenshot": bool(result.images),
+                    "observations_since_input": self._observations_after_action,
+                    "hint": hint,
+                },
+            }, ensure_ascii=False)
+            history = result.history_text or result.text
+            result.text += "\n" + progress
+            result.history_text = history + "\n" + progress
+            if self.trace:
+                self.trace.write("computer_progress_hint", hint=hint,
+                                 observations_since_input=self._observations_after_action,
+                                 observation_id=self.current["id"] if self.current else None)
+        return result

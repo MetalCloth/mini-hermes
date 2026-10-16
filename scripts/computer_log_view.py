@@ -247,6 +247,18 @@ def format_record(record: dict) -> str:
             f" · offset ({offset.get('x', '?')}, {offset.get('y', '?')}) logical px"
             f" · action {record.get('action_id', '?')}"
         )
+    if event == "computer_target_preflight":
+        outcome = "changed; click refused" if record.get("changed") else "same target; click can proceed"
+        return (
+            f"{stamp}  TARGET CHECK · {outcome} · "
+            f"age {record.get('observation_age_ms', '?')} ms · "
+            f"action {record.get('action_id', '?')}"
+        )
+    if event == "computer_ui_settle":
+        outcome = "settled" if record.get("settled") else "still changing"
+        return f"{stamp}  UI SETTLE · {outcome} · action {record.get('action_id', '?')}"
+    if event == "computer_progress_hint":
+        return f"{stamp}  PROGRESS · {_short(record.get('hint', ''), 180)}"
     if event == "computer_action_result":
         outcome = record.get("outcome", {})
         step = (f" · step {record['step_index']}/{record['step_count']}"

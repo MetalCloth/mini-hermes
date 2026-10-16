@@ -59,6 +59,14 @@ previews for tool arguments and results. It records lengths and whether a previe
 The live view abbreviates those records; use `--raw` when the full bounded local record is
 needed.
 
+Pixel clicks log a computer_target_preflight event with the target-area comparison,
+observation age, and whether a changed area settled before Oryn returned a new image.
+Single desktop key actions can log computer_ui_settle when their changed region needs
+another look. Repeated checks or action patterns log computer_progress_hint. These
+events describe harness behavior; they do not prove that the user's task succeeded.
+The temporary comparison frames are not model attachments or saved images; a later
+fresh observation is saved when image logging is enabled.
+
 ## Local privacy boundary
 
 The launcher creates each JSONL file with mode `0600`. By default it stores no screenshot pixels.
