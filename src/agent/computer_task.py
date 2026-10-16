@@ -9,11 +9,13 @@ def computer_task_schema() -> dict[str, Any]:
     return {
         "type": "function", "name": "computer_task",
         "description": (
-            "Keep a compact goal and progress record when a computer task has several uncertain stages "
-            "or must survive interruption. Short single-outcome tasks do not need a record. Start with "
-            "a goal, checkable done criteria, and short steps; record several evidence-backed updates "
-            "in one call after observing tool results; finish only after checking the result. "
-            "This stores the model's record, not an automatic success verdict. "
+            "Save progress for computer work with multiple outcomes, multiple apps, or a likely need to "
+            "resume later. One outcome, such as opening one file, needs no record even if it takes several "
+            "UI actions. Start with a goal, done checks, and short steps. Record all observed step/check "
+            "progress in one updates batch, with evidence inside each verified or blocked item; finish "
+            "only after checking the result. "
+            "The result lists remaining step/check indices. This stores the model's record, not an "
+            "automatic success verdict. "
             "The environment binds remote browser versus "
             "local desktop tools for this turn. mixed requires route_reason; record an upgrade "
             "to mixed to keep existing progress. Fields belonging to another operation and empty "
@@ -31,11 +33,6 @@ def computer_task_schema() -> dict[str, Any]:
             "environment": {"type": "string", "enum": ["local_desktop", "remote_browser", "mixed"],
                             "description": "Start, or record an upgrade to mixed: where the task's UI lives."},
             "route_reason": {"type": "string", "description": "Why the user's task needs both local and remote UI environments."},
-            "step_index": {"type": "integer", "description": "Record only: 1-based step to update."},
-            "step_status": {"type": "string", "enum": ["working", "verified", "blocked"],
-                            "description": "Record only: verified requires observed evidence."},
-            "check_index": {"type": "integer", "description": "Record only: 1-based done check to update."},
-            "check_status": {"type": "string", "enum": ["pending", "verified"]},
             "updates": {"type": "array", "maxItems": 14, "items": {
                 "type": "object", "additionalProperties": False, "properties": {
                     "kind": {"type": "string", "enum": ["step", "check"]},
@@ -43,8 +40,8 @@ def computer_task_schema() -> dict[str, Any]:
                     "status": {"type": "string", "enum": ["pending", "working", "verified", "blocked"]},
                     "evidence": {"type": "string", "description": "Required for verified or blocked updates."},
                 }, "required": ["kind", "index", "status"],
-            }, "description": "Record only: multiple step/check changes supported by results already seen."},
-            "evidence": {"type": "string", "description": "What a fresh observation or tool result showed."},
+            }, "description": "Record only: put evidence in each item, not at the top level."},
+            "evidence": {"type": "string", "description": "Finish only: what a fresh result showed; a completed task can reuse its verified done-check evidence."},
             "fact": {"type": "string", "description": "Record only: a fact to carry between apps."},
             "source": {"type": "string", "description": "Record only: where that fact came from."},
             "next_step": {"type": "string", "description": "Record only: immediate next subgoal."},
@@ -114,6 +111,9 @@ class ComputerTaskLedger:
                     args.pop(status)
             if args.get("environment") in ("local_desktop", "remote_browser"):
                 args.pop("environment")
+            if "updates" in args:
+                # Batch items carry their own evidence; providers may also fill the finish-only field.
+                args.pop("evidence", None)
         if operation == "start":
             environment = args.get("environment")
             if environment not in ("local_desktop", "remote_browser", "mixed"):
@@ -143,8 +143,8 @@ class ComputerTaskLedger:
                 state["final_evidence"] = ""
                 if not ({"step_index", "check_index", "updates", "fact", "next_step", "environment"} & set(args)):
                     raise ValueError("Record a step, done check, fact, next_step, or mixed environment upgrade.")
-                if "updates" in args and {"step_index", "step_status", "check_index", "check_status", "evidence"} & set(args):
-                    raise ValueError("Use updates or the flat step/check fields, not both.")
+                if "updates" in args and {"step_index", "step_status", "check_index", "check_status"} & set(args):
+                    raise ValueError("Use updates with per-item evidence, or one flat step/check update; omit flat fields when using updates.")
                 if "environment" in args:
                     if state["environment"] == "mixed" or args["environment"] != "mixed":
                         raise ValueError("A task environment can only be upgraded once to mixed.")
@@ -181,7 +181,7 @@ class ComputerTaskLedger:
                 elif "check_status" in args:
                     raise ValueError("check_status needs check_index.")
                 if "evidence" in args and not {"step_index", "check_index"} & set(args):
-                    raise ValueError("evidence needs step_index or check_index.")
+                    raise ValueError("Put evidence in an updates item, or supply step_index or check_index.")
                 if "updates" in args:
                     updates = args["updates"]
                     if not isinstance(updates, list) or not 1 <= len(updates) <= 14:
@@ -223,19 +223,32 @@ class ComputerTaskLedger:
                 result = args.get("result")
                 if result not in ("complete", "blocked"):
                     raise ValueError("Finish with result=complete or blocked.")
-                if result == "complete" and any(step["status"] != "verified" for step in state["steps"]):
-                    raise ValueError("Verify every planned step before marking the task complete.")
-                if result == "complete" and any(check["status"] != "verified" for check in state["done_checks"]):
-                    raise ValueError("Verify every done check before marking the task complete.")
+                pending_steps = [str(index) for index, step in enumerate(state["steps"], 1)
+                                 if step["status"] != "verified"]
+                pending_checks = [str(index) for index, check in enumerate(state["done_checks"], 1)
+                                  if check["status"] != "verified"]
+                if result == "complete" and pending_steps:
+                    raise ValueError(f"Verify planned step(s) {', '.join(pending_steps)} before marking the task complete.")
+                if result == "complete" and pending_checks:
+                    raise ValueError(f"Verify done check(s) {', '.join(pending_checks)} before marking the task complete.")
                 state["status"] = result
-                state["final_evidence"] = _text(args.get("evidence"), "evidence", 500)
+                final_evidence = args.get("evidence")
+                if result == "complete" and not final_evidence:
+                    final_evidence = next((check["evidence"] for check in reversed(state["done_checks"])
+                                           if check["evidence"]), "")
+                state["final_evidence"] = _text(final_evidence, "evidence", 500)
                 if result == "complete":
                     state["next_step"] = ""
         if self.save:
             self.save(state)
         self.state = state
+        remaining_steps = [index for index, step in enumerate(state["steps"], 1)
+                           if step["status"] != "verified"]
+        remaining_checks = [index for index, check in enumerate(state["done_checks"], 1)
+                            if check["status"] != "verified"]
         return json.dumps({
             "task_recorded": True, "operation": operation, "status": state["status"],
             "environment": state["environment"], "next_step": state["next_step"],
+            "remaining_steps": remaining_steps, "remaining_checks": remaining_checks,
             "note": "This records the model's progress claim; inspect actual tool results before claiming success.",
         }, ensure_ascii=False)

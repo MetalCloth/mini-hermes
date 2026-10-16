@@ -92,9 +92,9 @@ The IDs below are invented. Suppose Brave is on workspace 3 and Blender is on wo
    for its next input. Reusing `list-a` is rejected.
 4. The model inspects each returned observation and can use it directly for the next action. It calls
    `computer_observe` again only if the UI is still loading or this result is insufficient;
-   it can use `computer_wait` for a supported exact condition. A short task needs no
-   `computer_task` record. For longer tasks, one `record` call can update multiple steps
-   and checks, each with its own evidence.
+   it can use `computer_wait` for a supported exact condition. A task with one outcome
+   needs no `computer_task` record even if it takes several actions. For longer tasks,
+   one `record` call can update multiple steps and checks, each with its own evidence.
 
 The input result `sent` means the dotool command completed. The model checks the resulting
 observation before claiming that the app changed. `refused` means Oryn stopped the requested
@@ -103,10 +103,13 @@ input before dispatch; `unknown` means its occurrence is uncertain.
 For longer tasks, `computer_task({"operation":"record","updates":[...]})` can mark up to
 eight steps and six done checks in one call. Each item names `kind` (`step` or `check`), a
 1-based `index`, a valid `status`, and evidence for `verified` or `blocked`. The older
-single-step and single-check fields still work. If the next action is already clear from
+single-step and single-check fields still work for existing callers but are no longer
+advertised to the model. If the next action is already clear from
 the last observation, the model can issue `record` before `computer_act` in the same
 response. After the final result, it can issue `record` then `finish` together. It must
-never record evidence from an action it has not yet seen.
+never record evidence from an action it has not yet seen. The result lists remaining
+step/check indices; `finish` can reuse evidence from a verified done check once both
+lists are empty.
 
 ## What stays in history
 
