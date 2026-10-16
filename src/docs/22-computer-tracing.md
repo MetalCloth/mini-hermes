@@ -30,7 +30,8 @@ other IDs connect the parts that are easy to lose when reading a flat log:
 | `cause` | A returned observation to the action or wait that led to it |
 
 For a numbered-control click, the local trace records the control index, role, label, frame,
-requested screenshot point when applicable, and the mapped monitor point. For other actions,
+requested screenshot point when applicable, and the mapped monitor point. A `focus_window` action
+records the selected window index, Hyprland outcome, and following observation. For other actions,
 it records the requested input, the dotool command/result, elapsed time, and whether the next
 observation included a screenshot. A focus/edit sequence shares one `action_id`; each attempted
 input has a step number and its own outcome, and one observation follows the sequence. Startup events measure the delay from submitting the turn to
@@ -44,13 +45,13 @@ counts and timings, not private reasoning text.
 flowchart LR
     T["Tool call · call_id"] --> O["Observation · observation_id"]
     O --> A["Action · action_id"]
-    A --> I["Dotool input and outcome"]
+    A --> I["Hyprland focus or Dotool input and outcome"]
     I --> N["Fresh observation · cause=action_id"]
     O --> W["Wait · wait_id"]
     W --> R["Fresh observation · cause=wait_id"]
 ```
 
-The logger keeps bounded details: at most 40 visible windows, 60 actionable controls in a
+The logger keeps bounded details: at most 40 Hyprland windows across workspaces, 60 actionable controls in a
 detailed observation entry, a 1,200-character accessibility excerpt, and 4,000-character
 previews for tool arguments and results. It records lengths and whether a preview was cut off.
 The live view abbreviates those records; use `--raw` when the full bounded local record is

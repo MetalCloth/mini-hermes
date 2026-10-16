@@ -23,15 +23,16 @@ COMPUTER_INSTRUCTIONS = """computer_observe, computer_act, and computer_wait use
 
 Use computer_task when work has several uncertain stages, crosses apps, or may need resuming. A short task with one outcome, such as sending one message, needs no task record. If you start one, keep steps and done checks minimal. Request the start and first observation in one model response. Record only progress supported by tool results you have already received; use one record call with updates for several step/check changes. When the next input is already clear, put that record call before computer_act in the same model response. After final evidence, put record then finish in the same response. Do not spend a separate model round only marking a step working. The ledger is memory, not automatic verification. An unfinished saved task keeps its route on the next turn; start a new task before UI input if the user has requested a different task. The declared environment keeps local desktop and remote Firecrawl browser actions separate unless the task explicitly needs both. Do not switch to a mixed environment merely to bypass a route error.
 
-Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers and windows then exact window IDs for another named app. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly; do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends all input. For key chords use super+w; use leftmeta only as a standalone Super tap.
+Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use desktop for launchers. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly; do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. Prefer a matching enabled element; otherwise use pixels from the matching attached screenshot. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
 
 Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. If a fresh image shows a page or app still loading, take one bounded visual observation before concluding it failed. Computer actions run without a confirmation prompt; use computer_ask_user only when the task lacks information needed to choose a target or action. After computer_ask_user, use the fresh observation returned with the answer, or observe if none was returned. Claim completion only when fresh local evidence shows the requested state."""
 
 
 def computer_tool_schemas() -> list[dict[str, Any]]:
     action_schema = {"type": "object", "additionalProperties": False, "properties": {
-        "type": {"type": "string", "enum": ["click_element", "click", "double_click", "right_click", "scroll", "key", "type"],
-                 "description": "One Dotool input grounded in the current observation. CUA does not dispatch input."},
+        "type": {"type": "string", "enum": ["focus_window", "click_element", "click", "double_click", "right_click", "scroll", "key", "type"],
+                 "description": "Focus one listed Hyprland window or send one Dotool input grounded in the current observation. CUA does not dispatch input."},
+        "window_index": {"type": "integer", "description": "Window index from the latest mode=windows list; focus_window only."},
         "element_index": {"type": "integer", "description": "Numbered control from a current scope=window result only; desktop labels have no click indices."},
         "x": {"type": "integer", "description": "Screenshot pixel x from the latest image-backed observation."},
         "y": {"type": "integer", "description": "Screenshot pixel y from the latest image-backed observation."},
@@ -42,10 +43,10 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
     return [
         computer_task_schema(),
         {"type": "function", "name": "computer_observe", "description":
-         "Observe the user's live local desktop when a task needs it. computer_act already returns a fresh observation: use it directly unless the UI is loading, the result lacks the needed image/scope, or the next input is ambiguous. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. windows then window selects another named app. windows has no screenshot; image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a still-loading page or unchanged app launch, allow one bounded visual observation before replanning.",
+         "Observe the user's live local desktop when a task needs it. computer_act already returns a fresh observation: use it directly unless the UI is loading, the result lacks the needed image/scope, or the next input is ambiguous. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. windows lists Hyprland windows by workspace and gives one-use indices for focus_window; it has no screenshot. A uniquely matched pid/window_id can be read with window. image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a still-loading page or unchanged app launch, allow one bounded visual observation before replanning.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "mode": {"type": "string", "enum": ["active", "windows", "window", "desktop"],
-                      "description": "active observes the focused window with CUA when uniquely matched; windows lists targets; window uses exact pid/window_id; desktop captures the current screen."},
+                      "description": "active observes the focused window with CUA when uniquely matched; windows lists Hyprland workspaces and windows; window uses exact CUA pid/window_id; desktop captures the current screen."},
              "pid": {"type": "integer", "description": "Required with window mode; use a pid returned by windows. Ignored in other modes."},
              "window_id": {"type": "integer", "description": "Required with window mode; use a window_id returned by windows (0 is valid). Ignored in other modes."},
              "image": {"type": "boolean", "description": "Active/window modes only. False requests an accessibility-only observation when available."},
@@ -53,7 +54,7 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
                             "description": "Minimum age of the previous capture before taking this one; one capture only."},
          }, "required": ["mode"]}},
         {"type": "function", "name": "computer_act", "description":
-         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
+         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. focus_window uses a window_index from a mode=windows observation, checks the selected Hyprland window, focuses it, and returns a fresh image and CUA tree when available; it cannot be chained. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "observation_id": {"type": "string", "description": "ID from the latest observation, including the fresh observation returned by computer_act; single use."},
              "action": action_schema,
@@ -133,7 +134,7 @@ class ComputerSession:
         if type(min_age_ms) is not int or not 0 <= min_age_ms <= 10000:
             raise ValueError("min_age_ms must be 0–10000.")
         previous = self.current
-        if previous:
+        if previous and previous.get("mode") != "windows":
             remaining = min_age_ms / 1000 - (time.monotonic() - previous["captured_at"])
             if remaining > 0 and self.cancel_event.wait(remaining):
                 self._check_cancel()
@@ -153,38 +154,114 @@ class ComputerSession:
                 picture.close()
         return prepare_image(output.getvalue(), "computer-observation.jpg")
 
+    def _hyprland_clients(self) -> list[dict]:
+        self._check_cancel()
+        try:
+            result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, check=True, timeout=5)
+            clients = json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            raise RuntimeError("Could not list Hyprland windows.") from exc
+        if not isinstance(clients, list):
+            raise RuntimeError("Hyprland returned an invalid window list.")
+        return [client for client in clients if isinstance(client, dict)]
+
     def _windows(self) -> ComputerResult:
         started = time.monotonic()
-        self._check_cancel()
         self.current = None
-        if not self.cua:
-            return ComputerResult("Dotool-only mode has no CUA window directory. Use computer_observe(mode=\"desktop\").")
-        payload = {"on_screen_only": True}
-        response = self._cua_call("list_windows", payload)
-        windows = response.get("windows", [])
-        if not isinstance(windows, list):
-            raise RuntimeError("CUA returned an invalid window directory.")
+        clients = self._hyprland_clients()
+        cua_windows = []
+        if self.cua:
+            try:
+                cua_windows = self._cua_call("list_windows", {"on_screen_only": True}, timeout=3).get("windows", [])
+                if not isinstance(cua_windows, list):
+                    raise RuntimeError("CUA returned an invalid window directory.")
+            except RuntimeError:
+                cua_windows = []
+
+        def workspace(client: dict) -> dict:
+            value = client.get("workspace")
+            return value if isinstance(value, dict) else {}
+
+        def bounds(client: dict) -> dict | None:
+            at, size = client.get("at"), client.get("size")
+            if (not isinstance(at, list) or not isinstance(size, list)
+                    or len(at) != 2 or len(size) != 2
+                    or any(type(part) is not int for part in at + size)
+                    or any(part <= 0 for part in size)):
+                return None
+            return dict(zip(("x", "y", "width", "height"), at + size))
+
+        clients.sort(key=lambda client: (
+            workspace(client).get("id") if type(workspace(client).get("id")) is int else 10**9,
+            str(client.get("title") or "").casefold(),
+        ))
+        geometries = [bounds(client) for client in clients]
+        by_client: dict[int, list[int]] = {}
+        by_cua: dict[int, list[int]] = {}
+        for index, (client, geometry) in enumerate(zip(clients, geometries)):
+            if geometry is None:
+                continue
+            for cua_index, window in enumerate(cua_windows):
+                if (not isinstance(window, dict) or type(client.get("pid")) is not int
+                        or window.get("pid") != client["pid"]):
+                    continue
+                cua_bounds = self._bounds_values(window.get("bounds"))
+                hypr_bounds = tuple(geometry[key] for key in ("x", "y", "width", "height"))
+                if cua_bounds and all(abs(a - b) <= 4 for a, b in zip(hypr_bounds, cua_bounds)):
+                    by_client.setdefault(index, []).append(cua_index)
+                    by_cua.setdefault(cua_index, []).append(index)
+
         bounded = []
-        for window in windows[:40]:
-            if isinstance(window, dict):
-                item = {key: window.get(key) for key in (
-                    "pid", "window_id", "title", "app_name", "bounds", "z_index"
-                ) if key in window}
-                for key in ("title", "app_name"):
-                    if isinstance(item.get(key), str):
-                        item[key] = item[key][:160]
-                bounded.append(item)
+        focusable = {}
+        for index, client in enumerate(clients[:40]):
+            identity = client.get("address")
+            pid = client.get("pid")
+            monitor = client.get("monitor")
+            place = workspace(client)
+            item = {
+                "title": str(client.get("title") or "")[:160],
+                "app_name": str(client.get("class") or "")[:160],
+                "pid": pid if type(pid) is int else None,
+                "workspace": {
+                    "id": place.get("id") if type(place.get("id")) is int else None,
+                    "name": str(place.get("name") or "")[:80],
+                },
+                "monitor": monitor if type(monitor) is int else None,
+            }
+            if geometries[index] is not None:
+                item["bounds"] = geometries[index]
+            matches = by_client.get(index, [])
+            if len(matches) == 1 and len(by_cua[matches[0]]) == 1:
+                window = cua_windows[matches[0]]
+                if type(window.get("window_id")) is int and window["window_id"] >= 0:
+                    item["window_id"] = window["window_id"]
+            if (type(pid) is int and pid > 0 and isinstance(client.get("workspace"), dict)
+                    and isinstance(identity, str)
+                    and re.fullmatch(r"0x[0-9a-fA-F]+", identity)
+                    and monitor == self.driver.monitor_id):
+                item["window_index"] = index + 1
+                focusable[index + 1] = {
+                    "address": identity, "pid": pid, "class": client.get("class"),
+                    "workspace_id": place.get("id"), "monitor": monitor,
+                }
+            bounded.append(item)
+
+        snapshot = self._new_snapshot(mode="windows", windows=focusable, elements={}, size=None)
+        truncated = len(clients) > 40
         if self.trace:
             self.trace.write(
-                "computer_windows", windows=bounded, window_count=len(windows),
-                truncated=len(windows) > 40,
+                "computer_windows", windows=bounded, window_count=len(clients),
+                observation_id=snapshot["id"], truncated=truncated,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
         return ComputerResult(
-            json.dumps({"windows": bounded, "truncated": len(windows) > 40,
-                        "screenshot_included": False}, ensure_ascii=False),
-            history_text=json.dumps({"windows_listed": len(bounded),
-                                     "truncated": len(windows) > 40,
+            json.dumps({"observation_id": snapshot["id"], "scope": "windows",
+                        "windows": bounded, "truncated": truncated,
+                        "screenshot_included": False,
+                        "note": "Only windows on the selected monitor have window_index for focus_window; only entries with window_id support exact CUA window reads."},
+                       ensure_ascii=False),
+            history_text=json.dumps({"observation_id": snapshot["id"], "scope": "windows",
+                                     "windows_listed": len(bounded), "truncated": truncated,
                                      "screenshot_included": False}),
         )
 
@@ -461,17 +538,20 @@ class ComputerSession:
         }, ensure_ascii=False)
         return ComputerResult(text, [image] if image else [], history_text)
 
-    def _active(self, image_requested: bool) -> ComputerResult:
+    def _active(self, image_requested: bool, *, cause: dict[str, str] | None = None) -> ComputerResult:
         if type(image_requested) is not bool:
             raise ValueError("image must be true or false.")
         if not self.cua:
-            return self._desktop()
+            return self._desktop(cause=cause)
         self._check_cancel()
-        target = self._active_target(self.driver.active_window_stamp())
-        if target is None:
-            # The desktop image is safe to show; an ambiguous CUA ID is not safe to act on.
-            return self._desktop(with_accessibility=False)
-        return self._window(*target, image_requested)
+        try:
+            target = self._active_target(self.driver.active_window_stamp())
+            if target is not None:
+                return self._window(*target, image_requested, cause=cause)
+        except (RuntimeError, ValueError):
+            pass
+        # The desktop image is safe to show; an ambiguous CUA ID is not safe to act on.
+        return self._desktop(cause=cause, with_accessibility=False)
 
     def observe(self, args: dict[str, Any]) -> ComputerResult:
         if not isinstance(args, dict) or set(args) - {"mode", "pid", "window_id", "image", "min_age_ms"}:
@@ -547,6 +627,8 @@ class ComputerSession:
         }}
 
     def _fresh_after(self, snapshot: dict, image_requested: bool, cause: dict[str, str]) -> tuple[ComputerResult, str | None]:
+        if snapshot["mode"] == "windows":
+            return (self._active(True, cause=cause) if cause["kind"] == "action" else self._windows()), None
         if snapshot["mode"] == "desktop":
             return self._desktop(cause=cause), None
         if cause["kind"] == "action":
@@ -627,6 +709,7 @@ class ComputerSession:
             raise ValueError("action must be an object.")
         name = value.get("type")
         fields = {
+            "focus_window": {"type", "window_index"},
             "click_element": {"type", "element_index"},
             "click": {"type", "x", "y"}, "double_click": {"type", "x", "y"},
             "right_click": {"type", "x", "y"},
@@ -635,7 +718,15 @@ class ComputerSession:
         }
         if not isinstance(name, str) or name not in fields or set(value) != fields[name]:
             raise ValueError("Unsupported or incomplete computer action.")
-        if name == "click_element":
+        if name == "focus_window":
+            if snapshot["mode"] != "windows":
+                raise ValueError("focus_window needs a current mode=windows observation.")
+            if (type(value["window_index"]) is not int
+                    or value["window_index"] not in snapshot["windows"]):
+                raise ValueError("Choose a focusable window_index from the current windows list.")
+        elif snapshot["mode"] == "windows":
+            raise ValueError("A windows list supports only focus_window; observe an image before other input.")
+        elif name == "click_element":
             if snapshot["mode"] != "window":
                 raise ValueError("click_element needs a scope=window result with numbered controls; desktop labels are read-only. Observe the active or exact window, or use screenshot coordinates.")
             if (type(value["element_index"]) is not int
@@ -736,15 +827,9 @@ class ComputerSession:
             raise RuntimeError("No usable target window bounds for safe focus.")
         if pid is None:
             raise RuntimeError("The target has no window identity for safe focus.")
-        try:
-            result = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, check=True, timeout=5)
-            clients = json.loads(result.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            raise RuntimeError("Could not check Hyprland windows before dotool input.") from exc
+        clients = self._hyprland_clients()
         candidates = []
-        for client in clients if isinstance(clients, list) else []:
-            if not isinstance(client, dict):
-                continue
+        for client in clients:
             if client.get("pid") != pid:
                 continue
             at, size = client.get("at"), client.get("size")
@@ -756,7 +841,33 @@ class ComputerSession:
                 candidates.append(client)
         if len(candidates) != 1 or not isinstance(candidates[0].get("address"), str):
             raise RuntimeError("Could not uniquely match the target to a Hyprland window. Observe again.")
-        address = candidates[0]["address"]
+        self._focus_address(candidates[0]["address"])
+
+    def _focus_window(self, snapshot: dict, action: dict) -> dict:
+        target = snapshot["windows"][action["window_index"]]
+        try:
+            clients = [client for client in self._hyprland_clients()
+                       if client.get("address") == target["address"]]
+        except RuntimeError as exc:
+            raise ActionNotDispatched(
+                "hyprland", "window_check_failed",
+                "The current window list could not be checked. List windows again before focusing.",
+            ) from exc
+        if (len(clients) != 1 or clients[0].get("pid") != target["pid"]
+                or clients[0].get("class") != target["class"]
+                or clients[0].get("monitor") != target["monitor"]
+                or not isinstance(clients[0].get("workspace"), dict)
+                or clients[0]["workspace"].get("id") != target["workspace_id"]):
+            raise ActionNotDispatched(
+                "hyprland", "window_changed",
+                "The listed window changed or moved. List windows again before focusing it.",
+            )
+        self._focus_address(target["address"])
+        if self.driver._active_window_data().get("pid") != target["pid"]:
+            raise RuntimeError("The focused window did not match the selected process. Observe the desktop again.")
+        return {"effect": "confirmed", "route": "hyprland", "message": "The selected window is focused."}
+
+    def _focus_address(self, address: str) -> None:
         if not re.fullmatch(r"0x[0-9a-fA-F]+", address):
             raise RuntimeError("Hyprland returned an invalid target window address.")
         if self.driver.active_window() == address:
@@ -771,7 +882,7 @@ class ComputerSession:
             try:
                 result = subprocess.run(command, capture_output=True, timeout=3)
             except (OSError, subprocess.SubprocessError) as exc:
-                raise RuntimeError("Could not focus the exact window for dotool input.") from exc
+                raise RuntimeError("Could not focus the selected window.") from exc
             if result.returncode != 0:
                 continue
             deadline = time.monotonic() + 1
@@ -999,7 +1110,9 @@ class ComputerSession:
                 self._check_cancel()
                 if step > 1:
                     self._check_sequence_target(snapshot)
-                if action["type"] in {"click_element", "click", "double_click"}:
+                if action["type"] == "focus_window":
+                    outcome = self._focus_window(snapshot, action)
+                elif action["type"] in {"click_element", "click", "double_click"}:
                     outcome = self._click(snapshot, action, trace_context=step_context)
                 else:
                     outcome = self._dotool(snapshot, action, trace_context=step_context)

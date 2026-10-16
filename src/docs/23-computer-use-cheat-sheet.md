@@ -3,8 +3,9 @@
 This is a quick reference for Oryn's current computer tools in regular TUI chat. The model calls
 `computer_*` tools; by default, Oryn uses CUA to read the local desktop and dotool to send input.
 Native `browser_*` tools control a separate remote Firecrawl browser, not local Brave.
-With `ORYN_COMPUTER_DRIVER=dotool`, only desktop screenshots and dotool input are available;
-exact CUA windows, accessibility controls, and native checks are unavailable.
+With `ORYN_COMPUTER_DRIVER=dotool`, Hyprland workspace listing and focus still work,
+but observations use desktop screenshots; exact CUA windows, accessibility controls,
+and native checks are unavailable.
 
 ## The short version
 
@@ -19,9 +20,9 @@ exact CUA windows, accessibility controls, and native checks are unavailable.
 
 ## Four ways to observe
 
-| Model call | CUA read | What the model receives |
+| Model call | Desktop read | What the model receives |
 | --- | --- | --- |
-| `computer_observe({"mode":"windows"})` | `list_windows` | Visible app/window metadata: `pid`, `window_id`, title, app name, bounds. No screenshot, accessibility tree, or actionable observation ID. |
+| `computer_observe({"mode":"windows"})` | Hyprland `clients -j`, plus CUA `list_windows` when available | Windows across workspaces, sorted by workspace, with title, app, `pid`, workspace, and a one-use `window_index` when focusable. Uniquely matched CUA windows also have `window_id`. No screenshot or accessibility tree. |
 | `computer_observe({"mode":"active"})` | Match the focused Hyprland window with `list_windows`, then `get_window_state` | That window's screenshot and bounded accessibility controls/tree when a unique match exists. Otherwise a desktop screenshot. |
 | `computer_observe({"mode":"window","pid":4321,"window_id":71})` | `get_window_state` | The specified window's bounded controls/tree and a screenshot when available. On Wayland, Oryn may fall back to a desktop screenshot while keeping the exact window's tree. |
 | `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot, plus read-only labels from the active window when CUA can safely match it. These labels have no actionable indices; use `mode="active"` for `click_element`. |
@@ -31,7 +32,8 @@ The accessibility tree is what an app exposes to the desktop, not a direct brows
 Some apps expose only a generic window. Window and active observations send at most 60 actionable
 controls and a 1,200-character tree excerpt to the model. When a document is exposed, its
 controls come before browser chrome in that bounded list.
-`mode="windows"` has no image; `mode="desktop"` always has one. `image=false` can skip an
+`mode="windows"` has no image but supplies an `observation_id` for `focus_window`;
+`mode="desktop"` always has an image. `image=false` can skip an
 exact-window screenshot, but an active-mode fallback can still return a desktop image.
 
 ### What `verify_state` checks
@@ -68,24 +70,27 @@ Desktop observations do not support this exact-window check.
 | `call_...` (`call_id`) | One model tool call, linking its start to its result. |
 | `action_id` / `wait_id` | One input attempt or native wait, linking it to its result and following observation. |
 | `pid` + `window_id` | The process and exact CUA window to read. These can change when apps restart. |
-| `observation_id` | The latest screen snapshot. `computer_act` or `computer_wait` consumes it once; a new observation replaces it. |
+| `observation_id` | The latest screen or windows-list observation. `computer_act` consumes it once; `computer_wait` accepts exact-window observations. A new observation replaces it. |
+| `window_index` | A focusable Hyprland window in one windows-list observation. It is not stable across lists. |
 | Control `[3]` (`element_index`) | A numbered control in one exact-window observation. It is not stable across observations. |
 | `active_window_stamp` | Hyprland window address, monitor, position, and size. Oryn checks it before desktop input. It does not describe the page's contents. |
 | `capture_id` | CUA's reference for a captured image, used with the observation's image scope and coordinates. |
 
 ## One example, from target to evidence
 
-The IDs below are invented. Suppose Brave is open on WhatsApp Web:
+The IDs below are invented. Suppose Brave is on workspace 3 and Blender is on workspace 5:
 
-1. `computer_observe({"mode":"windows"})` returns `Brave: pid=4321, window_id=71`.
-   This is a directory entry, with no screenshot.
-2. `computer_observe({"mode":"window","pid":4321,"window_id":71})` returns
-   `observation_id="obs-a"`, a screenshot, and perhaps `[3] textbox "Search chats"`
-   if Brave exposes that control.
-3. `computer_act` uses `obs-a` for an input. Oryn validates the current target and sends
-   the input in that call without a confirmation prompt. The result includes a fresh
-   observation, say `obs-b`. Reusing `obs-a` is rejected.
-4. The model inspects `obs-b` and can use it directly for the next action. It calls
+1. `computer_observe({"mode":"windows"})` returns `observation_id="list-a"`, plus
+   `Brave: workspace=3, window_index=1, pid=4321` and
+   `Blender: workspace=5, window_index=2`. It has no screenshot. A uniquely matched
+   Brave window may also have `window_id=71`.
+2. `computer_act({"observation_id":"list-a","action":{"type":"focus_window","window_index":1}})`
+   checks that the listed Brave window is still the same, focuses it, and returns a fresh
+   screenshot and accessibility controls when CUA can match it. This is one action;
+   no key or click is chained to the focus.
+3. The model uses that fresh observation, perhaps containing `[3] textbox "Search chats"`,
+   for its next input. Reusing `list-a` is rejected.
+4. The model inspects each returned observation and can use it directly for the next action. It calls
    `computer_observe` again only if the UI is still loading or this result is insufficient;
    it can use `computer_wait` for a supported exact condition. A short task needs no
    `computer_task` record. For longer tasks, one `record` call can update multiple steps

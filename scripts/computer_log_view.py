@@ -36,6 +36,8 @@ def _elapsed(record: dict) -> str:
 
 def _action(action: dict) -> str:
     kind = action.get("type", "unknown")
+    if kind == "focus_window":
+        return f"focus window [{action.get('window_index', '?')}]"
     if kind == "click_element":
         return f"click element [{action.get('element_index', '?')}]"
     if kind in {"click", "double_click", "right_click", "scroll"}:
@@ -154,8 +156,14 @@ def format_record(record: dict) -> str:
             if not isinstance(window, dict):
                 continue
             title = window.get("title") or window.get("app_name") or "(untitled)"
+            workspace = window.get("workspace")
+            workspace = workspace if isinstance(workspace, dict) else {}
+            place = workspace.get("name") or workspace.get("id")
+            if place is None:
+                place = "?"
             lines.append(
-                f"  · {window.get('app_name', '?')} · {_short(title, 100)} · "
+                f"  · workspace {place} · [{window.get('window_index', '-')}] "
+                f"{window.get('app_name', '?')} · {_short(title, 100)} · "
                 f"pid {window.get('pid', '?')} · id {window.get('window_id', '?')} · "
                 f"{_short(window.get('bounds', {}), 100)}"
             )
