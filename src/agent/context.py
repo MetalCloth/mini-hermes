@@ -34,6 +34,11 @@ def _encoding(model: str | None):
         return None
 
 
+def warm_context_tokenizer(model: str | None = None) -> None:
+    """Load the context tokenizer before the first interactive turn."""
+    _encoding(model)
+
+
 def tokenizer_name(model: str | None = None) -> str:
     """Name the local encoder used for diagnostics and the handbook."""
     encoding = _encoding(model)

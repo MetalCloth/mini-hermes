@@ -16,6 +16,9 @@ class ChatDemoTests(unittest.TestCase):
         patcher = patch.object(chat_demo, "load_project_instructions", return_value=None)
         patcher.start()
         self.addCleanup(patcher.stop)
+        warm_patcher = patch.object(chat_demo, "warm_context_tokenizer")
+        warm_patcher.start()
+        self.addCleanup(warm_patcher.stop)
         mcp_patcher = patch.object(chat_demo, "MCPClient")
         self.mcp_client_type = mcp_patcher.start()
         self.mcp_client_type.return_value.start.return_value = []

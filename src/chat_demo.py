@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from src.agent.conversation_loop import TurnLimitReached, add_turn_arguments, run_turn, turn_limits_from_args
+from src.agent.context import warm_context_tokenizer
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
@@ -168,6 +169,8 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as exc:
         print(f"Could not access sessions at {DEFAULT_DB_PATH}: {exc}")
         return
+    print("Preparing the local prompt-size counter...")
+    warm_context_tokenizer(args.model)
     provider = provider_for_model(args.model)
     if warning := provider_setup_warning(provider):
         print(f"config> {warning}")

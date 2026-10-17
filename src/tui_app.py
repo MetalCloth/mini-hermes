@@ -27,6 +27,7 @@ from textual.widgets.option_list import Option
 from src.agent.conversation_loop import (
     TurnCancelled, TurnLimitReached, TurnLimits, add_turn_arguments, run_turn, turn_limits_from_args,
 )
+from src.agent.context import warm_context_tokenizer
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.chat_demo import APP_ROOT, _resolve_project_root
@@ -2371,6 +2372,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     try:
+        print("Preparing the local prompt-size counter...")
+        warm_context_tokenizer(model)
         app.run()
     finally:
         for terminal_jobs in app.terminal_jobs.values():

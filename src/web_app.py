@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from src.agent.conversation_loop import (
     TurnCancelled, TurnLimitReached, TurnLimits, add_turn_arguments, run_turn, turn_limits_from_args,
 )
+from src.agent.context import warm_context_tokenizer
 from src.agent.project_context import load_project_instructions
 from src.agent.system_prompt import SYSTEM_PROMPT
 from src.mcp.client import MCPClient
@@ -559,6 +560,8 @@ def main(argv: list[str] | None = None) -> None:
         limits = turn_limits_from_args(args)
     except ValueError as exc:
         parser.error(str(exc))
+    print("Preparing the local prompt-size counter...")
+    warm_context_tokenizer(args.model)
     server = DashboardServer(
         args.project, args.port, mcp_client=MCPClient(), turn_limits=limits, model=args.model,
     )

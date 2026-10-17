@@ -165,6 +165,8 @@ The project guide asks us to keep responsibilities separate, prefer the simplest
 
 `estimate_context_tokens` counts compact JSON message text and tool schemas with `tiktoken` when its vocabulary is available. It uses the selected model's known encoding, or `o200k_base` for an unknown model. If Oryn is offline before the vocabulary is cached, it falls back to UTF-8 byte count, which is a conservative upper bound and can compact earlier than a real tokenizer would. Counts include small per-message/tool overhead and an 8% margin. They are estimates, not provider billing or an exact guarantee of the remote tokenizer's count.
 
+Interactive app launchers warm the selected model's tokenizer before accepting a chat turn, so a cold tokenizer load does not delay the first request. The first launch can pause while a missing vocabulary is loaded; later starts use `tiktoken`'s disk cache when available. If loading fails while offline, the existing UTF-8 byte-count fallback remains in effect.
+
 Text and function schemas count toward the same budget. Images are counted separately from their base64 bytes with a conservative high-detail 512-pixel tile estimate; the existing 20 MiB image-byte cap still applies. If older attachments exceed that cap in aggregate, Oryn summarizes old complete turns before checking the final request, preserving the newest images. The target is **200,000 estimated tokens before compaction**. When the complete request would exceed it, Oryn summarizes older complete turns until the assembled context is estimated at or below **180,000 tokens**, then selects the newest whole turns that fit.
 
 ```mermaid

@@ -234,6 +234,7 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(tui_app, "SQLiteSessionStore", return_value=store), \
                  patch.object(tui_app, "APP_ROOT", root), \
                  patch.object(tui_app, "_resolve_project_root", return_value=root), \
+                 patch.object(tui_app, "warm_context_tokenizer"), \
                  patch.object(tui_app, "provider_for_model", side_effect=lambda model, auth_file=None: CodexProvider(model, root / "auth.json")), \
                  patch.object(tui_app, "MCPClient", side_effect=lambda: MCPClient(configs=[])), \
                  patch.object(OrynTUI, "run", autospec=True) as run:
