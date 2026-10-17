@@ -23,7 +23,7 @@ case "$mode" in
         printf 'Computer trace: %s\n' "$log_file" >&2
         trace_images="${ORYN_COMPUTER_TRACE_IMAGES:-}"
         case "${trace_images,,}" in
-            1|true|yes|on) printf 'Marked click images: %s-images\n' "${log_file%.jsonl}" >&2 ;;
+            1|true|yes|on) printf 'Per-turn image folders: %s-<trace-id>-images/\n' "${log_file%.jsonl}" >&2 ;;
         esac
         printf 'Follow it live in another terminal with: %s follow\n' "$0" >&2
         exec "$repo_dir/oryn" "$@"

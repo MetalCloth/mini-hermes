@@ -90,9 +90,13 @@ desktop input results, waits, and the observation returned after each action or 
 call, observation, action, and resulting state. Use `./scripts/computer-log.sh follow --raw` for
 the underlying JSONL records. Local traces are private files under `logs/`; they can include
 typed text and visible UI/accessibility text, but do not save screenshot pixels by default.
-Use `./scripts/computer-log.sh run --images` to save private pre-click screenshots with the
-requested point marked alongside the log. This also records a best-effort post-input cursor
-position; it may differ if the desktop moves the pointer after the click. These diagnostic files are not exported to LangSmith.
+Use `./scripts/computer-log.sh run --images` to save every screenshot attached to a computer
+tool result, including desktop, window, zoom, and post-action views. `follow` prints each image's
+scope, observation ID, and file path. Each traced turn has its own
+`<log-name>-<trace-id>-images/` folder; open a path in your image viewer to see the JPEG Oryn sent to the model.
+Coordinate clicks also save a separate marked copy of the pre-click image. This
+mode records a best-effort post-input cursor position; it may differ if the desktop moves the
+pointer after the click. These diagnostic files are not exported to LangSmith.
 
 LangSmith export is optional and off by default. Install the project dependencies, then set
 `ORYN_LANGSMITH_TRACING=1`, `LANGSMITH_API_KEY`, and optionally `LANGSMITH_PROJECT` before

@@ -125,6 +125,7 @@ and can carry an unfinished goal and progress into a later turn. Observation IDs
 indices cannot be reused in that later turn: Oryn must observe again.
 
 The optional JSONL diagnostic trace links calls, actions, and observations, but stores image
-metadata rather than screenshot pixels by default. `computer-log.sh run --images` saves private
-pre-click images with the requested point marked; see
+metadata rather than screenshot pixels by default. `computer-log.sh run --images` saves each
+image attached to a computer tool result, linked by observation ID, plus separate marked
+pre-click images in a folder for each traced turn. The live `follow` view prints the saved paths; see
 [the main-loop decision record](21-cua-main-loop.md) and [computer tracing](22-computer-tracing.md).

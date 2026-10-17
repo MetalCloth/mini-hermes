@@ -147,6 +147,12 @@ def format_record(record: dict) -> str:
         return (f"{stamp}  OBSERVE · {scope}{image_label} · "
                 f"{record.get('width', '?')}×{record.get('height', '?')}{elements} · "
                 f"{image_state} · id {record.get('observation_id', '?')}{timing}{suffix}")
+    if event == "computer_observation_image":
+        path = record.get("observation_image_path")
+        scope = record.get("image_scope") or "image"
+        if path:
+            return f"{stamp}  IMAGE SAVED · {scope} · id {record.get('observation_id', '?')} · {path}"
+        return f"{stamp}  IMAGE SAVE FAILED · {scope} · id {record.get('observation_id', '?')}"
     if event == "computer_windows":
         windows = record.get("windows", [])
         window_list = windows if isinstance(windows, list) else []
@@ -504,7 +510,13 @@ def main() -> None:
                     color = "\033[31m"
                 elif event in {"computer_task_started", "computer_task_start", "computer_task_finished", "computer_task_done"}:
                     color = "\033[35m"
-                elif event in {"computer_observation", "computer_observation_detail", "computer_windows"}:
+                elif event == "computer_observation_image" and not record.get("observation_image_path"):
+                    color = "\033[31m"
+                elif event == "computer_target_preflight" and record.get("changed"):
+                    color = "\033[31m"
+                elif event in {"computer_observation", "computer_observation_detail", "computer_observation_image", "computer_windows"}:
+                    color = "\033[36m"
+                elif event in {"computer_target_preflight", "computer_ui_settle", "computer_progress_hint"}:
                     color = "\033[36m"
                 elif event in {"computer_action_result", "computer_action_complete", "computer_wait_complete"}:
                     color = "\033[32m"

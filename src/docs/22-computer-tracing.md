@@ -75,16 +75,24 @@ titles, accessibility labels and values, and a short accessibility-tree excerpt.
 file as private; remove it when it is no longer useful. Voice traces also contain microphone
 device and host API names, which may identify hardware attached to the local machine.
 
-The logging captures what Oryn can serialize about an observation. Its default trace cannot
-reproduce exactly what the vision model saw. It records screenshot dimensions, image scope,
-and whether an image was attached. For click diagnosis, start with
-`./scripts/computer-log.sh run --images`: each coordinate click saves the original pre-action
-image with the requested point marked in a sibling `*-images/` directory. That directory is
-mode `0700` and its JPEG files are mode `0600`. The trace links each marked image to its
-action. It also attempts a post-input Hyprland cursor readback and records the offset from
-the requested point in logical desktop pixels. A window manager or app may move the cursor
-after the click, so this readback helps diagnose pointer placement but is not proof of where
-the click was delivered. The images can show private desktop content; remove the directory
+The default trace records screenshot dimensions, image scope, and whether an image was attached,
+but not the image itself. Start with `./scripts/computer-log.sh run --images` to save each JPEG
+attached to a computer tool result in a sibling `<log-name>-<trace-id>-images/` directory. Each
+traced turn gets its own folder, even when several turns share one JSONL log. This includes the first
+observation, desktop or window images, desktop zoom crops, and fresh images returned after
+actions or waits. `./scripts/computer-log.sh follow` prints an `IMAGE SAVED` line with its scope,
+`observation_id`, and absolute file path. Open that path with an image viewer (for example,
+`xdg-open '<printed path>'`). The saved bytes are the exact attachment Oryn provided to
+the model; the image provider may process them internally. A tree-only observation has no image
+to save. Older traces cannot recover screenshots that were not saved when the run happened.
+
+Coordinate clicks also save a separate pre-action JPEG with the requested point marked. That
+marked copy is for diagnosis and is not what the model saw. The image directory is mode `0700`
+and its JPEG files are mode `0600`. The trace links each clean image to its observation and each
+marked image to its action. It also attempts a post-input Hyprland cursor readback and records
+the offset from the requested point in logical desktop pixels. A window manager or app may move
+the cursor after the click, so this readback helps diagnose pointer placement but is not proof
+of where the click was delivered. The images can show private desktop content; remove the directory
 with the trace when it is no longer needed.
 
 ## Optional LangSmith export
@@ -107,7 +115,7 @@ is best-effort: a missing SDK, bad key, or network failure is recorded in the lo
 the local log continues. The background upload may not finish if the process is terminated
 immediately after a task.
 
-The remote trace excludes screenshot pixels and local marked-image paths, task and prompt text, final answer text, typed
+The remote trace excludes screenshot pixels and local image paths, task and prompt text, final answer text, typed
 text, full tool arguments/results, window titles, and full accessibility-tree excerpts. It
 does retain timings, event names, IDs, action/target metadata, and control labels/frames.
 Selection values for choice-like controls can also be present because they help diagnose
@@ -119,8 +127,8 @@ needed for local desktop tools to run.
 
 ## Limits
 
-- A screenshot is represented by metadata only unless local `run --images` was selected;
-  that mode saves marked pre-click images, not every observation or the post-action image.
+- A screenshot is represented by metadata only unless local `run --images` was selected.
+  Saving may fail, in which case the live trace prints `IMAGE SAVE FAILED`; it never blocks input.
 - Model reasoning is not logged. Tool calls and observable effects are logged, which is enough
   to connect choices to execution without storing hidden reasoning.
 - Local tool outputs are bounded previews. Check `result_chars` and `result_truncated` before

@@ -57,6 +57,7 @@ def _langsmith_safe_record(record: dict) -> dict:
     safe.pop("tree_excerpt", None)
     safe.pop("window_title", None)
     safe.pop("marked_image_path", None)
+    safe.pop("observation_image_path", None)
 
     if event in {"computer_tool", "tool_call"}:
         result = safe.pop("result", None)
@@ -220,7 +221,7 @@ class ComputerTrace:
         self.capture_images = os.environ.get("ORYN_COMPUTER_TRACE_IMAGES", "").strip().casefold() in {
             "1", "true", "yes", "on",
         }
-        self.image_dir = self.path.with_name(f"{self.path.stem}-images")
+        self.image_dir = self.path.with_name(f"{self.path.stem}-{self.trace_id}-images")
         self._langsmith: _LangSmithExporter | None = None
         enabled = os.environ.get("ORYN_LANGSMITH_TRACING", "").strip().casefold() in {
             "1", "true", "yes", "on",
@@ -243,6 +244,33 @@ class ComputerTrace:
         record = self._write_local(event, **fields)
         if self._langsmith is not None and event != "langsmith_status":
             self._langsmith.submit(record)
+
+    def save_observation_image(self, image: dict, observation_id: str) -> str | None:
+        """Save the attachment bytes sent with a computer observation, without changing them."""
+        if not self.capture_images:
+            return None
+        path = self.image_dir / f"{self.trace_id}-{observation_id}.jpg"
+        created = False
+        try:
+            if image["mime_type"] != "image/jpeg":
+                return None
+            data = base64.b64decode(image["base64_data"], validate=True)
+            if len(data) != image["size_bytes"]:
+                return None
+            self.image_dir.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(self.image_dir, 0o700)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(data)
+            return str(path)
+        except Exception:
+            if created:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return None
 
     def save_marked_image(self, image: dict | None, point: tuple[int, int], action_id: str) -> str | None:
         """Optionally keep the exact pre-action image with its requested click marked."""
