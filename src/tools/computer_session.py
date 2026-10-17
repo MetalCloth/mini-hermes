@@ -24,7 +24,9 @@ COMPUTER_INSTRUCTIONS = """computer_observe, computer_act, and computer_wait use
 
 Use computer_task for multiple independent outcomes, work across apps, or a long task likely to need resuming. Opening one file, changing one setting, or sending one message is one outcome even if it takes several UI actions: skip the task record. If you start one, keep steps and done checks minimal. Request the start and first observation in one model response. Record only progress supported by tool results you have already received; use one record call with updates for several step/check changes, with evidence inside each update. When the next input is already clear, put that record call before computer_act in the same model response. After final evidence, put record then finish in the same response. If a relevant saved task already exists, update its observed steps and checks together, then finish it. If a record call fails, change the fields named by the error rather than repeating the same call. Do not spend a separate model round only marking a step working. The ledger is memory, not automatic verification. An unfinished saved task keeps its route on the next turn; start a new task before UI input if the user has requested a different task. The declared environment keeps local desktop and remote Firecrawl browser actions separate unless the task explicitly needs both. Do not switch to a mixed environment merely to bypass a route error.
 
-Choose observation scope from the task before the current focus: use desktop first for a launcher or desktop overlay, active for work inside the already-focused app, and windows to locate an app already open across workspaces. Do not start with active and then recover to desktop for a launch task. Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. For another named app, windows lists Hyprland windows with workspaces; use its observation_id and window_index with a single focus_window action, then inspect the returned screenshot and accessibility state. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. For a small or uncertain desktop target, zoom a region of the latest full desktop image with computer_observe(mode=desktop, observation_id=..., region={x,y,width,height}); the returned image has its own local click coordinates. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly. After a UI-changing action, the returned screenshot may catch a transition even when controls are visible; if the target is clipped or its position is uncertain, observe again before clicking its coordinates. Otherwise do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. For local desktop actions, prefer click_element for a matching enabled control from a scope=window result; otherwise use pixels from the matching attached screenshot. After a missed visual click, inspect the fresh image and zoom or choose another visible route before guessing nearby coordinates again. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
+Choose observation scope from the requested outcome: use desktop for launchers/desktop overlays, active for work in the focused app, and windows to locate apps across workspaces. For a named-app request to open or bring an app forward, request a windows observation in the same model response as any relevant skill loads. If one matching window is already active, the goal is met; if it exists but is inactive, focus that listed window; if it is absent from a complete list, use the desktop launcher. Each windows entry reports is_active; true confirms foreground, false means that entry is not foreground, and null means focus could not be read. A windows listing proves presence only. For open/focus completion, require is_active=true, a confirmed focus_window result, or fresh desktop evidence showing the requested app in front. Desktop observations also report active_window app_name and title when available. Do not start with active and then recover to desktop for a launch task. Observe the active window with mode=active when the target is already focused; it binds its accessibility tree and screenshot in one tool call when CUA can match it. Use a listed window's observation_id and window_index with one focus_window action, then inspect its fresh result. A uniquely matched CUA pid/window_id can also be observed directly. Desktop accessibility labels are read-only: click_element needs a numbered control from a scope=window result; active mode can fall back to desktop. For a small or uncertain desktop target, zoom a region of the latest full desktop image with computer_observe(mode=desktop, observation_id=..., region={x,y,width,height}); the returned image has its own local click coordinates. Make at most one computer_act or computer_wait call per model response, using only the latest single-use observation_id; each result provides fresh state for the next decision. Read that returned state and use its new ID directly. After a launch/focus action, if the returned image still shows the old app or a transition, take at most one bounded desktop observation (min_age_ms up to 5000), then replan. Do not use a windows list as visual proof or repeat the same shortcut just to wait. If the target exists but is inactive, focus its listed window. Otherwise do not call computer_observe just to check the action again. Observe again when it is still loading, lacks the needed image or scope, or is otherwise too ambiguous to choose the next input. Use min_age_ms only for a visible asynchronous change, with a delay justified by that change rather than a default pause. Never reuse a stale ID, window index, control index, or coordinate. For local desktop actions, prefer click_element for a matching enabled control from a scope=window result; otherwise use pixels from the matching attached screenshot. After a missed visual click, inspect the fresh image and zoom or choose another visible route before guessing nearby coordinates again. CUA observes and checks native predicates; Dotool sends clicks, keys, text, and scrolls. Hyprland focuses a selected window. For key chords use super+w; use leftmeta only as a standalone Super tap.
+
+For a windows result with truncated=true, a missing app is not proof that it is closed. Do not launch another instance based on an incomplete list. If several matching windows exist, prefer an active match, then the closest exact app-name/title match; ask only if the requested window remains ambiguous.
 
 Use actions for a 2–3 step focus/edit sequence only when the steps are predictable without another screenshot, such as ctrl+l, type a URL, enter. Include a concrete expected_result. Stop the sequence after navigation or submission. Use one action for uncertain clicks, scrolling, or changing windows. Inspect the action outcome and fresh observation before deciding whether to retry. `sent` means the input command completed; inspect the fresh state to confirm its UI effect. `refused` means input was not sent; `unknown`, timeout, or cancellation may mean input was sent. Never replay uncertain input automatically. If a fresh image shows a page or app still loading, take one bounded visual observation before concluding it failed. Computer actions run without a confirmation prompt; use computer_ask_user only when the task lacks information needed to choose a target or action. After computer_ask_user, use the fresh observation returned with the answer, or observe if none was returned. Claim completion only when fresh local evidence shows the requested state."""
 
@@ -53,10 +55,10 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
     return [
         computer_task_schema(),
         {"type": "function", "name": "computer_observe", "description":
-         "Observe the user's live local desktop when a task needs it. Choose scope from the task: desktop first for launchers/desktop overlays, active for work inside the focused app, windows to locate an app already open across workspaces. computer_act already returns a fresh observation: use it directly unless the UI is loading, the result lacks the needed image/scope, or the next input is ambiguous. Prefer active for a focused app: it binds actionable numbered CUA controls and image in one call, with a desktop-image fallback. desktop captures the full screen and adds read-only active-window labels when available; use active for click_element. For a small or uncertain target in a full desktop image, pass that latest observation_id and region={x,y,width,height} in its image pixels to get one full-resolution crop; clicks from the crop use crop-local x/y and map to the desktop. windows lists Hyprland windows by workspace and gives one-use indices for focus_window; it has no screenshot. A uniquely matched pid/window_id can be read with window. image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a missed visual click, inspect the fresh result and zoom or change route instead of clicking nearby at a guess.",
+         "Observe the user's live local desktop when a task needs it. For a named-app open/bring-forward request, use windows first: is_active=true means already foreground; a present inactive entry can be focused; absence from a complete list means use the desktop launcher. If truncated=true and the app is absent, do not assume it is closed or launch another instance; ask how to proceed. A listed window alone does not prove focus. computer_act returns a fresh observation; use it unless a launch transition still needs one bounded desktop check. Prefer active for a focused app: it binds numbered CUA controls and image, with desktop fallback. desktop captures the full screen and reports active_window app_name/title when available; use active for click_element. For small or uncertain targets, zoom from the latest full desktop observation; crop clicks use crop-local pixels. windows lists workspaces with is_active and one-use focus_window indices, without a screenshot. A uniquely matched pid/window_id can be read with window. image=false cannot ground pixels. Results identify image scope. min_age_ms waits only for remaining age, then captures once. After a missed visual click, inspect the fresh result and zoom or change route instead of clicking nearby at a guess.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "mode": {"type": "string", "enum": ["active", "windows", "window", "desktop"],
-                      "description": "active observes the focused window with CUA when uniquely matched; windows lists Hyprland workspaces and windows; window uses exact CUA pid/window_id; desktop captures the current screen."},
+                      "description": "active observes the focused window with CUA when uniquely matched; windows lists Hyprland workspaces and marks each window's is_active focus state; window uses exact CUA pid/window_id; desktop captures the screen and identifies the active app when available."},
              "pid": {"type": "integer", "description": "Required with window mode; use a pid returned by windows. Ignored in other modes."},
              "window_id": {"type": "integer", "description": "Required with window mode; use a window_id returned by windows (0 is valid). Ignored in other modes."},
              "image": {"type": "boolean", "description": "Active/window modes only. False requests an accessibility-only observation when available."},
@@ -70,7 +72,7 @@ def computer_tool_schemas() -> list[dict[str, Any]]:
                  "description": "Desktop mode only: rectangle in the latest full desktop screenshot's pixels. Returns one native-resolution crop; click x/y in the crop image."},
          }, "required": ["mode"]}},
         {"type": "function", "name": "computer_act", "description":
-         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. focus_window uses a window_index from a mode=windows observation, checks the selected Hyprland window, focuses it, and returns a fresh image and CUA tree when available; it cannot be chained. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
+         "Send one action, or a predictable 2–3 step focus/edit sequence, from the latest observation_id. focus_window uses a window_index from a mode=windows observation, checks the selected Hyprland window, focuses it, and returns a fresh image and CUA tree when available; effect=confirmed means that exact selected window is now active. It cannot be chained. click_element needs scope=window and a numbered control, never desktop labels. Supply exactly one of action or actions. A sequence may contain one click first, keys, and exactly one type step; it stops if the target changes or input is uncertain. It consumes the ID and returns each outcome plus one fresh observation. Use expected_result for a sequence, inspect the returned state, and never replay uncertain input. wait_for checks one native predicate; image=false skips the next screenshot only when that exact check succeeds. Computer input runs without a confirmation prompt.",
          "parameters": {"type": "object", "additionalProperties": False, "properties": {
              "observation_id": {"type": "string", "description": "ID from the latest observation, including the fresh observation returned by computer_act; single use."},
              "action": action_schema,
@@ -191,6 +193,12 @@ class ComputerSession:
         started = time.monotonic()
         self.current = None
         clients = self._hyprland_clients()
+        try:
+            active_address = self.driver.active_window()
+            active_window_readable = True
+        except (OSError, RuntimeError):
+            active_address = None
+            active_window_readable = False
         cua_windows = []
         if self.cua:
             try:
@@ -244,6 +252,9 @@ class ComputerSession:
                 "title": str(client.get("title") or "")[:160],
                 "app_name": str(client.get("class") or "")[:160],
                 "pid": pid if type(pid) is int else None,
+                "is_active": (
+                    identity == active_address if active_address is not None else False
+                ) if active_window_readable else None,
                 "workspace": {
                     "id": place.get("id") if type(place.get("id")) is int else None,
                     "name": str(place.get("name") or "")[:80],
@@ -274,16 +285,19 @@ class ComputerSession:
             self.trace.write(
                 "computer_windows", windows=bounded, window_count=len(clients),
                 observation_id=snapshot["id"], truncated=truncated,
+                active_window_readable=active_window_readable,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
         return ComputerResult(
             json.dumps({"observation_id": snapshot["id"], "scope": "windows",
                         "windows": bounded, "truncated": truncated,
+                        "active_window_readable": active_window_readable,
                         "screenshot_included": False,
-                        "note": "Only windows on the selected monitor have window_index for focus_window; only entries with window_id support exact CUA window reads."},
+                        "note": "is_active reports whether an entry is foreground; null means focus could not be read. Presence in this list alone does not mean a window is active. Only windows on the selected monitor have window_index for focus_window; only entries with window_id support exact CUA window reads."},
                        ensure_ascii=False),
             history_text=json.dumps({"observation_id": snapshot["id"], "scope": "windows",
                                      "windows_listed": len(bounded), "truncated": truncated,
+                                     "active_window_readable": active_window_readable,
                                      "screenshot_included": False}),
         )
 
@@ -415,6 +429,11 @@ class ComputerSession:
                 return self._desktop(cause=cause, with_accessibility=with_accessibility, retry_focus=False)
             raise RuntimeError("The active window changed after the desktop image was captured. Observe again.")
         pid = active.get("pid") if type(active.get("pid")) is int else None
+        active_window = None if not active.get("address") else {
+            "pid": pid,
+            "app_name": str(active.get("class") or "")[:160] or None,
+            "title": str(active.get("title") or "")[:160] or None,
+        }
         accessibility = self._active_accessibility(stamp) if self.cua and with_accessibility and zoom is None else None
         image_scope = "desktop_region" if zoom else "desktop"
         frame = ({"x": zoom["box"][0], "y": zoom["box"][1],
@@ -443,6 +462,7 @@ class ComputerSession:
             **({"source_observation_id": zoom["source_id"],
                 "source_region": zoom["source_region"], "region_on_monitor": frame} if zoom else {}),
             "active_window_stamp": stamp, "active_window_pid": pid,
+            "active_window": active_window,
             "screenshot_included": True,
             "active_accessibility_available": accessibility is not None,
             **({"active_window_accessibility": accessibility} if accessibility else {}),
@@ -1520,8 +1540,9 @@ class ComputerSession:
         if fallback:
             result["window_observation_error"] = fallback
         result["next_decision"] = (
-            "If this fresh observation proves the user's goal, answer now. "
-            "Otherwise choose the next needed action."
+            "If this fresh observation proves the user's goal, answer now. For an app open/focus task, "
+            "require active-window evidence or a confirmed focus_window result; a windows-list entry alone "
+            "proves presence, not foreground. Otherwise choose the next needed action."
         )
         prefix = json.dumps(result, ensure_ascii=False) + "\n"
         return ComputerResult(prefix + observation.text, observation.images,

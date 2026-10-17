@@ -22,10 +22,10 @@ and native checks are unavailable.
 
 | Model call | Desktop read | What the model receives |
 | --- | --- | --- |
-| `computer_observe({"mode":"windows"})` | Hyprland `clients -j`, plus CUA `list_windows` when available | Windows across workspaces, sorted by workspace, with title, app, `pid`, workspace, and a one-use `window_index` when focusable. Uniquely matched CUA windows also have `window_id`. No screenshot or accessibility tree. |
+| `computer_observe({"mode":"windows"})` | Hyprland `clients -j`, plus CUA `list_windows` when available | Windows across workspaces, sorted by workspace, with title, app, `pid`, workspace, `is_active`, and a one-use `window_index` when focusable. `true` confirms foreground, `false` means that entry is not foreground, and `null` means focus could not be read. Uniquely matched CUA windows also have `window_id`. No screenshot or accessibility tree. |
 | `computer_observe({"mode":"active"})` | Match the focused Hyprland window with `list_windows`, then `get_window_state` | That window's screenshot and bounded accessibility controls/tree when a unique match exists. Otherwise a desktop screenshot. |
 | `computer_observe({"mode":"window","pid":4321,"window_id":71})` | `get_window_state` | The specified window's bounded controls/tree and a screenshot when available. On Wayland, Oryn may fall back to a desktop screenshot while keeping the exact window's tree. |
-| `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot, plus read-only labels from the active window when CUA can safely match it. These labels have no actionable indices; use `mode="active"` for `click_element`. |
+| `computer_observe({"mode":"desktop"})` | `get_desktop_state` | Full-screen screenshot and the active window's app name/title when available, plus read-only labels when CUA can safely match it. These labels have no actionable indices; use `mode="active"` for `click_element`. |
 | `computer_observe({"mode":"desktop","observation_id":"obs-a","region":{"x":400,"y":150,"width":300,"height":250}})` | One native-resolution desktop capture, cropped to a region of the latest full desktop image | One zoomed image with a new ID. The region uses `obs-a` pixels; a click from the crop uses crop-local pixels and maps back to the monitor. A crop click returns a fresh full desktop image. |
 
 `start_session` and `end_session` prepare and close CUA; they are not screen reads.
@@ -39,6 +39,19 @@ exact-window screenshot, but an active-mode fallback can still return a desktop 
 The full desktop overview uses the monitor's native pixel dimensions. Zooming is optional for
 small or uncertain visual targets; the crop also keeps its native pixel dimensions.
 Each result says `image_scope` so the model can distinguish a full desktop image from a crop.
+
+### Open an app without claiming focus too early
+
+For a request to open or bring a named app forward, check `mode="windows"` first. If the
+matching entry has `is_active:true`, it is already in front. If it exists with `is_active:false`,
+focus that entry using its current `window_index`; the action confirms the selected window became
+active and returns a fresh observation. If no matching window exists in a complete list, use the
+desktop launcher. If `truncated:true` and the app is absent, do not assume it is closed or launch a
+possible duplicate; ask how to proceed.
+A listed app with `is_active:false` proves it exists, not that it is in front. If `is_active` is
+`null`, focus is unknown; use a fresh desktop/active observation or focus action before claiming
+success. After launching, inspect the action's screenshot and active-window metadata. If it still
+shows the old app or a transition, take at most one bounded desktop observation before replanning.
 
 ### What `verify_state` checks
 
@@ -85,8 +98,8 @@ Desktop observations do not support this exact-window check.
 The IDs below are invented. Suppose Brave is on workspace 3 and Blender is on workspace 5:
 
 1. `computer_observe({"mode":"windows"})` returns `observation_id="list-a"`, plus
-   `Brave: workspace=3, window_index=1, pid=4321` and
-   `Blender: workspace=5, window_index=2`. It has no screenshot. A uniquely matched
+   `Brave: workspace=3, window_index=1, pid=4321, is_active=false` and
+   `Blender: workspace=5, window_index=2, is_active=false`. It has no screenshot. A uniquely matched
    Brave window may also have `window_id=71`.
 2. `computer_act({"observation_id":"list-a","action":{"type":"focus_window","window_index":1}})`
    checks that the listed Brave window is still the same, focuses it, and returns a fresh

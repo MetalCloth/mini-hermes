@@ -123,8 +123,11 @@ def skill_loader_tool(skills: dict[str, Skill]) -> dict[str, Any]:
         "Load a relevant local SKILL.md as task instructions. Choose by exact name only when "
         "its description matches the user's request. If several skills are genuinely needed, "
         "request them as multiple load_skill calls in the same response instead of spending "
-        "one model round per skill. Do not load guidance already fully covered by active task "
-        "instructions. Loading returns text; it does not execute code or register tools. "
+        "one model round per skill. When the first read-only tool call is already clear, request "
+        "it in that same response rather than spending a round only loading guidance. For local "
+        "computer tasks, load relevant computer and desktop-profile skills together before input. "
+        "Do not load guidance already fully covered by active task instructions. Loading returns "
+        "text; it does not execute code or register tools. "
         "Apply only for this user turn. Catalog: "
         + json.dumps(directory, ensure_ascii=False, separators=(",", ":"))
     )
