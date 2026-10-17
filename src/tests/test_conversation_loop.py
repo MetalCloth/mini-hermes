@@ -114,10 +114,35 @@ class ConversationLoopTests(unittest.TestCase):
                 ), "Done.")
         self.assertTrue(all(turn_id == events[0][0] for turn_id, _ in events))
         self.assertEqual([event["type"] for _, event in events], [
-            "turn_start", "model_request", "tool_start", "tool_end", "model_request", "turn_end",
+            "turn_start", "model_request", "model_response", "tool_start", "tool_end",
+            "model_request", "model_response", "turn_end",
         ])
         self.assertNotIn(secret, repr(events))
         self.assertEqual(events[-1][1]["tool_count"], 1)
+
+    def test_initial_computer_tool_response_gets_timing_before_session_creation(self):
+        history = [{"role": "user", "content": "Observe the desktop."}]
+        complete = Mock(side_effect=[
+            ModelResponse(tool_calls=[ToolCall(
+                "observe", "computer_observe", {"mode": "desktop"},
+            )]),
+            ModelResponse("The desktop is open."),
+        ])
+        computer_session = Mock()
+        computer_session.execute.return_value = "Observed desktop."
+        diagnostics = []
+        with tempfile.TemporaryDirectory() as folder:
+            answer = run_turn(
+                history, complete, [], Path(folder), Mock(), Mock(),
+                on_diagnostic=lambda _turn_id, event: diagnostics.append(event),
+                computer_session_factory=lambda: computer_session,
+            )
+
+        responses = [event for event in diagnostics if event["type"] == "model_response"]
+        self.assertEqual(answer, "The desktop is open.")
+        self.assertEqual([event["round"] for event in responses], [1, 2])
+        self.assertTrue(all(event["elapsed_ms"] >= 0 for event in responses))
+        self.assertEqual([event["tool_call_count"] for event in responses], [1, 0])
 
     def test_firecrawl_failure_trace_keeps_safe_status_detail_and_request_id(self):
         from src.tools.browser_tools import FirecrawlHTTPError

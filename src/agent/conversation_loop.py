@@ -255,6 +255,14 @@ def run_turn(
                             loaded_tool_count=0,
                         )
 
+                    def summary_response(response: ModelResponse, elapsed_ms: int) -> None:
+                        diagnostic(
+                            "model_response", round=round_number,
+                            elapsed_ms=elapsed_ms,
+                            response_chars=len(response.text or ""),
+                            tool_call_count=len(response.tool_calls),
+                        )
+
                     def compaction_event(source_tokens: int, summary_tokens: int) -> None:
                         diagnostic(
                             "compaction", estimated_tokens=source_tokens,
@@ -265,6 +273,7 @@ def run_turn(
                         messages, tools, complete, summary, covered_messages, covered_digest,
                         cancel_event=turn_cancel, on_status=on_status,
                         on_summary_request=summary_request,
+                        on_summary_response=summary_response,
                         on_compaction=compaction_event,
                         save_summary=save_context_summary,
                         model=getattr(getattr(complete, "__self__", None), "model", None),
@@ -290,13 +299,12 @@ def run_turn(
                     )
                     model_started = provider_call_started = time.monotonic()
                     response = complete(request_messages, tools, **kwargs)
-                    if computer_session is not None:
-                        diagnostic(
-                            "model_response", round=round_number,
-                            elapsed_ms=round((time.monotonic() - model_started) * 1000),
-                            response_chars=len(response.text or ""),
-                            tool_call_count=len(response.tool_calls),
-                        )
+                    diagnostic(
+                        "model_response", round=round_number,
+                        elapsed_ms=round((time.monotonic() - model_started) * 1000),
+                        response_chars=len(response.text or ""),
+                        tool_call_count=len(response.tool_calls),
+                    )
                 except ProviderRequestError as exc:
                     diagnostic(
                         "model_attempt_error", round=round_number, attempt=attempt + 1,

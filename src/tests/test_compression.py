@@ -30,6 +30,7 @@ class ContextCompressionTests(unittest.TestCase):
             ModelResponse("Goal: continue the current work."),
             ModelResponse("Done."),
         ])
+        summary_responses = []
         summary = "Goal: continue the current work."
         after_compaction = estimate_context_tokens(materialize_context(history, summary, 2))
         projected_after_compaction = estimate_context_tokens(materialize_context(history, "", 2)) + 200
@@ -41,9 +42,12 @@ class ContextCompressionTests(unittest.TestCase):
              patch("src.agent.compression.MAX_SUMMARY_TOKENS", 200):
             request, summary, covered, digest, estimated = compact_for_request(
                 history, [], complete, save_summary=lambda *record: saved.append(record),
+                on_summary_response=lambda response, elapsed_ms: summary_responses.append((response, elapsed_ms)),
             )
 
         self.assertEqual(complete.call_count, 1)
+        self.assertEqual(summary_responses[0][0].text, "Goal: continue the current work.")
+        self.assertGreaterEqual(summary_responses[0][1], 0)
         self.assertEqual(complete.call_args_list[0].args[1], [])
         self.assertEqual(complete.call_args_list[0].args[0][0]["content"], CONTEXT_SUMMARY_PROMPT)
         summary_source = complete.call_args_list[0].args[0]

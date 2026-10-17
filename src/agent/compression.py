@@ -2,6 +2,7 @@
 
 from html import escape
 import json
+import time
 from typing import Any, Callable
 
 from src.images import MAX_CONTEXT_IMAGE_BYTES, image_context_bytes
@@ -88,6 +89,7 @@ def _source_turns(messages: list[dict[str, Any]], covered_messages: int) -> list
 def _generate_summary(
     complete: Callable[..., ModelResponse], prior_summary: str,
     source_turns: list[dict[str, Any]], cancel_event, model: str | None,
+    on_response: Callable[[ModelResponse, int], None] | None = None,
 ) -> str:
     prior = escape(prior_summary, quote=False) or "(none)"
     request = [
@@ -98,7 +100,10 @@ def _generate_summary(
         )},
         *source_turns,
     ]
+    started = time.monotonic()
     response = complete(request, [], cancel_event=cancel_event)
+    if on_response:
+        on_response(response, round((time.monotonic() - started) * 1000))
     if response.tool_calls:
         raise RuntimeError("Context summarization returned tool calls; no history was compacted.")
     summary = response.text.strip()
@@ -119,6 +124,7 @@ def compact_for_request(
     covered_digest: str = "", cancel_event=None,
     on_status: Callable[[str], None] | None = None,
     on_summary_request: Callable[[int], None] | None = None,
+    on_summary_response: Callable[[ModelResponse, int], None] | None = None,
     on_compaction: Callable[[int, int], None] | None = None,
     save_summary: Callable[[str, int, str], None] | None = None,
     model: str | None = None,
@@ -201,6 +207,7 @@ def compact_for_request(
             on_summary_request(source_tokens + prompt_tokens)
         new_summary = _generate_summary(
             complete, summary, prepare_messages_for_model(chosen), cancel_event, model,
+            on_response=on_summary_response,
         )
         new_covered = covered_messages + chosen_count
         new_digest = history_digest(messages, new_covered)

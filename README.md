@@ -106,7 +106,12 @@ accessibility-tree excerpts are excluded. UI labels, control frames, and some se
 remain visible in the remote trace, so enable it only when that screen content is okay to send.
 The local JSONL trace remains the detailed source. See [computer trace logging](src/docs/22-computer-tracing.md)
 for the event links, privacy boundaries, and limitations.
-The old `computer_benchmark.py` applies to historical planner traces, not the current main-loop path.
+Summarize saved runs without printing task text, screenshots, or visible UI text with
+`python scripts/computer_benchmark.py logs/computer-*.jsonl`. The JSON scorecard reports each
+computer turn's duration, model and tool timings, tool counts, screenshot attachments,
+accessibility output, repeated back-to-back observations, and the totals across the selected
+traces. A `finished` status means the chat turn ended normally; it does not independently prove
+the requested desktop task succeeded. Historical planner trace timing summaries are retained.
 The [computer-use cheat sheet](src/docs/23-computer-use-cheat-sheet.md) lists the tools, observation modes, IDs, and saved history. The [current computer-use decision record](src/docs/21-cua-main-loop.md) explains why the main loop, CLI/socket transport, scoped observations, conditional waits, and dotool routing were chosen, along with their limits.
 
 Codex login uses the local Codex CLI credentials; Oryn does not ask for an OpenAI API key.

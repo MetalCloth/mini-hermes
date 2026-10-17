@@ -43,6 +43,24 @@ Each model request records preparation time separately from model-response time;
 retries record attempt duration and whether the provider call began. Model records include
 counts and timings, not private reasoning text.
 
+To summarize saved runs after Oryn exits, run:
+
+```bash
+python scripts/computer_benchmark.py logs/computer-*.jsonl
+```
+
+The JSON report gives per turn duration, model response and tool timings, tool call counts,
+attached screenshots, accessibility tree/control output, and back to back `computer_observe`
+calls, plus totals across the selected traces. It reads the trace file but does not include task
+text, tool arguments/results, accessibility labels, tree text, or image data in its output.
+`turn_seconds` covers the whole agent turn; `computer_seconds` starts when its first computer
+tool is invoked. Older traces can have fewer response timings than requests because earlier code
+skipped the first response before a computer session existed. New turns record every returned
+response, including the first response and context summaries. Failed provider attempts use
+`model_attempt_error`, so request and response counts can still differ when calls fail or retry.
+`finished` means the chat turn ended normally; it does not prove the requested desktop task
+succeeded. A back to back observation count is a review signal, not an automatic failure.
+
 ```mermaid
 flowchart LR
     T["Tool call · call_id"] --> O["Observation · observation_id"]
