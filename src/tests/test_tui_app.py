@@ -27,7 +27,7 @@ from textual.widgets import Button, Input, Label, OptionList, Static, TextArea
 
 
 class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
-    async def test_computer_selection_arms_one_plain_message_then_clears(self):
+    async def test_legacy_computer_command_explains_normal_chat_route(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             store = SQLiteSessionStore(root / "sessions.sqlite3")
@@ -40,39 +40,19 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
             try:
                 async with app.run_test(size=(100, 32)) as pilot:
                     composer = app.query_one("#composer", TextArea)
-                    banner = app.query_one("#computer-mode", Static)
-                    self.assertFalse(banner.display)
-                    with patch.object(tui_app, "START_DELAY", 0), \
-                         patch.object(tui_app, "run_computer", return_value="Computer model reports: typed") as computer:
-                        composer.load_text("/computer")
-                        await pilot.press("enter")
-                        await pilot.pause()
-                        self.assertTrue(banner.display)
-                        self.assertEqual(banner.region.height, 1)
-                        self.assertEqual(banner.region.bottom, composer.region.y)
-                        self.assertEqual(composer.text, "")
-                        self.assertFalse(app.turn_active)
-
-                        composer.load_text('type "hello" in the focused box')
-                        await pilot.press("enter")
-                        app._turn_thread.join(timeout=5)
-                        await pilot.pause()
-                        self.assertEqual(computer.call_args.args[0], 'type "hello" in the focused box')
-                        self.assertFalse(banner.display)
-                        self.assertFalse(app._computer_armed)
-                        self.assertEqual(store.load_messages(app.session_id)[0]["content"], 'type "hello" in the focused box')
-
-                        composer.load_text("/computer")
-                        await pilot.pause()
-                        await pilot.click("#palette-options", offset=(2, 0))
-                        await pilot.pause()
-                        self.assertTrue(banner.display)
-                        await pilot.press("escape")
-                        self.assertFalse(banner.display)
+                    composer.load_text("/computer")
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertIn(
+                        "Computer use is part of normal chat now",
+                        str(app.query_one("#activity-label", Static).render()),
+                    )
+                    self.assertFalse(app.turn_active)
+                    self.assertEqual(app.history, [])
             finally:
                 client.close()
 
-    async def test_computer_command_uses_its_own_loop_and_saves_result(self):
+    async def test_computer_dry_run_uses_normal_turn_and_saves_result(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "models_cache.json").write_text(json.dumps({"models": [{
@@ -100,27 +80,22 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                     await app._change_setting("reasoning_effort", "high")
                     await app._change_setting("service_tier", "priority")
                     selected_provider = app.provider
-                    with patch.object(tui_app, "START_DELAY", 0), \
-                         patch.object(tui_app, "run_computer", return_value="Dry run: click (400, 200)") as computer, \
+                    with patch.object(tui_app, "run_turn", return_value="Dry run: click (400, 200)") as turn, \
                          patch.object(selected_provider, "complete") as provider_complete:
                         app.query_one("#composer", TextArea).load_text("/computer --dry-run click Settings")
                         await pilot.press("enter")
                         app._turn_thread.join(timeout=5)
                         await pilot.pause()
                     self.assertFalse(app.turn_active)
-                    self.assertEqual(computer.call_args.args[0], "click Settings")
-                    self.assertTrue(computer.call_args.kwargs["dry_run"])
-                    self.assertIs(computer.call_args.kwargs["provider"].provider, selected_provider)
-                    self.assertEqual(
-                        computer.call_args.kwargs["provider"].conversation_history,
-                        prior_history,
-                    )
+                    self.assertEqual(turn.call_args.args[0][-2]["content"], "click Settings")
+                    self.assertIs(turn.call_args.args[1], provider_complete)
+                    self.assertTrue(turn.call_args.kwargs["computer_dry_run"])
                     self.assertEqual(selected_provider.model, "gpt-6-sol")
                     self.assertEqual(selected_provider.reasoning_effort, "high")
                     self.assertEqual(selected_provider.service_tier, "priority")
                     provider_complete.assert_not_called()
                     messages = store.load_messages(app.session_id)
-                    self.assertEqual(messages[2]["content"], "/computer --dry-run click Settings")
+                    self.assertEqual(messages[2]["content"], "click Settings")
                     self.assertEqual(messages[3]["content"], "Dry run: click (400, 200)")
             finally:
                 client.close()
@@ -565,7 +540,12 @@ class TUILayoutTests(unittest.IsolatedAsyncioTestCase):
                             ModelResponse(tool_calls=[ToolCall("read_note", "read_file", {"path": "notes.txt"})]),
                             ModelResponse("Finished reply."),
                         ]
-                        with patch("src.tui_app.monotonic", side_effect=[1000.0, 1000.0 + duration]), \
+                        clock_values = [1000.0, 1000.0 + duration]
+
+                        def fake_monotonic():
+                            return clock_values.pop(0) if clock_values else 1000.0 + duration
+
+                        with patch("src.tui_app.monotonic", side_effect=fake_monotonic), \
                              patch.object(provider, "complete", side_effect=responses):
                             app.query_one("#composer", TextArea).load_text(f"Request {index}")
                             await pilot.press("enter")

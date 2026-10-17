@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.agent.compression import CONTEXT_SUMMARY_PROMPT, compact_for_request
-from src.agent.context import history_digest
+from src.agent.context import estimate_context_tokens, history_digest, materialize_context
 from src.images import MAX_IMAGE_BYTES
 from src.providers.types import ModelResponse
 
@@ -30,8 +30,13 @@ class ContextCompressionTests(unittest.TestCase):
             ModelResponse("Goal: continue the current work."),
             ModelResponse("Done."),
         ])
-        with patch("src.agent.compression.MAX_CONTEXT_TOKENS", 300), \
-             patch("src.agent.compression.CONTEXT_TARGET_TOKENS", 300), \
+        summary = "Goal: continue the current work."
+        after_compaction = estimate_context_tokens(materialize_context(history, summary, 2))
+        projected_after_compaction = estimate_context_tokens(materialize_context(history, "", 2)) + 200
+        context_limit = max(after_compaction, projected_after_compaction) + 1
+        self.assertGreater(estimate_context_tokens(materialize_context(history)), context_limit)
+        with patch("src.agent.compression.MAX_CONTEXT_TOKENS", context_limit), \
+             patch("src.agent.compression.CONTEXT_TARGET_TOKENS", context_limit), \
              patch("src.agent.compression.MAX_COMPRESSION_INPUT_TOKENS", 10_000), \
              patch("src.agent.compression.MAX_SUMMARY_TOKENS", 200):
             request, summary, covered, digest, estimated = compact_for_request(
@@ -49,7 +54,7 @@ class ContextCompressionTests(unittest.TestCase):
         self.assertEqual(covered, 2)
         self.assertEqual(digest, history_digest(history, covered))
         self.assertEqual(saved, [(summary, covered, digest)])
-        self.assertLessEqual(estimated, 300)
+        self.assertLessEqual(estimated, context_limit)
         self.assertFalse(any("Old request." in message.get("content", "") for message in request))
         self.assertIn("Recent request.", [message.get("content") for message in request])
         self.assertIn("Current request.", [message.get("content") for message in request])

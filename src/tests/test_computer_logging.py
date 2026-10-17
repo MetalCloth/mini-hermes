@@ -1,5 +1,6 @@
 """Checks private JSONL computer traces and captured dotool failures."""
 
+import base64
 import io
 import json
 import stat
@@ -19,6 +20,29 @@ from src.tools.computer_driver import HyprlandDriver
 
 
 class ComputerLoggingTests(unittest.TestCase):
+    def test_observation_image_saves_exact_attachment_with_private_permissions(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"ORYN_COMPUTER_TRACE_IMAGES": "1"},
+        ):
+            trace = ComputerTrace(Path(directory) / "computer.jsonl")
+            image_buffer = io.BytesIO()
+            Image.new("RGB", (8, 6), "navy").save(image_buffer, format="JPEG")
+            image_bytes = image_buffer.getvalue()
+            try:
+                saved_path = trace.save_observation_image({
+                    "mime_type": "image/jpeg",
+                    "base64_data": base64.b64encode(image_bytes).decode("ascii"),
+                    "size_bytes": len(image_bytes),
+                }, "observation-1")
+            finally:
+                trace.close()
+
+            self.assertIsNotNone(saved_path)
+            path = Path(saved_path)
+            self.assertEqual(path.read_bytes(), image_bytes)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
     def test_planner_logs_exact_request_context_and_model_plan(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "computer.jsonl"

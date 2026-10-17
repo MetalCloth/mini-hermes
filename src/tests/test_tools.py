@@ -245,7 +245,11 @@ class ToolTests(unittest.TestCase):
                 initial = manager.read(job_id, wait_seconds=2)
                 self.assertIn("READY", initial)
                 manager.send_input(job_id, "hello", Mock(return_value=True))
-                final = manager.read(job_id, wait_seconds=2)
+                final = ""
+                for _ in range(3):
+                    final += manager.read(job_id, wait_seconds=2)
+                    if "GOT=hello" in final:
+                        break
                 self.assertIn("GOT=hello", final)
                 with self.assertRaisesRegex(ValueError, "No terminal job"):
                     other_session.read(job_id, 0)

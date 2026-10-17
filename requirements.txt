@@ -1,4 +1,6 @@
+httpx2>=2,<3
 mcp>=2,<3
+rich>=13,<16
 textual>=8,<9
 sounddevice>=0.5,<0.6
 Pillow>=12,<13

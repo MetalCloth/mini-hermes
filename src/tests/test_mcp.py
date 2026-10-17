@@ -641,6 +641,7 @@ for line in sys.stdin:
                 "type": "function", "name": "mcp__context7__lookup", "description": "Look up docs.",
                 "parameters": {"type": "object", "properties": {}},
             }]),
+            diagnostic_snapshot=Mock(return_value={}),
             requires_approval=Mock(return_value=False),
             call_tool=Mock(return_value="x" * 20_001),
         )
